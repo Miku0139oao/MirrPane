@@ -1,6 +1,7 @@
 package decode
 
 import (
+	"bytes"
 	"errors"
 	"runtime"
 	"unsafe"
@@ -9,6 +10,8 @@ import (
 var EldConfig = []byte{0xf8, 0xe8, 0x50, 0x00}
 
 const OutputRate = 48000
+
+const outputChannels = 2
 
 // AudioFrame contains interleaved 16-bit PCM, reused by the next Decode call.
 type AudioFrame struct {
@@ -24,6 +27,8 @@ func (f *AudioFrame) Frames() int {
 	return len(f.Samples) / f.Channels
 }
 
+// AudioDecoder owns FFmpeg objects and a reusable PCM buffer. Its owner must
+// serialize Decode, Configure, Flush and Close; audio.Receiver uses decMu.
 type AudioDecoder struct {
 	ff                                    *ffmpegAPI
 	ctx                                   *codecContext
@@ -32,6 +37,7 @@ type AudioDecoder struct {
 	resampler                             uintptr
 	inputFormat, inputRate, inputChannels int32
 	frame                                 AudioFrame
+	config                                []byte
 }
 
 func NewAudioDecoder(config []byte) (*AudioDecoder, error) {
@@ -72,7 +78,43 @@ func NewAudioDecoder(config []byte) (*AudioDecoder, error) {
 		return nil, errors.New("decode: allocate AAC buffers")
 	}
 	d.frame.SampleRate = OutputRate
+	d.frame.Channels = outputChannels
+	d.config = append([]byte(nil), config...)
 	return d, nil
+}
+
+// Configure resets a stream, retaining the native decoder when the
+// AudioSpecificConfig is unchanged. A failed replacement leaves it usable.
+func (d *AudioDecoder) Configure(config []byte) error {
+	if len(config) == 0 {
+		config = EldConfig
+	}
+	if d.ctx != nil && bytes.Equal(d.config, config) {
+		d.Flush()
+		return nil
+	}
+	next, err := NewAudioDecoder(config)
+	if err != nil {
+		return err
+	}
+	d.Close()
+	*d = *next
+	return nil
+}
+
+// Flush drops codec history and resampler delay without reopening the codec.
+func (d *AudioDecoder) Flush() {
+	if d.ctx == nil {
+		return
+	}
+	d.ff.flushBuffers(d.ctx)
+	d.ff.packetUnref(d.packet)
+	d.ff.frameUnref(d.nativeFrame)
+	if d.resampler != 0 {
+		d.ff.resampleFree(&d.resampler)
+	}
+	d.inputFormat, d.inputRate, d.inputChannels = 0, 0, 0
+	d.frame.Samples = d.frame.Samples[:0]
 }
 
 func (d *AudioDecoder) Close() {
@@ -113,7 +155,10 @@ func (d *AudioDecoder) Decode(data []byte) (*AudioFrame, error) {
 	if ret < 0 {
 		return nil, d.ff.error("receive AAC frame", ret)
 	}
-	f := d.nativeFrame
+	return d.convertFrame(d.nativeFrame)
+}
+
+func (d *AudioDecoder) convertFrame(f *avFrame) (*AudioFrame, error) {
 	channels := f.ChannelLayout.Channels
 	if channels < 1 || channels > 8 || f.SampleRate <= 0 || f.Samples <= 0 || f.Samples > 65536 {
 		return nil, errors.New("decode: invalid AAC frame format")
@@ -123,8 +168,8 @@ func (d *AudioDecoder) Decode(data []byte) (*AudioFrame, error) {
 			d.ff.resampleFree(&d.resampler)
 		}
 		var output channelLayout
-		d.ff.layoutDefault(&output, channels)
-		ret = d.ff.resampleAlloc(&d.resampler, &output, sampleS16, OutputRate, &f.ChannelLayout, f.Format, f.SampleRate, 0, 0)
+		d.ff.layoutDefault(&output, outputChannels)
+		ret := d.ff.resampleAlloc(&d.resampler, &output, sampleS16, OutputRate, &f.ChannelLayout, f.Format, f.SampleRate, 0, 0)
 		d.ff.layoutUninit(&output)
 		if ret < 0 {
 			return nil, d.ff.error("allocate resampler", ret)
@@ -141,13 +186,13 @@ func (d *AudioDecoder) Decode(data []byte) (*AudioFrame, error) {
 	if capacity > 1<<20 {
 		return nil, errors.New("decode: AAC resample buffer too large")
 	}
-	need := int(capacity) * int(channels)
+	need := int(capacity) * outputChannels
 	if cap(d.frame.Samples) < need {
 		d.frame.Samples = make([]int16, need)
 	}
 	d.frame.Samples = d.frame.Samples[:need]
 	out := (*byte)(unsafe.Pointer(&d.frame.Samples[0]))
-	ret = d.ff.resampleConvert(d.resampler, &out, int32(capacity), f.ExtendedData, f.Samples)
+	ret := d.ff.resampleConvert(d.resampler, &out, int32(capacity), f.ExtendedData, f.Samples)
 	runtime.KeepAlive(d.frame.Samples)
 	if ret < 0 {
 		return nil, d.ff.error("resample AAC", ret)
@@ -155,7 +200,7 @@ func (d *AudioDecoder) Decode(data []byte) (*AudioFrame, error) {
 	if ret == 0 {
 		return nil, ErrNoFrame
 	}
-	d.frame.Samples = d.frame.Samples[:int(ret)*int(channels)]
-	d.frame.Channels = int(channels)
+	d.frame.Samples = d.frame.Samples[:int(ret)*outputChannels]
+	d.frame.Channels = outputChannels
 	return &d.frame, nil
 }

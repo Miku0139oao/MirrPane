@@ -51,6 +51,13 @@ type Handlers struct {
 	OnStats func(received, dropped, decoded uint64)
 }
 
+type audioDecoder interface {
+	Decode([]byte) (*decode.AudioFrame, error)
+	Configure([]byte) error
+	Flush()
+	Close()
+}
+
 // Receiver owns the two UDP sockets the sender streams to.
 type Receiver struct {
 	log      *log.Logger
@@ -72,7 +79,12 @@ type Receiver struct {
 	lastSeq  uint16
 	haveLast bool
 
-	dec *decode.AudioDecoder
+	// decMu serializes packet processing and all decoder calls/replacement.
+	// Lock order is decMu before mu; never hold mu while calling the decoder.
+	// Frame callbacks run after both locks are released.
+	decMu  sync.Mutex
+	dec    audioDecoder
+	closed bool
 }
 
 // New binds the data and control sockets and starts reading.
@@ -120,20 +132,38 @@ func New(logger *log.Logger, handlers Handlers) (*Receiver, error) {
 // must advertise, in the order /setup wants them.
 func (r *Receiver) Ports() (data, control int) { return r.dataPort, r.controlPort }
 
-// Configure sets the key material for the next stream. A fresh stream resets
-// the sequence history and the key choice.
-func (r *Receiver) Configure(keys []Key, iv []byte) {
+// Configure sets the key material for the next stream. The optional config is
+// the AudioSpecificConfig; omitting it selects the default AAC-ELD config.
+// A fresh stream resets the sequence history, key choice and decoder buffers.
+func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
+	r.decMu.Lock()
+	if r.closed {
+		r.decMu.Unlock()
+		return
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.keys = append([]Key(nil), keys...)
 	r.iv = append([]byte(nil), iv...)
 	r.chosen = -1
 	r.haveLast = false
+	r.mu.Unlock()
+	var asc []byte
+	if len(config) > 0 {
+		asc = config[0]
+	}
+	var err error
 	if r.dec != nil {
-		r.dec.Close()
-		if d, err := decode.NewAudioDecoder(nil); err == nil {
+		err = r.dec.Configure(asc)
+	} else {
+		var d *decode.AudioDecoder
+		d, err = decode.NewAudioDecoder(asc)
+		if err == nil {
 			r.dec = d
 		}
+	}
+	r.decMu.Unlock()
+	if err != nil {
+		r.log.Printf("audio: configure decoder: %v", err)
 	}
 	names := make([]string, len(keys))
 	for i, k := range keys {
@@ -146,16 +176,13 @@ func (r *Receiver) Configure(keys []Key, iv []byte) {
 // example after TEARDOWN + SETUP without new keys) so a fresh RTP sequence
 // base is not mistaken for old duplicate packets.
 func (r *Receiver) ResetStream() {
+	r.decMu.Lock()
+	defer r.decMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.haveLast = false
+	r.mu.Unlock()
 	if r.dec != nil {
-		r.dec.Close()
-		if d, err := decode.NewAudioDecoder(nil); err == nil {
-			r.dec = d
-		} else {
-			r.dec = nil
-		}
+		r.dec.Flush()
 	}
 }
 
@@ -170,12 +197,13 @@ func (r *Receiver) Stats() (received, dropped, decoded uint64) {
 func (r *Receiver) Close() {
 	_ = r.data.Close()
 	_ = r.control.Close()
-	r.mu.Lock()
+	r.decMu.Lock()
+	r.closed = true
 	if r.dec != nil {
 		r.dec.Close()
 		r.dec = nil
 	}
-	r.mu.Unlock()
+	r.decMu.Unlock()
 }
 
 func (r *Receiver) readData() {
@@ -252,13 +280,33 @@ func (r *Receiver) handlePacket(pkt []byte) {
 	}
 
 	seq := binary.BigEndian.Uint16(pkt[2:4])
+	frame, err := r.decodePacket(seq, payload)
+	if err != nil {
+		if err != decode.ErrNoFrame {
+			r.log.Printf("audio: decode: %v", err)
+		}
+		return
+	}
+	if frame != nil && r.handlers.OnFrame != nil {
+		r.handlers.OnFrame(frame)
+	}
+}
+
+// decodePacket keeps stream state, decryption and decoding together so a reset
+// cannot move a packet decrypted with the old keys into the new decoder state.
+func (r *Receiver) decodePacket(seq uint16, payload []byte) (*decode.AudioFrame, error) {
+	r.decMu.Lock()
+	defer r.decMu.Unlock()
+	if r.closed {
+		return nil, nil
+	}
 	r.mu.Lock()
 	// Each packet is sent three times. Sequence numbers only move forward, so a
 	// repeat or a late arrival is dropped.
 	if r.haveLast && int16(seq-r.lastSeq) <= 0 {
 		r.dropped++
 		r.mu.Unlock()
-		return
+		return nil, nil
 	}
 	r.lastSeq = seq
 	r.haveLast = true
@@ -266,29 +314,25 @@ func (r *Receiver) handlePacket(pkt []byte) {
 
 	plain, ok := r.decrypt(payload)
 	if !ok {
-		return
+		return nil, nil
 	}
 
-	r.mu.Lock()
-	dec := r.dec
-	r.mu.Unlock()
-	if dec == nil {
-		return
+	if r.dec == nil {
+		return nil, nil
 	}
 
-	frame, err := dec.Decode(plain)
+	frame, err := r.dec.Decode(plain)
 	if err != nil {
-		if err != decode.ErrNoFrame {
-			r.log.Printf("audio: decode: %v", err)
-		}
-		return
+		return nil, err
 	}
+	// Decode's PCM buffer is reused. Own the delivered frame before releasing
+	// decMu so another packet, flush or close cannot change a callback's data.
+	owned := *frame
+	owned.Samples = append([]int16(nil), frame.Samples...)
 	r.mu.Lock()
 	r.decoded++
 	r.mu.Unlock()
-	if r.handlers.OnFrame != nil {
-		r.handlers.OnFrame(frame)
-	}
+	return &owned, nil
 }
 
 // decrypt applies AES-128-CBC to one payload the way raop_buffer.c:130-136

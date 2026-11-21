@@ -160,6 +160,7 @@ const minScaleVersion = 656996
 const minResampleVersion = 460644
 const codecH264 = 27
 const codecAAC = 86018
+const symbolFlushBuffers = "avcodec_flush_buffers"
 const inputPadding = 64
 const flagLowDelay = 524288
 const flagFast = 1

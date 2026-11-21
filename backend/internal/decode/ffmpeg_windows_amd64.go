@@ -28,6 +28,7 @@ type ffmpegAPI struct {
 	allocContext      func(uintptr) *codecContext
 	openCodec         func(*codecContext, uintptr, uintptr) int32
 	freeContext       func(**codecContext)
+	flushBuffers      func(*codecContext)
 	sendPacket        func(*codecContext, *avPacket) int32
 	receiveFrame      func(*codecContext, *avFrame) int32
 	frameAlloc        func() *avFrame
@@ -161,6 +162,7 @@ func openFFmpeg(dir string) (_ *ffmpegAPI, err error) {
 		{"avcodec-63.dll", "avcodec_alloc_context3", &f.allocContext},
 		{"avcodec-63.dll", "avcodec_open2", &f.openCodec},
 		{"avcodec-63.dll", "avcodec_free_context", &f.freeContext},
+		{"avcodec-63.dll", symbolFlushBuffers, &f.flushBuffers},
 		{"avcodec-63.dll", "avcodec_send_packet", &f.sendPacket},
 		{"avcodec-63.dll", "avcodec_receive_frame", &f.receiveFrame},
 		{"avutil-61.dll", "av_frame_alloc", &f.frameAlloc},

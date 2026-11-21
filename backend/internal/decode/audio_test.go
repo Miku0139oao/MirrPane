@@ -3,8 +3,12 @@ package decode
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
+	"runtime"
+	"slices"
 	"testing"
+	"unsafe"
 )
 
 // AacLcConfig is the AudioSpecificConfig for AAC-LC 44100 Hz stereo (AOT 2,
@@ -103,6 +107,161 @@ func TestAudioDecoderRejectsEmpty(t *testing.T) {
 	defer d.Close()
 	if _, err := d.Decode(nil); !errors.Is(err, ErrNoFrame) {
 		t.Fatalf("Decode(nil) = %v, want ErrNoFrame", err)
+	}
+}
+
+func TestAudioDecoderConfigureReusesMatchingConfig(t *testing.T) {
+	config := append([]byte(nil), AacLcConfig...)
+	d, err := NewAudioDecoder(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx, frame, packet := d.ctx, d.nativeFrame, d.packet
+	// The decoder must remember the config's bytes, not the caller's slice.
+	config[0] ^= 0xff
+	if err := d.Configure(append([]byte(nil), AacLcConfig...)); err != nil {
+		t.Fatal(err)
+	}
+	if d.ctx != ctx || d.nativeFrame != frame || d.packet != packet {
+		t.Fatal("identical config replaced native decoder objects")
+	}
+	if err := d.Configure(make([]byte, 65537)); err == nil {
+		t.Fatal("oversized replacement config accepted")
+	}
+	if d.ctx != ctx || !slices.Equal(d.config, AacLcConfig) {
+		t.Fatal("failed replacement changed the active decoder")
+	}
+	if err := d.Configure(EldConfig); err != nil {
+		t.Fatal(err)
+	}
+	if d.ctx == ctx || !slices.Equal(d.config, EldConfig) {
+		t.Fatal("changed config did not replace the native decoder")
+	}
+	ctx = d.ctx
+	// nil and explicit ELD are the same AudioSpecificConfig.
+	for range 3 {
+		if err := d.Configure(nil); err != nil {
+			t.Fatal(err)
+		}
+		if d.ctx != ctx {
+			t.Fatal("default config repeatedly rebuilt the decoder")
+		}
+	}
+}
+
+func TestAudioDecoderFlushRestartsStream(t *testing.T) {
+	raw, err := os.ReadFile("testdata/tone.aac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := stripADTS(t, raw)
+	d, err := NewAudioDecoder(AacLcConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	decodeStream := func() []int16 {
+		var pcm []int16
+		for _, unit := range units {
+			frame, err := d.Decode(unit)
+			if errors.Is(err, ErrNoFrame) {
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pcm = append(pcm, frame.Samples...)
+		}
+		return pcm
+	}
+	want := decodeStream()
+	if len(want) == 0 || d.resampler == 0 {
+		t.Fatal("fixture did not exercise codec and resampler history")
+	}
+	ctx, nativeFrame, packet := d.ctx, d.nativeFrame, d.packet
+	d.Flush()
+	if d.ctx != ctx || d.nativeFrame != nativeFrame || d.packet != packet {
+		t.Fatal("flush replaced native decoder objects")
+	}
+	if d.resampler != 0 || len(d.frame.Samples) != 0 || d.nativeFrame.Data[0] != nil || d.packet.Data != nil {
+		t.Fatal("flush retained audio from the previous stream")
+	}
+	got := decodeStream()
+	if len(got) != len(want) {
+		t.Fatalf("flushed stream has %d samples, want %d", len(got), len(want))
+	}
+	// AAC's perceptual noise substitution state need not restart bit-for-bit
+	// after a flush. Require the same signal within 1% RMS error instead.
+	var signalEnergy, errorEnergy float64
+	for i, sample := range got {
+		signal := float64(want[i])
+		diff := float64(sample) - signal
+		signalEnergy += signal * signal
+		errorEnergy += diff * diff
+	}
+	if signalEnergy == 0 || errorEnergy > signalEnergy*0.0001 {
+		t.Fatalf("flushed stream retained history: error energy %g, signal energy %g", errorEnergy, signalEnergy)
+	}
+	d.Close()
+	d.Flush() // A teardown after shutdown must be harmless.
+}
+
+func TestAudioDownmixToStereo(t *testing.T) {
+	ff, err := loadFFmpeg()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		channels, rate int32
+	}{
+		{1, 44100},
+		{2, 48000},
+		{6, 48000},
+		{6, 8000},
+		{8, 44100},
+	} {
+		t.Run(fmt.Sprintf("%dch-%dHz", tc.channels, tc.rate), func(t *testing.T) {
+			const samples = 1024
+			input := make([]int16, samples*int(tc.channels))
+			for i := range samples {
+				if tc.channels > 2 {
+					// A center-only signal must reach both stereo channels;
+					// dropping all but the first two channels would be silent.
+					input[i*int(tc.channels)+2] = 1000
+				} else {
+					for ch := range int(tc.channels) {
+						input[i*int(tc.channels)+ch] = int16(1000 * (ch + 1))
+					}
+				}
+			}
+			plane := (*byte)(unsafe.Pointer(&input[0]))
+			native := avFrame{Samples: samples, Format: sampleS16, SampleRate: tc.rate, ExtendedData: &plane}
+			ff.layoutDefault(&native.ChannelLayout, tc.channels)
+			defer ff.layoutUninit(&native.ChannelLayout)
+			d := &AudioDecoder{ff: ff, frame: AudioFrame{SampleRate: OutputRate}}
+			defer d.Close()
+			frame, err := d.convertFrame(&native)
+			runtime.KeepAlive(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if frame.Channels != 2 || frame.SampleRate != 48000 || len(frame.Samples)%2 != 0 {
+				t.Fatalf("output format = %d channels, %d Hz, %d samples", frame.Channels, frame.SampleRate, len(frame.Samples))
+			}
+			expected := (samples*OutputRate + int(tc.rate) - 1) / int(tc.rate)
+			if frame.Frames() < expected-256 || frame.Frames() > expected {
+				t.Fatalf("output frames = %d, want about %d", frame.Frames(), expected)
+			}
+			// Inspect the middle of the interleaved S16 output, past any delay.
+			mid := frame.Frames() / 2 * 2
+			if frame.Samples[mid] <= 0 || frame.Samples[mid+1] <= 0 {
+				t.Fatalf("signal missing from stereo output: %v", frame.Samples[mid:mid+2])
+			}
+			if tc.channels == 2 && (frame.Samples[mid] != 1000 || frame.Samples[mid+1] != 2000) {
+				t.Fatalf("S16 stereo is not interleaved: %v", frame.Samples[mid:mid+2])
+			}
+		})
 	}
 }
 
