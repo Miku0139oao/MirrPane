@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $raw = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.version }}" } else { "${{ github.ref_name }}" }
+          $clean = $raw.Trim().TrimStart('v', 'V')
+          if ([string]::IsNullOrWhiteSpace($clean)) { throw "empty version" }
+          "version=$clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Configure 64-bit MinGW GCC for cgo
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'C:\msys64\mingw64\bin',
+            'C:\mingw64\bin',
+            'C:\ProgramData\mingw64\mingw64\bin'
+          )
+          $found = $candidates | Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } | Select-Object -First 1
+          if ($null -eq $found) {
+            $cmd = Get-Command gcc.exe -ErrorAction SilentlyContinue
+            if ($null -ne $cmd) { $found = Split-Path -Parent $cmd.Source }
+          }
+          if ($null -eq $found) { throw "64-bit MinGW gcc.exe not found on runner" }
+          $found | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CGO_ENABLED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC=$($found -replace '\\','/')/gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & (Join-Path $found 'gcc.exe') --version
+
+      - name: Cache FFmpeg win64 dev package
+        uses: actions/cache@v4
+        with:
+          path: third_party/ffmpeg
+          key: ffmpeg-win64-${{ hashFiles('scripts/fetch-ffmpeg.ps1') }}
+
+      - name: Fetch FFmpeg dev package
+        shell: pwsh
+        run: .\scripts\fetch-ffmpeg.ps1
+
+      - name: Run tests and analyze
+        shell: pwsh
+        run: |
+          Push-Location backend
+          $env:PATH = "$PWD\..\third_party\ffmpeg\bin;$env:PATH"
+          go test ./internal/...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+          Push-Location frontend
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          flutter analyze
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Build and package release
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          .\package.ps1 -Version $ver
+          $zipName = "MirrPane-$ver-win64.zip"
+          $zipPath = Join-Path "dist" $zipName
+          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zipName" | Set-Content -Path "$zipPath.sha256" -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: 鏡屏 MirrPane v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/MirrPane-${{ steps.ver.outputs.version }}-win64.zip
+            dist/MirrPane-${{ steps.ver.outputs.version }}-win64.zip.sha256

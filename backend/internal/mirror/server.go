@@ -1,0 +1,663 @@
+// Package mirror receives the AirPlay screen-mirroring TCP stream, decrypts it
+// and hands out H.264/H.265 access units in Annex-B form.
+//
+// The wire format and the key derivation follow UxPlay (GPLv3),
+// lib/raop_rtp_mirror.c, lib/mirror_buffer.c and lib/byteutils.c. Byte order is
+// mixed and matters:
+//
+//	payload length (header 0:3)   little endian
+//	NTP timestamp (header 8:15)   big endian
+//	duration     (header 64:71)   big endian
+//	NAL length prefixes           big endian
+//	parameter-set lengths         big endian
+//	geometry floats               host order (little endian on x86)
+package mirror
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha512"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"net"
+	"sync"
+	"time"
+)
+
+// HeaderLen is the fixed header every mirror payload is prefixed with.
+const HeaderLen = 128
+
+// maxPayload bounds one packet. A 4K IDR frame is well under this; anything
+// larger is a desynchronised stream, not a frame.
+const maxPayload = 8 << 20
+
+// reportTrailer is the size of the opaque trailer some streaming reports carry
+// when the sender's screen is locked. The plist occupies the front of the body.
+const reportTrailer = 25000
+
+// AnnexBStartCode begins every NAL unit handed to the decoder.
+var AnnexBStartCode = []byte{0x00, 0x00, 0x00, 0x01}
+
+// Codec identifies the video codec the sender chose.
+type Codec int
+
+// The two codecs AirPlay mirroring uses.
+const (
+	CodecUnknown Codec = iota
+	CodecH264
+	CodecH265
+)
+
+func (c Codec) String() string {
+	switch c {
+	case CodecH264:
+		return "h264"
+	case CodecH265:
+		return "h265"
+	default:
+		return "unknown"
+	}
+}
+
+// Frame is one decodable access unit.
+type Frame struct {
+	// Data is the access unit in Annex-B byte-stream form, including the
+	// parameter sets when they were prepended.
+	Data []byte
+	// NTP is the sender's timestamp: naive little-endian read of header 8:15,
+	// exactly as UxPlay decodes it, so it compares equal to the value the
+	// parameter-set packet stored.
+	NTP uint64
+	// Duration is the frame duration from the header, in nanoseconds.
+	Duration uint64
+	// Codec is the codec the sender is using.
+	Codec Codec
+	// Valid is false when the payload failed its integrity checks, which in
+	// practice means the AES key was wrong.
+	Valid bool
+}
+
+// Size is the source display geometry announced in unencrypted packets.
+// Offsets describe what the sender cropped away on the device.
+type Size struct {
+	Width, Height             int
+	XOffset, YOffset          int
+	SourceWidth, SourceHeight int
+}
+
+// Handlers receive what the stream produces.
+type Handlers struct {
+	// OnFrame is called for every decodable access unit.
+	OnFrame func(*Frame)
+	// OnGeometry is called when the sender announces or changes the display size.
+	OnGeometry func(Size)
+	// OnPause is called when the sender suspends the video stream (device asleep).
+	OnPause func()
+	// OnResume is called when the stream comes back after a pause.
+	OnResume func()
+	// OnReport is called with each streaming-report plist payload.
+	OnReport func([]byte)
+	// OnConnected is called when a sender opens the stream connection.
+	OnConnected func(remote string)
+	// OnDisconnected is called when the sender closes it.
+	OnDisconnected func()
+	// OnStats collects byte counts for the UI.
+	OnStats func(received uint64, frames uint64)
+}
+
+// KeyCandidate is one possible FairPlay audio key. UxPlay hashes that key with
+// the pairing ECDH secret when pairing took place; a sender that expects the
+// unhashed key would otherwise produce undecryptable frames, so the stream tries
+// each candidate on its first encrypted packet and keeps the one that yields
+// well-formed NAL framing. The stream key and IV are derived from Key.
+type KeyCandidate struct {
+	Name string
+	Key  []byte
+}
+
+// resolvedKey is a stream key and IV already derived from a KeyCandidate.
+type resolvedKey struct {
+	Name string
+	Key  []byte
+	IV   []byte
+}
+
+// Server listens for the mirror stream.
+type Server struct {
+	log      *log.Logger
+	handlers Handlers
+
+	ln   net.Listener
+	port int
+
+	mu         sync.Mutex
+	candidates []resolvedKey
+	conn       net.Conn
+
+	received uint64
+	frames   uint64
+
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+// NewServer creates a server that has not bound a port yet.
+func NewServer(logger *log.Logger, handlers Handlers) *Server {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return &Server{log: logger, handlers: handlers, closed: make(chan struct{})}
+}
+
+// Start binds an ephemeral TCP port on every interface and begins accepting.
+// The port is what /setup reports as the mirror data port.
+//
+// The address is left empty rather than pinned to 0.0.0.0 so the socket is
+// dual-stack: mDNS publishes the interface's AAAA record alongside its A record,
+// and a sender that resolved the IPv6 address would otherwise find nothing
+// listening. The control port has the same property, so a sender that reached it
+// over IPv6 expects the mirror port to answer there too.
+func (s *Server) Start() (int, error) {
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, fmt.Errorf("mirror: listen: %w", err)
+	}
+	s.ln = ln
+	s.port = ln.Addr().(*net.TCPAddr).Port
+	go s.acceptLoop()
+	return s.port, nil
+}
+
+// Port reports the bound port.
+func (s *Server) Port() int { return s.port }
+
+// logf logs through the server's logger, tolerating a nil one so that tests can
+// build a Server without a logger.
+func (s *Server) logf(format string, args ...any) {
+	if s.log != nil {
+		s.log.Printf(format, args...)
+	}
+}
+
+// DropClient closes the active mirror connection without shutting down the
+// listener, allowing a new sender to connect immediately.
+func (s *Server) DropClient() {
+	s.mu.Lock()
+	c := s.conn
+	s.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+// Close stops listening and drops the active stream.
+func (s *Server) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.closed)
+		if s.ln != nil {
+			err = s.ln.Close()
+		}
+		s.mu.Lock()
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
+		s.mu.Unlock()
+	})
+	return err
+}
+
+// DeriveStreamKey computes the AES-128 key and IV that protect the mirror
+// stream. The audio key comes from the FairPlay exchange; the stream connection
+// ID is chosen by the sender in /setup.
+//
+// UxPlay, lib/mirror_buffer.c mirror_buffer_init_aes, hashes with sha_init(),
+// which is SHA-512 (lib/crypto.c), and keeps the first 16 bytes:
+//
+//	SHA512("AirPlayStreamKey" + decimal(id) || audioKey)[:16]
+//	SHA512("AirPlayStreamIV"  + decimal(id) || audioKey)[:16]
+//
+// Using SHA-256 here produces a plausible-looking key that decrypts to noise.
+func DeriveStreamKey(streamConnectionID uint64, audioKey []byte) (key, iv [16]byte) {
+	k := sha512.New()
+	fmt.Fprintf(k, "AirPlayStreamKey%d", streamConnectionID)
+	k.Write(audioKey)
+	copy(key[:], k.Sum(nil))
+
+	ivh := sha512.New()
+	fmt.Fprintf(ivh, "AirPlayStreamIV%d", streamConnectionID)
+	ivh.Write(audioKey)
+	copy(iv[:], ivh.Sum(nil))
+	return key, iv
+}
+
+// Prepare sets the key material for the next stream connection. It must be
+// called before /setup replies with this server's port, because the sender
+// connects as soon as it has the reply.
+//
+// The first candidate is the one the protocol calls for; the rest are fallbacks
+// the stream tests against the first encrypted packet.
+func (s *Server) Prepare(streamConnectionID uint64, audioKeys ...KeyCandidate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.candidates = s.candidates[:0]
+	for _, c := range audioKeys {
+		key, iv := DeriveStreamKey(streamConnectionID, c.Key)
+		name := c.Name
+		if name == "" {
+			name = "stream"
+		}
+		s.candidates = append(s.candidates, resolvedKey{Name: name, Key: key[:], IV: iv[:]})
+	}
+}
+
+// ResetKey forgets the key so a stale stream cannot be decrypted with it.
+func (s *Server) ResetKey() {
+	s.mu.Lock()
+	s.candidates = nil
+	s.mu.Unlock()
+}
+
+// Stats reports bytes and access units seen since the stream opened.
+func (s *Server) Stats() (bytes, frames uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.received, s.frames
+}
+
+func (s *Server) acceptLoop() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		go s.serve(conn)
+	}
+}
+
+func (s *Server) serve(conn net.Conn) {
+	defer conn.Close()
+
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(10 * time.Second)
+		_ = tc.SetNoDelay(true)
+	}
+
+	remote := conn.RemoteAddr().String()
+	s.logf("mirror: sender connected from %s", remote)
+
+	s.mu.Lock()
+	// Only one mirror stream is served at a time; a new sender replaces the old.
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
+	s.conn = conn
+	candidates := append([]resolvedKey(nil), s.candidates...)
+	s.received, s.frames = 0, 0
+	s.mu.Unlock()
+
+	if s.handlers.OnConnected != nil {
+		s.handlers.OnConnected(remote)
+	}
+	defer func() {
+		s.mu.Lock()
+		if s.conn == conn {
+			s.conn = nil
+		}
+		s.mu.Unlock()
+		s.logf("mirror: sender disconnected (%s)", remote)
+		if s.handlers.OnDisconnected != nil {
+			s.handlers.OnDisconnected()
+		}
+	}()
+
+	st := &streamState{srv: s, active: -1}
+	for _, c := range candidates {
+		block, err := aes.NewCipher(c.Key)
+		if err != nil {
+			s.logf("mirror: candidate %q: %v", c.Name, err)
+			continue
+		}
+		st.cands = append(st.cands, cipher.NewCTR(block, c.IV))
+		st.names = append(st.names, c.Name)
+	}
+	if len(st.cands) == 0 {
+		s.logf("mirror: no stream key prepared; encrypted packets cannot be read")
+	}
+
+	st.read(bufio.NewReaderSize(conn, 1<<20))
+}
+
+// streamState is the per-connection decode state.
+type streamState struct {
+	srv *Server
+
+	// cands are the key candidates in preference order. active is the index of
+	// the one that produced a well-formed first frame, or -1 until one is known.
+	cands  []cipher.Stream
+	names  []string
+	active int
+
+	codec     Codec
+	codecSet  bool
+	h265      bool
+	spsPPS    []byte
+	spsNTP    uint64
+	haveSPS   bool
+	suspended bool
+}
+
+func (st *streamState) read(r io.Reader) {
+	header := make([]byte, HeaderLen)
+	var scratch []byte
+	for {
+		if _, err := io.ReadFull(r, header); err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+				st.srv.logf("mirror: header read: %v", err)
+			}
+			return
+		}
+		// UxPlay reads the payload length little-endian (byteutils_get_int).
+		n := binary.LittleEndian.Uint32(header[0:4])
+		if n > maxPayload {
+			st.srv.logf("mirror: payload length %d exceeds limit; dropping connection", n)
+			return
+		}
+		if cap(scratch) < int(n) {
+			scratch = make([]byte, n)
+		}
+		payload := scratch[:n]
+		if n > 0 {
+			if _, err := io.ReadFull(r, payload); err != nil {
+				st.srv.logf("mirror: payload read: %v", err)
+				return
+			}
+		}
+		st.srv.mu.Lock()
+		st.srv.received += uint64(HeaderLen + int(n))
+		st.srv.mu.Unlock()
+
+		st.handle(header, payload)
+	}
+}
+
+func (st *streamState) handle(header, payload []byte) {
+	// UxPlay reads the timestamp with byteutils_get_long, which is a little
+	// endian read (lib/byteutils.c). The duration field is big endian.
+	ntp := binary.LittleEndian.Uint64(header[8:16])
+	duration := binary.BigEndian.Uint64(header[64:72])
+
+	switch header[4] {
+	case 0x00:
+		st.handleVideo(payload, ntp, duration)
+	case 0x01:
+		st.handleParams(header, payload, ntp)
+	case 0x05:
+		st.handleReport(payload)
+	case 0x02:
+		// Legacy once-per-second heartbeat with no payload.
+	default:
+		st.srv.logf("mirror: unexpected packet type %02x size %d", header[4], len(payload))
+	}
+}
+
+// handleReport forwards the sender's performance report. When the device is
+// locked it appends a 25 kB trailer that is not part of the plist.
+func (st *streamState) handleReport(payload []byte) {
+	if len(payload) == 0 || st.srv.handlers.OnReport == nil {
+		return
+	}
+	plist := payload
+	if len(payload) > reportTrailer {
+		plist = payload[:len(payload)-reportTrailer]
+	}
+	st.srv.handlers.OnReport(plist)
+}
+
+// handleVideo decrypts a VCL packet, converts its length-prefixed NAL units to
+// Annex-B and reports the result.
+func (st *streamState) handleVideo(payload []byte, ntp, duration uint64) {
+	// A pending SPS/PPS only belongs to this frame if the sender stamped them
+	// with the same time; otherwise they are stale and must be dropped.
+	if st.haveSPS && st.spsNTP != ntp {
+		st.spsPPS = nil
+		st.haveSPS = false
+	}
+
+	var body []byte
+	valid := true
+	switch {
+	case len(st.cands) == 0:
+		body = append([]byte(nil), payload...)
+		valid = false
+	case st.active < 0:
+		// The first encrypted packet decides which key derivation this sender
+		// uses. A wrong key cannot produce well-formed length prefixes, so the
+		// test is reliable and costs one extra decrypt per candidate.
+		body, valid = st.chooseKey(payload)
+	default:
+		body = make([]byte, len(payload))
+		// The keystream runs continuously across packets: packet boundaries do
+		// not reset the counter.
+		st.cands[st.active].XORKeyStream(body, payload)
+		valid = st.toAnnexB(body)
+	}
+
+	data := make([]byte, 0, len(st.spsPPS)+len(body))
+	data = append(data, st.spsPPS...)
+	data = append(data, body...)
+
+	frame := &Frame{Data: data, NTP: ntp, Duration: duration, Codec: st.codec, Valid: valid}
+	if st.haveSPS {
+		st.spsPPS = nil
+		st.haveSPS = false
+	}
+	st.srv.mu.Lock()
+	st.srv.frames++
+	st.srv.mu.Unlock()
+	if st.srv.handlers.OnFrame != nil {
+		st.srv.handlers.OnFrame(frame)
+	}
+}
+
+// chooseKey tries each key candidate against the first encrypted packet and
+// locks in the first that yields well-formed NAL framing. If none do, the
+// preferred candidate is kept so the stream continues with the protocol's
+// documented behaviour and the failure is visible in the log.
+func (st *streamState) chooseKey(payload []byte) (body []byte, valid bool) {
+	var first []byte
+	for i, stream := range st.cands {
+		out := make([]byte, len(payload))
+		stream.XORKeyStream(out, payload)
+		if i == 0 {
+			first = out
+		}
+		if len(out) >= 8 {
+			st.srv.logf("mirror: candidate %q decrypts to % x", st.names[i], out[:8])
+		}
+		if st.toAnnexB(out) {
+			st.active = i
+			st.srv.logf("mirror: key candidate %q decoded the first frame", st.names[i])
+			return out, true
+		}
+	}
+	st.active = 0
+	st.srv.logf("mirror: no key candidate produced valid framing (tried %v)", st.names)
+	return first, false
+}
+
+// toAnnexB rewrites the length prefixes in place. It mirrors the validation in
+// UxPlay: the unit must fit, and the forbidden bit must be clear.
+//
+// The prefix is big endian (byteutils_get_int_be); the sender's own encoder
+// writes it as a little-endian length, which the reference reads through ntohl.
+func (st *streamState) toAnnexB(b []byte) bool {
+	off := 0
+	for off < len(b) {
+		if off+4 > len(b) {
+			return false
+		}
+		size := int(binary.BigEndian.Uint32(b[off:]))
+		if size <= 0 || size > len(b)-off-4 {
+			return false
+		}
+		copy(b[off:off+4], AnnexBStartCode)
+		head := off + 4
+		if b[head]&0x80 != 0 {
+			return false
+		}
+		off = head + size
+	}
+	return true
+}
+
+// handleParams stores SPS/PPS (or VPS/SPS/PPS) to prepend to the next frame.
+func (st *streamState) handleParams(header, payload []byte, ntp uint64) {
+	if len(payload) == 0 {
+		return
+	}
+
+	if len(payload) >= 8 && string(payload[4:8]) == "hvc1" {
+		st.setCodec(CodecH265)
+		vps, sps, pps, ok := splitHEVC(payload)
+		if !ok {
+			st.srv.logf("mirror: malformed HEVC parameter-set packet")
+			return
+		}
+		st.spsPPS = packParameterSets(vps, sps, pps)
+	} else {
+		st.setCodec(CodecH264)
+		sps, pps, ok := splitAVC(payload)
+		if !ok {
+			st.srv.logf("mirror: malformed H.264 parameter-set packet")
+			return
+		}
+		st.spsPPS = packParameterSets(sps, pps)
+	}
+
+	st.spsNTP = ntp
+	st.haveSPS = true
+
+	// The header carries the geometry; report it alongside the codec.
+	if st.srv.handlers.OnGeometry != nil {
+		st.srv.handlers.OnGeometry(Size{
+			Width:        int(geometryFloat(header[56:60])),
+			Height:       int(geometryFloat(header[60:64])),
+			XOffset:      int(geometryFloat(header[48:52])),
+			YOffset:      int(geometryFloat(header[52:56])),
+			SourceWidth:  int(geometryFloat(header[16:20])),
+			SourceHeight: int(geometryFloat(header[20:24])),
+		})
+	}
+
+	// 0x56/0x5e mean the sender suspended video (screen off); 0x16/0x1e resume.
+	switch header[6] {
+	case 0x56, 0x5e:
+		if !st.suspended {
+			st.suspended = true
+			if st.srv.handlers.OnPause != nil {
+				st.srv.handlers.OnPause()
+			}
+		}
+	case 0x16, 0x1e:
+		if st.suspended {
+			st.suspended = false
+			if st.srv.handlers.OnResume != nil {
+				st.srv.handlers.OnResume()
+			}
+		}
+	}
+}
+
+func (st *streamState) setCodec(c Codec) {
+	if st.codecSet && st.codec != c {
+		st.srv.logf("mirror: sender switched codec %v -> %v; dropping", st.codec, c)
+	}
+	if st.codecSet {
+		return
+	}
+	st.codec = c
+	st.codecSet = true
+	st.h265 = c == CodecH265
+	st.srv.logf("mirror: sender uses %s", c)
+}
+
+// splitAVC extracts SPS and PPS from an unencrypted parameter-set payload.
+//
+// Layout, from UxPlay lib/raop_rtp_mirror.c:
+//
+//	[0:6]   header
+//	[6:8]   SPS length, big endian
+//	[8:8+n] SPS
+//	[..+2]  PPS length, big endian at spsLen+9
+//	[...]   PPS at spsLen+11
+func splitAVC(payload []byte) (sps, pps []byte, ok bool) {
+	if len(payload) < 11 {
+		return nil, nil, false
+	}
+	spsLen := int(binary.BigEndian.Uint16(payload[6:8]))
+	if spsLen <= 0 || 8+spsLen+3 > len(payload) {
+		return nil, nil, false
+	}
+	ppsLen := int(binary.BigEndian.Uint16(payload[spsLen+9 : spsLen+11]))
+	if ppsLen <= 0 || spsLen+11+ppsLen > len(payload) {
+		return nil, nil, false
+	}
+	return payload[8 : 8+spsLen], payload[spsLen+11 : spsLen+11+ppsLen], true
+}
+
+// splitHEVC extracts VPS, SPS and PPS. Each unit is introduced by a four-byte
+// tag followed by a big-endian length at offset 3.
+func splitHEVC(payload []byte) (vps, sps, pps []byte, ok bool) {
+	read := func(ptr []byte, tag []byte) ([]byte, int, bool) {
+		if len(ptr) < 5 || !bytes.Equal(ptr[:4], tag) {
+			return nil, 0, false
+		}
+		n := int(binary.BigEndian.Uint16(ptr[3:5]))
+		if n <= 0 || 5+n > len(ptr) {
+			return nil, 0, false
+		}
+		return ptr[5 : 5+n], 5 + n, true
+	}
+	vps, off, ok := read(payload[0x75:], []byte{0xa0, 0x00, 0x01, 0x00})
+	if !ok {
+		return nil, nil, nil, false
+	}
+	sps, off2, ok := read(payload[0x75+off:], []byte{0xa1, 0x00, 0x01, 0x00})
+	if !ok {
+		return nil, nil, nil, false
+	}
+	pps, _, ok = read(payload[0x75+off+off2:], []byte{0xa2, 0x00, 0x01, 0x00})
+	if !ok {
+		return nil, nil, nil, false
+	}
+	return vps, sps, pps, true
+}
+
+// packParameterSets joins NAL units with Annex-B start codes.
+func packParameterSets(units ...[]byte) []byte {
+	var n int
+	for _, u := range units {
+		n += len(AnnexBStartCode) + len(u)
+	}
+	out := make([]byte, 0, n)
+	for _, u := range units {
+		out = append(out, AnnexBStartCode...)
+		out = append(out, u...)
+	}
+	return out
+}
+
+// geometryFloat reads one of the header's geometry fields. byteutils_get_float
+// is a plain memcpy, so the value is host order; every platform we ship is
+// little endian.
+func geometryFloat(b []byte) float32 {
+	return math.Float32frombits(binary.LittleEndian.Uint32(b))
+}

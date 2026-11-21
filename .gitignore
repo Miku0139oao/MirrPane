@@ -1,0 +1,27 @@
+# Build & release outputs
+dist/
+backend/*.exe
+backend/*.dll
+backend/config/
+backend/logs/
+backend/*.log
+backend/.run.err
+backend/.run.out
+
+# Downloaded third-party binaries (see third_party/README.md and scripts/fetch-ffmpeg.ps1)
+third_party/ffmpeg/
+third_party/extract/
+third_party/*.zip
+
+# Flutter / Dart
+frontend/build/
+frontend/.dart_tool/
+frontend/windows/flutter/ephemeral/
+frontend/packages/**/.dart_tool/
+frontend/packages/**/build/
+frontend/packages/**/windows/flutter/ephemeral/
+*.iml
+
+# OS / Editor
+.DS_Store
+Thumbs.db
