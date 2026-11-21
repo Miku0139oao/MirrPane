@@ -1,97 +1,194 @@
-# 鏡屏 (MirrPane)
+# 鏡屏 MirrPane
 
-[![CI](https://github.com/Miku0139oao/MirrPane/actions/workflows/ci.yml/badge.svg)](https://github.com/Miku0139oao/MirrPane/actions/workflows/ci.yml)
-[![Release](https://github.com/Miku0139oao/MirrPane/actions/workflows/release.yml/badge.svg)](https://github.com/Miku0139oao/MirrPane/actions/workflows/release.yml)
+**Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + Flutter** 打造，將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
 
-**鏡屏 (MirrPane)** 是一款專為 Windows 打造的 AirPlay 螢幕鏡像接收器，將電腦變成 iPhone / iPad 的無線外接顯示器。整包解壓即用，不寫入系統登錄檔、不需額外安裝執行期環境。
+- **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
+- **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
+- **最新版本**：`v0.3.1`
 
 ---
 
 ## 主要特色
 
-- **D3D11VA 硬體加速解碼**：透過 FFmpeg `D3D11VA` 進行低延遲 H.264 硬體解碼，不支援的環境自動退回 CPU 軟體解碼。
-- **Go 後端不依賴 CGO**：FairPlay、配對、AirPlay 協定與串流處理採用 Go；FFmpeg 透過執行時 DLL 綁定呼叫，後端以 `CGO_ENABLED=0` 建置，無需 MinGW 或 FFmpeg 開發套件。介面使用 Dart／Flutter，Windows 紋理與視窗橋接保留少量 C++。
-- **FFmpeg 自動偵測與下載**：優先使用現有相容共享函式庫；缺少時下載最新版 Windows x64 shared build，驗證 GitHub 提供的 SHA256 後安裝至程式目錄。下載期間會顯示進度階段與失敗原因。
-- **低延遲無卡頓管線**：直通式 Annex-B access unit 解碼、零複製共享記憶體（3-slot mailbox + Windows 事件喚醒）直繪 Flutter 紋理。
-- **同步音訊播放**：支援 AAC-ELD 音訊串流（`winmm waveOut` 原生驅動），具備即時音量／靜音控制與三檔抗抖動緩衝（超低延遲 30 ms / 標準平衡 40 ms / 弱網穩定 60 ms）。
-- **4 分頁進階設定**：
-  - **一般**：自訂 AirPlay 廣播名稱、本機連線資訊、即時統計與配對身分重設。
-  - **圖形與解碼**：虛擬顯示解析度（720p / 1080p / 1440p / 4K）、幀率上限（60 / 30 fps）、解碼模式（D3D11VA / 軟體 CPU）、色彩範圍（Auto / Full / Limited）、色彩轉換演算法。
-  - **畫面與色彩（GPU 即時生效）**：貼圖縮放濾鏡（`FilterQuality`）、亮度／對比度／飽和度即時調整、水平鏡像翻轉、畫面旋轉、填滿／比例切換、效能監控 HUD 四角位置與頂列隱藏時間。
-  - **音訊**：音量與靜音記憶、抗抖動緩衝設定。
-- **綠色可攜**：所有設定（`config/`）、截圖（`screenshots/`）與日誌（`logs/`）皆保存在程式目錄內。
+- **硬體加速低延遲解碼**：透過 FFmpeg **D3D11VA** 進行 H.264 硬體加速解碼，採用直通式 Annex-B access unit 管線；不支援硬解的環境可退回 CPU 軟體解碼，也可在設定中指定軟解。
+- **零 CGO Go 後端**：以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 MinGW 或 C 開發標頭檔。
+- **共享記憶體影格渲染**：後端將 RGBA 影格發布至 Windows 共享記憶體（`Local\YingpingFrames`），透過 3-slot mailbox 與事件喚醒機制，由原生 C++ 橋接（`yingping_frames`）提供 Flutter 紋理，省去跨程序影像序列化。
+- **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔抗抖動緩衝（超低延遲 `30 ms` / 標準平衡 `40 ms` / 弱網穩定 `60 ms`）。
+- **自動化 FFmpeg 管理**：支援環境自動偵測與 SHA256 驗證下載，開箱即用。
+- **綠色免安裝**：設定檔（`config.json`）與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔。
+
+---
+
+## 系統架構
+
+```text
+iPhone / iPad (AirPlay / mDNS)
+        │
+        ▼
+airplayd (Go Sidecar, CGO_ENABLED=0)
+  ├── mDNS / Bonjour 廣播 (zeroconf)
+  ├── FairPlay 金鑰交換與 AirPlay 配對 (pair-setup / pair-verify)
+  ├── 視訊解碼：purego 綁定 FFmpeg D3D11VA (H.264 Annex-B)
+  └── 音訊輸出：AAC-ELD → Windows winmm waveOut (30 / 40 / 60 ms 緩衝)
+        │
+        ▼  視訊：3-slot mailbox 共享記憶體 (Local\YingpingFrames) + Windows 事件喚醒
+        │  狀態與控制：本機 HTTP API (IPC)
+        ▼
+Flutter Desktop UI (yingping)
+  └── yingping_frames (C++ Windows Texture 橋接)
+```
+
+---
+
+## 專案目錄結構
+
+```text
+MirrPane/
+├── .github/workflows/          # CI 與 Release 自動化工作流程
+├── backend/                    # Go 後端 (module: github.com/miku0139/airplay-go/backend)
+│   ├── cmd/
+│   │   ├── airplayd/           # 主後端 sidecar 與本機 HTTP API (main.go, sink.go, state.go, record.go 等)
+│   │   └── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
+│   ├── internal/
+│   │   ├── audio/              # 音訊串流接收、解密與 AAC-ELD 解碼調度
+│   │   ├── audioout/           # Windows winmm waveOut 音訊輸出與抗抖動緩衝
+│   │   ├── config/             # config.json 讀寫管理
+│   │   ├── decode/             # purego FFmpeg DLL 綁定、視訊與音訊解碼封裝
+│   │   ├── fairplay/           # FairPlay 金鑰交換與解密實作
+│   │   ├── ffmpeg/             # FFmpeg 執行環境偵測、下載、驗證與快取管理
+│   │   ├── frames/             # 影格傳遞與共享記憶體格式
+│   │   ├── ipc/                # AirPlay RTSP 控制端點與封包解析
+│   │   ├── mdns/               # AirPlay mDNS / Bonjour 廣播與裝置發現
+│   │   ├── mirror/             # AirPlay 螢幕鏡像串流接收與 Annex-B 處理
+│   │   ├── pairing/            # AirPlay pair-setup / pair-verify 配對協定
+│   │   ├── protocol/           # AirPlay 裝置資訊、功能宣告與區網介面選擇
+│   │   └── receiver/           # 接收器核心調度
+│   ├── build.ps1               # 後端建置腳本
+│   ├── go.mod
+│   └── go.sum
+├── frontend/                   # Flutter 桌面前端 (yingping)
+│   ├── assets/                 # 靜態資源 (logo.png 等)
+│   ├── lib/
+│   │   ├── main.dart           # UI 主程式、視窗與 4 分頁設定介面
+│   │   ├── receiver_api.dart   # 呼叫後端本機 HTTP API 的用戶端
+│   │   └── ui_prefs.dart       # 前端介面偏好設定
+│   ├── packages/
+│   │   └── yingping_frames/    # 本地 Flutter 插件 (C++ Windows 紋理與共享記憶體橋接)
+│   ├── windows/                # Flutter Windows 平台原生工程與 CMake 設定
+│   └── pubspec.yaml
+├── scripts/
+│   ├── fetch-ffmpeg.ps1        # 偵測或下載最新版 Windows x64 FFmpeg shared build (SHA256)
+│   └── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
+├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
+├── LICENSE                     # GPL-3.0 授權文件
+├── README.md                   # 專案說明文件
+└── package.ps1                 # 整包建置與打包 PowerShell 腳本
+```
 
 ---
 
 ## 快速使用
 
-1. 前往 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新 `MirrPane-*-win64.zip` 並解壓縮到任意非系統保護資料夾。
-2. 執行 `MirrPane.exe`（第一次啟動時請在 Windows 防火牆提示選擇**允許私人網路存取**）。
-3. 在 iPhone / iPad 開啟「控制中心」→「螢幕鏡像輸出」，選擇「**鏡屏**」。
-
-### 快捷鍵
-
-| 快捷鍵 | 功能 |
-|---|---|
-| `F11` / 雙擊畫面 | 切換全螢幕（`Esc` 離開） |
-| `Ctrl + T` | 視窗置頂 |
-| `R` | 畫面順時針旋轉 90° |
-| `H` | 水平鏡像翻轉 |
-| `Z` | 切換完整比例 / 填滿視窗 |
-| `M` | 靜音切換 |
-| `Ctrl + S` | 無損 PNG 截圖（存至 `screenshots\`） |
-| `Tab` | 切換左下／角落效能監控 HUD |
-| `Ctrl + L` | 檢視執行日誌 |
-| `Ctrl + ,` | 開啟設定視窗 |
+1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.3.1`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
+2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
+3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
+4. 雙擊視窗或按下 `F11` 可切換全螢幕；介面內建進階設定分頁（一般設定、連線資訊、即時統計、配對重設等）與快捷鍵操作。
 
 ---
 
 ## 本機開發與建置
 
-### 需求工具
+### 環境需求
 
-- **Go** `1.26+`（Windows x64，`CGO_ENABLED=0`）
-- **Flutter** `3.47+`（已啟用 Windows desktop 與 Visual Studio C++ Build Tools）
+- **Go**：`1.26+`
+- **Flutter**：`3.47+`（Dart SDK `^3.13.5`）
+- **建置工具**：Visual Studio C++ Build Tools、CMake、PowerShell
 
-Go 後端的編譯不需要 FFmpeg、C headers 或 C 編譯器；執行解碼測試與接收器時才需要 FFmpeg 共享 DLL。FFmpeg 仍負責 H.264／AAC-ELD 解碼與 D3D11VA 硬解，並未改寫成 Go 解碼器。
+### 建置步驟
 
-### 建置指令
+1. **下載 FFmpeg 共享函式庫**（於專案根目錄執行，自動驗證 SHA256）：
 
-```powershell
-# 1. 偵測本機開發 runtime；缺少時下載、驗證最新版共享 DLL
-.\scripts\fetch-ffmpeg.ps1
+   ```powershell
+   .\scripts\fetch-ffmpeg.ps1
+   ```
 
-# 2. 執行後端測試
-$env:CGO_ENABLED = '0'
-cd backend
-go build ./...
-go test ./...
-cd ..
+2. **建置與測試 Go 後端**（從專案根目錄切換至 `backend/`，完成後返回）：
 
-# 3. 完整建置 Flutter + Go sidecar，輸出 dist\鏡屏-0.3.1\ 與 zip
-.\package.ps1
-```
+   ```powershell
+   $env:CGO_ENABLED = '0'
+   cd backend
+   go build ./...
+   go test ./...
+   cd ..
+   ```
 
-### FFmpeg 偵測與更新
+3. **整包建置與打包**（於專案根目錄執行）：
 
-搜尋順序為 `MIRRPANE_FFMPEG_DIR` 指定的 DLL 目錄、`airplayd.exe` 同目錄及其 `ffmpeg/` 快取、本機開發的 `third_party/ffmpeg/`，最後是系統 `ffmpeg.exe` 所在目錄與 `PATH`。四個 DLL 必須來自同一套 Windows x64 shared build；只有靜態連結的 `ffmpeg.exe` 不能提供這些共享函式庫。
+   ```powershell
+   .\package.ps1
+   ```
 
-可攜版會附帶 DLL，因此正常啟動與離線使用不需要下載。若移除 DLL，首次啟動會自動下載至 `backend/ffmpeg/`；已安裝的版本不會在每次啟動時被替換。開發時可使用 `scripts/fetch-ffmpeg.ps1 -Force` 重新檢查及下載最新版。若最新版變更 FFmpeg 主要 ABI 版本，程式會拒絕不相容的 DLL，需更新 MirrPane 的綁定後才能使用。
+### 驗證與測試項目
 
-FFmpeg ABI 定義已隨原始碼提交，包含結構大小／欄位位移的編譯期斷言及執行時版本檢查。只有維護者升級 ABI 時才需要執行 `scripts/generate-ffmpeg-abi.ps1`，詳見 [第三方函式庫說明](third_party/README.md)。
-
-### 驗證
-
-CI 在 Windows 上以 `CGO_ENABLED=0` 建置、測試並打包 Flutter 應用程式，另以 Linux 工作檢查不需要 FFmpeg 的 Go 協定／密碼學套件。FairPlay 的四種模式及中間雜湊由原始 C 實作的 1,024 組固定測試資料比對；解碼測試保留 H.264、AAC、色彩設定與硬解／軟解路徑。
-
-### TUN／VPN 與裝置發現
-
-Windows 會優先選擇具備 IPv4 閘道的 Ethernet／Wi-Fi 區網介面（包含 Hyper-V 外部交換器），避免把 AirPlay 廣播送往 TUN 的網際網路預設路由。`198.18.0.0/15`、CGNAT 與點對點隧道不會作為區網地址；日誌會記錄實際使用的介面名稱與索引。mDNS 套件固定至包含 Windows 多播介面修正的上游版本，接收器可在開啟 TUN 時維持區網廣播。
+- **Windows 建置驗證**：確保後端於 `CGO_ENABLED=0` 模式下正常編譯。
+- **跨平台協定測試**：於 Linux 環境執行 Go 協定與加密單元測試，包含 FairPlay 1024 組參考測試資料比對，並交叉編譯完整 Windows 後端。
 
 ---
 
-## 授權與致謝
+## `airplayd` 後端 CLI 參數
 
-本專案採用 **GPLv3** 授權（詳見 [LICENSE](LICENSE)）。
+`airplayd` 通常由 Flutter 前端作為 sidecar 自動啟動與管理，亦可獨立執行以進行測試或離線錄製除錯：
 
-AirPlay 協定實作、FairPlay 與 RAOP/Mirror 串流解析參考並移植自 [UxPlay](https://github.com/FDH2/UxPlay)（GPLv3）；視訊與音訊解碼採用 [FFmpeg](https://ffmpeg.org/)（GPLv3 共用函式庫由 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) 提供）。
+| 參數 | 預設值 | 說明 |
+| :--- | :--- | :--- |
+| `-name` | `"鏡屏"` | 設定檔首次建立時使用的 AirPlay 接收器名稱；之後以儲存的名稱為準 |
+| `-data` | 執行檔旁的 `config` 目錄 | 設定檔（`config.json`）與配對金鑰儲存資料夾 |
+| `-port` | `0`（優先嘗試 `7000`） | AirPlay 控制埠；設為 `0` 時優先使用 `7000` 否則自動挑選 |
+| `-api-port` | `0`（自動挑選） | 提供給 Flutter UI 溝通的本機 HTTP API 埠 |
+| `-width` | `0` | 虛擬顯示器寬度（設為 `0` 時讀取 `config.json`） |
+| `-height` | `0` | 虛擬顯示器高度（設為 `0` 時讀取 `config.json`） |
+| `-fps` | `0` | 虛擬顯示器最高幀率（設為 `0` 時讀取 `config.json`） |
+| `-record` | 空字串 | 將接收到的原始 H.264 鏡像串流儲存至指定資料夾供離線重播除錯 |
+| `-shm` | `Local\YingpingFrames` | 供 UI 讀取影格的 Windows 共享記憶體區段名稱 |
+| `-log` | 空字串 | 指定日誌檔案並啟用詳細記錄；未指定時仍會寫入預設的 `logs/airplayd.log` |
+| `-parent-pid` | `0` | 父行程 PID（由前端傳入，當 UI 關閉時自動結束後端） |
+| `-v` | `false` | 啟用詳細日誌輸出（verbose logging） |
+
+---
+
+## FFmpeg 偵測順序與網路排錯
+
+### FFmpeg 搜尋順序
+
+後端會依序從以下位置尋找 FFmpeg 共享函式庫（`.dll`），若未找到會在首次啟動時自動下載，也可透過 `backend/cmd/ffmpeg-setup` 或 `scripts/fetch-ffmpeg.ps1` 取得：
+
+1. 環境變數 `MIRRPANE_FFMPEG_DIR` 指定路徑
+2. 執行檔所在目錄及底下的 `ffmpeg/` 資料夾與快取
+3. 專案目錄下的 `third_party/ffmpeg/`
+4. 系統 `ffmpeg.exe` 所在目錄與環境變數 `PATH`
+
+需使用相容的 Windows x64 shared build；僅有靜態連結的 `ffmpeg.exe` 無法提供所需 DLL。可攜版已附帶共享函式庫，可離線啟動。支援的 DLL 版本與 ABI 維護方式，請見 [第三方函式庫說明](third_party/README.md)。
+
+### TUN / VPN 與裝置發現排錯
+
+若 iPhone / iPad 找不到接收器，除了網路與防火牆設定，也可能與 TUN 模式或 VPN 虛擬網卡的 mDNS 廣播路由有關：
+
+- MirrPane 會優先選擇具備 IPv4 Gateway 的 Ethernet / Wi-Fi 區網介面（包含 Hyper-V 外部交換器），並主動避開 TUN 介面、`198.18.0.0/15` 保留網段與 CGNAT 網段。
+- 若仍無法發現裝置，請確認電腦與手機位於同一區網、Windows 防火牆允許 `airplayd` 與區域網路 mDNS（UDP 5353）通訊；亦可暫時停用 VPN 的 TUN 模式協助排錯。
+
+---
+
+## 技術依賴與致謝
+
+### 主要技術依賴
+
+- **後端**：`github.com/ebitengine/purego`、`github.com/grandcat/zeroconf`、`howett.net/plist`、`golang.org/x/sys`、`github.com/google/uuid`
+- **前端**：Flutter Windows Desktop、自研 C++ 插件 `yingping_frames`
+
+### 致謝
+
+本專案參考並受益於以下開源專案：
+
+- [UxPlay](https://github.com/FDH2/UxPlay)
+- [FFmpeg](https://ffmpeg.org/)
+- [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
