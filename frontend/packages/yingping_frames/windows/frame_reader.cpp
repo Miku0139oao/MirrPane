@@ -35,6 +35,12 @@ static_assert(offsetof(FrameReader::Control, stride) == 0x028, "ctrl.stride");
 static_assert(offsetof(FrameReader::Control, publish) == 0x040, "ctrl.publish");
 static_assert(offsetof(FrameReader::Control, frame_seq) == 0x048, "ctrl.frame_seq");
 static_assert(offsetof(FrameReader::Control, dropped) == 0x068, "ctrl.dropped");
+static_assert(offsetof(FrameReader::Control, consumer_qpc) == 0x088,
+              "ctrl.consumer_qpc");
+static_assert(offsetof(FrameReader::Control, consumer_slot) == 0x090,
+              "ctrl.consumer_slot");
+static_assert(offsetof(FrameReader::Control, reserved_d) == 0x098,
+              "ctrl.reserved_d");
 static_assert(offsetof(FrameReader::Control, slots) == 0x100, "ctrl.slots");
 static_assert(sizeof(FrameReader::Control) == 0x1000, "control size");
 
@@ -43,6 +49,22 @@ static_assert(sizeof(FrameReader::Control) == 0x1000, "control size");
 uint64_t AtomicLoad64(volatile uint64_t* p) {
   return static_cast<uint64_t>(
       InterlockedCompareExchange64(reinterpret_cast<volatile LONG64*>(p), 0, 0));
+}
+
+// The shared counter the producer reads for its lag metric. The Go control
+// block names this word ConsumerAdopted (publisher.go, offset 0x098); the C++
+// header still calls it reserved_d[0], so it is written through that slot to
+// keep the header's layout contract untouched.
+volatile uint64_t& AdoptedCounter(FrameReader::Control* ctrl) {
+  return ctrl->reserved_d[0];
+}
+
+uint64_t QueryCounter() {
+  LARGE_INTEGER counter{};
+  if (!QueryPerformanceCounter(&counter)) {
+    return 0;
+  }
+  return static_cast<uint64_t>(counter.QuadPart);
 }
 
 }  // namespace
@@ -191,6 +213,13 @@ bool FrameReader::EnsureMapped() {
   base_ = static_cast<uint8_t*>(view);
   mapping_ = mapping;
 
+  // Announce this process as the consumer. The producer only uses these words
+  // for diagnostics, but stamping them makes a detached UI (PID 0) obvious.
+  InterlockedExchange(reinterpret_cast<volatile LONG*>(&ctrl->consumer_pid),
+                      static_cast<LONG>(GetCurrentProcessId()));
+  InterlockedExchange(reinterpret_cast<volatile LONG*>(&ctrl->consumer_flags),
+                      1);
+
   // The event is only a wake-up hint; polling still works without it.
   wchar_t event_name[128];
   wcsncpy_s(event_name, kMappingName, _TRUNCATE);
@@ -258,6 +287,19 @@ const FlutterDesktopPixelBuffer* FrameReader::OnFrame(size_t /*width*/,
         self->held_index_ = index;
         self->last_publish_ = publish;
         ++self->adopted_;
+
+        // Publish the consumer's progress so the producer can compute lag and
+        // freshness. Interlocked keeps the same ordering discipline as the rest
+        // of the control block.
+        const uint64_t adopted_qpc = QueryCounter();
+        InterlockedExchange(
+            reinterpret_cast<volatile LONG*>(&ctrl->consumer_slot),
+            static_cast<LONG>(index));
+        InterlockedExchange64(
+            reinterpret_cast<volatile LONG64*>(&ctrl->consumer_qpc),
+            static_cast<LONG64>(adopted_qpc));
+        InterlockedIncrement64(
+            reinterpret_cast<volatile LONG64*>(&AdoptedCounter(ctrl)));
 
         FlutterDesktopPixelBuffer& buffer = self->buffers_[index];
         buffer.buffer = self->base_ + kSlotDataOffset +

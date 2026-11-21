@@ -41,6 +41,7 @@ func TestControlLayout(t *testing.T) {
 		{"ConsumerPID", unsafe.Offsetof(c.ConsumerPID), 0x080},
 		{"ConsumerQPC", unsafe.Offsetof(c.ConsumerQPC), 0x088},
 		{"ConsumerSlot", unsafe.Offsetof(c.ConsumerSlot), 0x090},
+		{"ConsumerAdopted", unsafe.Offsetof(c.ConsumerAdopted), 0x098},
 		{"Slots", unsafe.Offsetof(c.Slots), 0x100},
 	}
 	for _, f := range fields {

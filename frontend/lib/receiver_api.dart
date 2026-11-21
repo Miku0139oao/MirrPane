@@ -31,6 +31,22 @@ class ReceiverState {
     required this.colorRange,
     required this.scaleFilter,
     required this.audioBuffer,
+    required this.fps,
+    required this.decodeAvgMs,
+    required this.decodeP95Ms,
+    required this.downloadAvgMs,
+    required this.downloadP95Ms,
+    required this.convertAvgMs,
+    required this.convertP95Ms,
+    required this.publishAvgMs,
+    required this.publishP95Ms,
+    required this.lagFrames,
+    required this.consumerAgeMs,
+    required this.consumerAdopted,
+    required this.hwMode,
+    required this.audioOccupancyMs,
+    required this.audioUnderruns,
+    required this.audioHighWaterMs,
   });
 
   final String status; // idle | connecting | live | interrupted
@@ -58,8 +74,30 @@ class ReceiverState {
   final String scaleFilter;
   final String audioBuffer;
 
+  // Pipeline telemetry, additive to the sidecar's /api/state body. All
+  // durations are milliseconds and every value falls back to zero when an
+  // older sidecar does not send the key.
+  final double fps;
+  final double decodeAvgMs;
+  final double decodeP95Ms;
+  final double downloadAvgMs;
+  final double downloadP95Ms;
+  final double convertAvgMs;
+  final double convertP95Ms;
+  final double publishAvgMs;
+  final double publishP95Ms;
+  final int lagFrames;
+  final double consumerAgeMs;
+  final int consumerAdopted;
+  final String hwMode; // D3D11VA | software | ""
+  final double audioOccupancyMs;
+  final int audioUnderruns;
+  final double audioHighWaterMs;
+
   static ReceiverState fromJson(Map<String, dynamic> json) {
     int asInt(Object? v, [int fallback = 0]) => v is num ? v.toInt() : fallback;
+    double asDouble(Object? v, [double fallback = 0]) =>
+        v is num ? v.toDouble() : fallback;
     String asString(Object? v, [String fallback = '']) =>
         (v is String && v.isNotEmpty) ? v : fallback;
     return ReceiverState(
@@ -87,6 +125,22 @@ class ReceiverState {
       colorRange: asString(json['colorRange'], 'auto'),
       scaleFilter: asString(json['scaleFilter'], 'fast'),
       audioBuffer: asString(json['audioBuffer'], 'balanced'),
+      fps: asDouble(json['fps']),
+      decodeAvgMs: asDouble(json['decodeAvgMs']),
+      decodeP95Ms: asDouble(json['decodeP95Ms']),
+      downloadAvgMs: asDouble(json['downloadAvgMs']),
+      downloadP95Ms: asDouble(json['downloadP95Ms']),
+      convertAvgMs: asDouble(json['convertAvgMs']),
+      convertP95Ms: asDouble(json['convertP95Ms']),
+      publishAvgMs: asDouble(json['publishAvgMs']),
+      publishP95Ms: asDouble(json['publishP95Ms']),
+      lagFrames: asInt(json['lagFrames']),
+      consumerAgeMs: asDouble(json['consumerAgeMs']),
+      consumerAdopted: asInt(json['consumerAdopted']),
+      hwMode: asString(json['hwMode']),
+      audioOccupancyMs: asDouble(json['audioOccupancyMs']),
+      audioUnderruns: asInt(json['audioUnderruns']),
+      audioHighWaterMs: asDouble(json['audioHighWaterMs']),
     );
   }
 }

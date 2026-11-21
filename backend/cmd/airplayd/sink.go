@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/miku0139/airplay-go/backend/internal/decode"
 	"github.com/miku0139/airplay-go/backend/internal/frames"
@@ -37,6 +38,56 @@ type frameSink struct {
 	hwMode   atomic.Bool
 	haveMode atomic.Bool
 	errRate  rateLimiter
+
+	// metrics is the rolling pipeline telemetry exposed by /api/state. It is
+	// updated by Handle and read by Stats, so both take s.mu.
+	metrics frameMetrics
+}
+
+// frameMetrics keeps the last frames.StatsWindow samples of the pipeline
+// stages. Durations are milliseconds; fps is derived from the frame interval.
+type frameMetrics struct {
+	fps      frames.RollingStats
+	decode   frames.RollingStats
+	download frames.RollingStats
+	convert  frames.RollingStats
+	publish  frames.RollingStats
+
+	lastFrame time.Time
+	haveFrame bool
+}
+
+// record adds one decoded picture's timings to the windows.
+func (m *frameMetrics) record(decodeTime time.Duration, timings decode.DecodeTimings, publishNanos int64) {
+	now := time.Now()
+	if m.haveFrame {
+		m.fps.Add(float64(now.Sub(m.lastFrame)) / float64(time.Millisecond))
+	}
+	m.lastFrame = now
+	m.haveFrame = true
+
+	m.decode.Add(float64(decodeTime) / float64(time.Millisecond))
+	m.download.Add(float64(timings.TransferNanos) / 1e6)
+	m.convert.Add(float64(timings.ConvertNanos) / 1e6)
+	m.publish.Add(float64(publishNanos) / 1e6)
+}
+
+// SinkStats is the aggregated pipeline telemetry in one snapshot.
+type SinkStats struct {
+	FPS             float64
+	DecodeAvgMs     float64
+	DecodeP95Ms     float64
+	DownloadAvgMs   float64
+	DownloadP95Ms   float64
+	ConvertAvgMs    float64
+	ConvertP95Ms    float64
+	PublishAvgMs    float64
+	PublishP95Ms    float64
+	LagFrames       uint64
+	ConsumerAgeMs   float64
+	ConsumerAdopted uint64
+	Published       uint64
+	RawDropped      uint64
 }
 
 func newFrameSink(dec *decode.Decoder, pub *frames.Publisher, rec *streamRecorder) *frameSink {
@@ -51,13 +102,20 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	if s.closed {
 		return false
 	}
+	if s.pub != nil {
+		// Liveness includes access units that do not yield a picture, so a
+		// decoder that is waiting for a keyframe is visible in the heartbeat.
+		s.pub.Heartbeat()
+	}
 
 	s.rec.Write(f.Data, f.Valid)
 	if !f.Valid {
 		return false
 	}
 
+	decodeStart := time.Now()
 	img, err := s.dec.DecodeAccessUnit(f.Data)
+	decodeTime := time.Since(decodeStart)
 	// Recovery can change modes on a failed access unit, before the next
 	// keyframe arrives. Keep diagnostics current while waiting for it.
 	hw := s.dec.Hardware()
@@ -72,9 +130,11 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		return false
 	}
 
-	if err := s.pub.Publish(img.Width, img.Height, img.Stride, img.Pixels); err != nil {
-		s.errRate.printf("video: publish: %v", err)
+	publishErr := s.pub.Publish(img.Width, img.Height, img.Stride, img.Pixels)
+	if publishErr != nil {
+		s.errRate.printf("video: publish: %v", publishErr)
 	}
+	s.metrics.record(decodeTime, img.Timings, s.pub.LastPublishNanos())
 
 	s.width.Store(int64(img.Width))
 	s.height.Store(int64(img.Height))
@@ -141,13 +201,53 @@ func (s *frameSink) Size() (int, int) {
 // Frames reports how many pictures have been produced.
 func (s *frameSink) Frames() uint64 { return s.frames.Load() }
 
-// Dropped reports pictures the consumer did not take because every slot was
-// busy.
+// Dropped reports pictures the UI never adopted: frames the producer announced
+// minus frames the reader took. The old claim-contention counter could not fire
+// with three slots and a one-slot reader, so this is the honest replacement.
 func (s *frameSink) Dropped() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.pub == nil {
 		return 0
 	}
-	return s.pub.Dropped()
+	return s.pub.ConsumerStats().LagFrames
+}
+
+// Stats reports the rolling pipeline telemetry and the consumer's progress. It
+// takes the same lock as Handle, so the numbers are a consistent snapshot.
+func (s *frameSink) Stats() SinkStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m := &s.metrics
+	out := SinkStats{
+		FPS:           m.fpsValue(),
+		DecodeAvgMs:   m.decode.Mean(),
+		DecodeP95Ms:   m.decode.P95(),
+		DownloadAvgMs: m.download.Mean(),
+		DownloadP95Ms: m.download.P95(),
+		ConvertAvgMs:  m.convert.Mean(),
+		ConvertP95Ms:  m.convert.P95(),
+		PublishAvgMs:  m.publish.Mean(),
+		PublishP95Ms:  m.publish.P95(),
+	}
+	if s.pub != nil {
+		consumer := s.pub.ConsumerStats()
+		out.LagFrames = consumer.LagFrames
+		out.ConsumerAdopted = consumer.Adopted
+		out.Published = consumer.Published
+		out.RawDropped = consumer.RawDropped
+		out.ConsumerAgeMs = float64(consumer.ConsumerAgeNanos) / 1e6
+	}
+	return out
+}
+
+// fpsValue converts the mean interval between pictures into frames per second.
+func (m *frameMetrics) fpsValue() float64 {
+	mean := m.fps.Mean()
+	if mean <= 0 {
+		return 0
+	}
+	return 1000 / mean
 }
 
 // Close waits for any in-flight frame to finish, then releases everything. A

@@ -17,8 +17,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
 	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -96,9 +97,57 @@ type control struct {
 	ConsumerQPC    uint64 // 0x088
 	ConsumerSlot   uint32 // 0x090
 	Reserved2      uint32 // 0x094
-	Reserved3      [13]uint64 // 0x098
-	Slots          [SlotCount]slotEntry // 0x100
-	Tail           [HeaderBytes - 0x1C0]byte // 0x1C0
+	// ConsumerAdopted is the number of pictures the reader has adopted for
+	// display. The C++ side owns it (frontend/.../frame_reader.cpp writes it as
+	// the first Reserved word at 0x098) and the producer only reads it.
+	ConsumerAdopted uint64                    // 0x098
+	Reserved3       [12]uint64                // 0x0A0
+	Slots           [SlotCount]slotEntry      // 0x100
+	Tail            [HeaderBytes - 0x1C0]byte // 0x1C0
+}
+
+// QueryPerformanceCounter bindings. Every timestamp in the control block is a
+// QPC tick, not wall-clock time: the producer and the UI process share one
+// monotonic, high-resolution clock, so the two sides can compare stamps
+// directly. time.Now is deliberately not used — its epoch differs from what
+// the C++ reader can produce.
+var (
+	kernel32                      = windows.NewLazySystemDLL("kernel32.dll")
+	procQueryPerformanceCounter   = kernel32.NewProc("QueryPerformanceCounter")
+	procQueryPerformanceFrequency = kernel32.NewProc("QueryPerformanceFrequency")
+
+	qpcFreqOnce sync.Once
+	qpcFreq     int64
+)
+
+// nowQPC reads the performance counter, or returns 0 when the call fails.
+func nowQPC() int64 {
+	var counter int64
+	if r, _, _ := procQueryPerformanceCounter.Call(uintptr(unsafe.Pointer(&counter))); r == 0 {
+		return 0
+	}
+	return counter
+}
+
+// qpcFrequency reports ticks per second, cached after the first call.
+func qpcFrequency() int64 {
+	qpcFreqOnce.Do(func() {
+		var freq int64
+		if r, _, _ := procQueryPerformanceFrequency.Call(uintptr(unsafe.Pointer(&freq))); r == 0 || freq <= 0 {
+			freq = 1
+		}
+		qpcFreq = freq
+	})
+	return qpcFreq
+}
+
+// qpcNanos converts a counter delta to nanoseconds. A non-positive delta is no
+// sample, so it reports zero.
+func qpcNanos(ticks int64) int64 {
+	if ticks <= 0 {
+		return 0
+	}
+	return int64(float64(ticks) * 1e9 / float64(qpcFrequency()))
 }
 
 // Publisher owns the mapping and writes frames into it.
@@ -117,6 +166,10 @@ type Publisher struct {
 	// current is the slot index most recently published, never reused for the
 	// next write, so the reader's slot stays intact while it renders.
 	current int
+
+	// lastPublishNanos is the duration of the most recent Publish, in
+	// nanoseconds, measured with QPC.
+	lastPublishNanos atomic.Int64
 }
 
 // SlotStrideFor rounds one frame's bytes up to the slot alignment.
@@ -249,7 +302,146 @@ func (p *Publisher) SlotStride() uint32 { return p.stride }
 // Dropped reports how many pictures were skipped because every slot was busy.
 // A non-zero count means the consumer is not keeping up, which is the difference
 // between "the sender stopped" and "we could not display it".
-func (p *Publisher) Dropped() uint64 { return atomic.LoadUint64(&p.ctrl.Dropped) }
+//
+// With three slots and a reader that holds one, this counter can only fire if
+// the writer itself failed, so it is structurally near-always zero. Use
+// ConsumerStats.LagFrames for the honest producer→consumer drop count.
+func (p *Publisher) Dropped() uint64 {
+	if p.ctrl == nil {
+		return 0
+	}
+	return atomic.LoadUint64(&p.ctrl.Dropped)
+}
+
+// Heartbeat stamps the producer's liveness in the control block. The frame sink
+// calls it for every access unit, including invalid ones, so a stalled decoder
+// is distinguishable from a stalled sender.
+func (p *Publisher) Heartbeat() {
+	if p.ctrl == nil {
+		return
+	}
+	atomic.StoreUint64(&p.ctrl.HeartbeatQPC, uint64(nowQPC()))
+}
+
+// LastPublishNanos reports how long the most recent Publish took, in
+// nanoseconds: claiming a slot, copying the pixels and publishing the word.
+// Zero before the first picture.
+func (p *Publisher) LastPublishNanos() int64 { return p.lastPublishNanos.Load() }
+
+// ConsumerStats is one snapshot of the producer→consumer progress words. The UI
+// process writes the consumer fields from its raster thread with interlocked
+// operations; the producer only reads them here.
+type ConsumerStats struct {
+	Published        uint64 // pictures the producer announced (control FrameSeq)
+	Adopted          uint64 // pictures the reader took for display
+	LagFrames        uint64 // Published - Adopted while a reader is attached
+	ConsumerPID      uint32 // the UI process, or 0 before it mapped the section
+	ConsumerSlot     uint32 // the slot index the reader last adopted
+	ConsumerAgeNanos int64  // age of the reader's last adoption, or 0
+	RawDropped       uint64 // the legacy claim-contention counter
+}
+
+// ConsumerStats reads the progress words. This is the real lag metric: because
+// publishing is latest-frame-wins, every announced picture the reader did not
+// adopt is a picture that never reached the screen. Lag is only defined once a
+// reader has adopted at least one picture, so a UI that has not attached yet
+// does not look like it is dropping everything.
+func (p *Publisher) ConsumerStats() ConsumerStats {
+	if p.ctrl == nil {
+		return ConsumerStats{}
+	}
+	published := atomic.LoadUint64(&p.ctrl.FrameSeq)
+	adopted := atomic.LoadUint64(&p.ctrl.ConsumerAdopted)
+	var lag uint64
+	if adopted > 0 && published > adopted {
+		lag = published - adopted
+	}
+	var age int64
+	if consumerQPC := atomic.LoadUint64(&p.ctrl.ConsumerQPC); consumerQPC != 0 {
+		if now := nowQPC(); now > 0 && uint64(now) >= consumerQPC {
+			age = qpcNanos(int64(uint64(now) - consumerQPC))
+		}
+	}
+	return ConsumerStats{
+		Published:        published,
+		Adopted:          adopted,
+		LagFrames:        lag,
+		ConsumerPID:      atomic.LoadUint32(&p.ctrl.ConsumerPID),
+		ConsumerSlot:     atomic.LoadUint32(&p.ctrl.ConsumerSlot),
+		ConsumerAgeNanos: age,
+		RawDropped:       atomic.LoadUint64(&p.ctrl.Dropped),
+	}
+}
+
+// StatsWindow is how many recent samples the rolling aggregates keep. At 60 fps
+// that is about two seconds of history.
+const StatsWindow = 120
+
+// RollingStats keeps the last StatsWindow samples and reports their mean and
+// nearest-rank p95. It is not safe for concurrent use; the caller serialises
+// access. The zero value is ready to use.
+type RollingStats struct {
+	samples [StatsWindow]float64
+	count   int
+	next    int
+}
+
+// Add records one sample, evicting the oldest once the window is full.
+func (r *RollingStats) Add(v float64) {
+	r.samples[r.next] = v
+	r.next = (r.next + 1) % StatsWindow
+	if r.count < StatsWindow {
+		r.count++
+	}
+}
+
+// Reset forgets every sample.
+func (r *RollingStats) Reset() {
+	r.count = 0
+	r.next = 0
+}
+
+// Len reports how many samples the window currently holds.
+func (r *RollingStats) Len() int { return r.count }
+
+// Mean reports the arithmetic mean of the samples, or zero when empty.
+func (r *RollingStats) Mean() float64 {
+	if r.count == 0 {
+		return 0
+	}
+	var sum float64
+	for _, v := range r.window() {
+		sum += v
+	}
+	return sum / float64(r.count)
+}
+
+// P95 reports the nearest-rank 95th percentile, or zero when empty.
+func (r *RollingStats) P95() float64 {
+	if r.count == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), r.window()...)
+	sort.Float64s(sorted)
+	// nearest rank: ceil(0.95*n), clamped to the last index.
+	idx := (95*r.count+99)/100 - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+// window returns the live samples. For an unfilled window it aliases the
+// internal array's prefix, so callers must treat the result as read-only.
+func (r *RollingStats) window() []float64 {
+	if r.count < StatsWindow {
+		return r.samples[:r.count]
+	}
+	return r.samples[:]
+}
 
 // Publish writes one picture. pixels must be tightly packed rows of width*4
 // bytes; imgStride is the row stride inside pixels.
@@ -268,6 +460,7 @@ func (p *Publisher) Publish(width, height, imgStride int, pixels []byte) error {
 		return fmt.Errorf("frames: frame of %dx%d needs %d bytes, slot holds %d", width, height, need, p.stride)
 	}
 
+	start := nowQPC()
 	i := p.claimSlot()
 	if i < 0 {
 		atomic.AddUint64(&p.ctrl.Dropped, 1)
@@ -283,7 +476,7 @@ func (p *Publisher) Publish(width, height, imgStride int, pixels []byte) error {
 	slot.Stride = uint32(rowBytes)
 	slot.Format = FormatRGBA
 	slot.WriterPID = p.ctrl.ProducerPID
-	slot.WriteQPC = uint64(time.Now().UnixNano())
+	slot.WriteQPC = uint64(nowQPC())
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(p.slots+uintptr(i)*uintptr(p.stride))), int(p.stride))
 	if imgStride == rowBytes {
@@ -298,6 +491,12 @@ func (p *Publisher) Publish(width, height, imgStride int, pixels []byte) error {
 	// which slot the new metadata belongs to.
 	atomic.StoreUint64(&p.ctrl.Publish, p.seq<<2|uint64(i))
 	atomic.AddUint64(&p.ctrl.FrameSeq, 1)
+	published := nowQPC()
+	atomic.StoreUint64(&p.ctrl.LastPublishQPC, uint64(published))
+	atomic.StoreUint64(&p.ctrl.HeartbeatQPC, uint64(published))
+	if start > 0 && published > start {
+		p.lastPublishNanos.Store(qpcNanos(published - start))
+	}
 	atomic.StoreUint32(&slot.Claim, claimFree)
 	p.current = i
 

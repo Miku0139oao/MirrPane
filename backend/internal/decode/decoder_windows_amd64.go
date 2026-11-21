@@ -8,17 +8,76 @@ import (
 	"image"
 	"log"
 	"runtime"
+	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 )
 
 var ErrNoFrame = errors.New("decode: no frame ready")
 
+// QueryPerformanceCounter bindings. The decoder reports its per-stage cost in
+// nanoseconds; QPC is the same clock the publisher stamps into the shared
+// control block, so a timeline can be built across both sides.
+var (
+	qpcDLL      = syscall.NewLazyDLL("kernel32.dll")
+	qpcProc     = qpcDLL.NewProc("QueryPerformanceCounter")
+	qpcFreqProc = qpcDLL.NewProc("QueryPerformanceFrequency")
+
+	qpcFreqOnce sync.Once
+	qpcTicks    int64
+)
+
+// qpcNow reads the performance counter, or returns 0 when the call fails.
+func qpcNow() int64 {
+	var counter int64
+	if r, _, _ := qpcProc.Call(uintptr(unsafe.Pointer(&counter))); r == 0 {
+		return 0
+	}
+	return counter
+}
+
+// qpcFrequency reports ticks per second, cached after the first call.
+func qpcFrequency() int64 {
+	qpcFreqOnce.Do(func() {
+		var freq int64
+		if r, _, _ := qpcFreqProc.Call(uintptr(unsafe.Pointer(&freq))); r == 0 || freq <= 0 {
+			freq = 1
+		}
+		qpcTicks = freq
+	})
+	return qpcTicks
+}
+
+// qpcElapsedNanos converts the interval from start to now into nanoseconds.
+// A zero start means the counter was unavailable and yields no sample.
+func qpcElapsedNanos(start int64) int64 {
+	if start == 0 {
+		return 0
+	}
+	now := qpcNow()
+	if now <= start {
+		return 0
+	}
+	return int64(float64(now-start) * 1e9 / float64(qpcFrequency()))
+}
+
+// DecodeTimings is where one picture's time went, in nanoseconds. Both fields
+// are measured with QueryPerformanceCounter.
+type DecodeTimings struct {
+	// TransferNanos is av_hwframe_transfer_data, the GPU→system-memory
+	// download. It is zero in software mode.
+	TransferNanos int64
+	// ConvertNanos is sws_scale and its colour-space setup.
+	ConvertNanos int64
+}
+
 // Image is one decoded picture. Pixels is reused by the next Decode call.
 type Image struct {
 	Width, Height int
 	Stride        int
 	Pixels        []byte
+	Timings       DecodeTimings
 }
 
 func (i *Image) Bounds() image.Rectangle { return image.Rect(0, 0, i.Width, i.Height) }
@@ -470,6 +529,7 @@ func (d *Decoder) decodeAccessUnit(data []byte) (*Image, error) {
 
 func (d *Decoder) copyImage() (*Image, error) {
 	f := d.frame
+	var timings DecodeTimings
 	if d.hardwareFormat != pixelNone && f.Format == d.hardwareFormat {
 		if d.software == nil {
 			d.software = d.ff.frameAlloc()
@@ -478,7 +538,10 @@ func (d *Decoder) copyImage() (*Image, error) {
 			return nil, errors.New("decode: allocate hardware transfer frame")
 		}
 		d.ff.frameUnref(d.software)
-		if ret := d.ff.hwFrameTransfer(d.software, f, 0); ret < 0 {
+		start := qpcNow()
+		ret := d.ff.hwFrameTransfer(d.software, f, 0)
+		timings.TransferNanos = qpcElapsedNanos(start)
+		if ret < 0 {
 			return nil, d.ff.error("download hardware frame", ret)
 		}
 		f = d.software
@@ -487,6 +550,7 @@ func (d *Decoder) copyImage() (*Image, error) {
 	if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
 		return nil, fmt.Errorf("decode: invalid frame size %dx%d", w, h)
 	}
+	convertStart := qpcNow()
 	flags := int32(scaleFast)
 	switch d.options.ScaleFilter {
 	case "bilinear":
@@ -525,9 +589,11 @@ func (d *Decoder) copyImage() (*Image, error) {
 	lines := [4]int32{int32(stride)}
 	rows := d.ff.scale(d.scaler, &f.Data[0], &f.LineSize[0], 0, f.Height, &output[0], &lines[0])
 	runtime.KeepAlive(d.img.Pixels)
+	timings.ConvertNanos = qpcElapsedNanos(convertStart)
 	if rows != f.Height {
 		return nil, fmt.Errorf("decode: converted %d rows, want %d", rows, f.Height)
 	}
+	d.img.Timings = timings
 	d.ready = true
 	d.decoded = true
 	return &d.img, nil

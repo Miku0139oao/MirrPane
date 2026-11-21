@@ -80,6 +80,26 @@ type apiState struct {
 	ColorRange   string  `json:"colorRange"`
 	ScaleFilter  string  `json:"scaleFilter"`
 	AudioBuffer  string  `json:"audioBuffer"`
+
+	// Pipeline telemetry. All durations are milliseconds over the last
+	// frames.StatsWindow pictures; keys are additive so older app builds keep
+	// parsing the body.
+	FPS             float64 `json:"fps"`
+	DecodeAvgMs     float64 `json:"decodeAvgMs"`
+	DecodeP95Ms     float64 `json:"decodeP95Ms"`
+	DownloadAvgMs   float64 `json:"downloadAvgMs"`
+	DownloadP95Ms   float64 `json:"downloadP95Ms"`
+	ConvertAvgMs    float64 `json:"convertAvgMs"`
+	ConvertP95Ms    float64 `json:"convertP95Ms"`
+	PublishAvgMs    float64 `json:"publishAvgMs"`
+	PublishP95Ms    float64 `json:"publishP95Ms"`
+	LagFrames       uint64  `json:"lagFrames"`
+	ConsumerAgeMs   float64 `json:"consumerAgeMs"`
+	ConsumerAdopted uint64  `json:"consumerAdopted"`
+	HWMode          string  `json:"hwMode"`
+	AudioOccupancy  float64 `json:"audioOccupancyMs"`
+	AudioUnderruns  uint64  `json:"audioUnderruns"`
+	AudioHighWater  float64 `json:"audioHighWaterMs"`
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -116,19 +136,22 @@ func apiHandler(
 		}
 		status, reason, sender, uptime := state.snapshot()
 		width, height := 0, 0
-		var pictures, dropped uint64
+		var pictures uint64
+		var stats SinkStats
 		decoderMode := ""
 		if sink != nil {
 			width, height = sink.Size()
 			pictures = sink.Frames()
-			dropped = sink.Dropped()
+			stats = sink.Stats()
 			decoderMode = sink.Mode()
 		}
 		muted := false
 		volume := 1.0
+		var audioStats audioout.Stats
 		if speaker != nil {
 			muted = speaker.Muted()
 			volume = speaker.Volume()
+			audioStats = speaker.Stats()
 		}
 		body := apiState{
 			Status:       statusName(status),
@@ -142,7 +165,7 @@ func apiHandler(
 			VideoFrames:  frameCount.Load(),
 			AudioFrames:  audioFrames.Load(),
 			Pictures:     pictures,
-			Dropped:      dropped,
+			Dropped:      stats.LagFrames,
 			Decoder:      decoderMode,
 			Muted:        muted,
 			Volume:       volume,
@@ -155,6 +178,23 @@ func apiHandler(
 			ColorRange:   cfg.ColorRange,
 			ScaleFilter:  cfg.ScaleFilter,
 			AudioBuffer:  cfg.AudioBuffer,
+
+			FPS:             stats.FPS,
+			DecodeAvgMs:     stats.DecodeAvgMs,
+			DecodeP95Ms:     stats.DecodeP95Ms,
+			DownloadAvgMs:   stats.DownloadAvgMs,
+			DownloadP95Ms:   stats.DownloadP95Ms,
+			ConvertAvgMs:    stats.ConvertAvgMs,
+			ConvertP95Ms:    stats.ConvertP95Ms,
+			PublishAvgMs:    stats.PublishAvgMs,
+			PublishP95Ms:    stats.PublishP95Ms,
+			LagFrames:       stats.LagFrames,
+			ConsumerAgeMs:   stats.ConsumerAgeMs,
+			ConsumerAdopted: stats.ConsumerAdopted,
+			HWMode:          decoderMode,
+			AudioOccupancy:  audioStats.OccupancyMs,
+			AudioUnderruns:  audioStats.UnderrunCount,
+			AudioHighWater:  audioStats.HighWaterMs,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
