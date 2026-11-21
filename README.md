@@ -1,5 +1,7 @@
 # 鏡屏 MirrPane
 
+**繁體中文** | [English](README.en.md)
+
 **Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + Flutter** 打造，將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
@@ -82,6 +84,7 @@ MirrPane/
 ├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
 ├── LICENSE                     # GPL-3.0 授權文件
 ├── README.md                   # 專案說明文件
+├── README.en.md                # 英文版專案說明
 └── package.ps1                 # 整包建置與打包 PowerShell 腳本
 ```
 
