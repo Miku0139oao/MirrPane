@@ -1,52 +1,64 @@
-# Third-party runtime libraries
+# FFmpeg runtime
 
-## FFmpeg (shared, GPL build)
+MirrPane uses FFmpeg for H.264/AAC-ELD decoding, color conversion and resampling.
+The Go backend calls its shared libraries using [purego](https://github.com/ebitengine/purego)
+and the Windows x64 ABI. **CGO is disabled.** Headers, import libraries and a C
+compiler are unnecessary for normal builds. Flutter's Windows runner and texture
+plugin still use the standard Visual Studio C++ toolchain.
 
-`airplayd.exe` decodes H.264 and AAC-ELD through FFmpeg's shared libraries
-(`libavcodec`, `libavutil`, `libswscale`, `libswresample`). They are not
-redistributable from this repository, so the development package lives here
-untracked and the build script stages the DLLs beside the executable.
+## Detecting and downloading
 
-Both this project and the FFmpeg build are **GPLv3**, which is what allows the
-GPL-only parts (currently none, but it keeps the licensing simple) to be used.
+`scripts/fetch-ffmpeg.ps1` reuses a complete local development runtime, or invokes
+the Go `cmd/ffmpeg-setup` helper to download the latest BtbN Windows x64 GPL shared
+archive. `-Force` checks the latest upstream asset even when a cache exists;
+`-PassThru` returns the DLL directory for build scripts. Downloading verifies the
+asset's size and SHA256 digest from the GitHub release API, extracts only the
+required DLL basenames, and publishes a complete runtime directory atomically.
 
-### Fetching the package
+The application performs the same setup automatically if no shared runtime can
+be found beside the sidecar, in its portable cache, in the development tree, or
+on PATH. Set `MIRRPANE_FFMPEG_DIR` to an explicit directory to override discovery.
+An invalid override is reported as an error so it cannot silently use another
+installation. A static `ffmpeg.exe` alone does not provide the required DLLs.
 
-```powershell
-mkdir third_party
-cd third_party
-curl.exe -L -o ffmpeg-shared.zip `
-  https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip
-tar -xf ffmpeg-shared.zip
-Move-Item ffmpeg-master-latest-win64-gpl-shared ffmpeg
-Remove-Item ffmpeg-shared.zip
-```
+Normal release archives include the four DLLs beside `backend/airplayd.exe` and
+work offline. First-run downloads, when needed, stay under `backend/ffmpeg/`.
+Existing installations are reused without an automatic update on each launch.
 
-Then trim what is not used to keep the tree small (the shared build also ships
-`avdevice`, `avfilter` and `avformat`, which a receiver does not need):
+## Supported ABI
 
-```powershell
-Remove-Item ffmpeg\bin\ffmpeg.exe, ffmpeg\bin\ffplay.exe, ffmpeg\bin\ffprobe.exe
-Remove-Item ffmpeg\bin\avdevice-*.dll, ffmpeg\bin\avfilter-*.dll, ffmpeg\bin\avformat-*.dll
-Remove-Item ffmpeg\lib\*.lib, ffmpeg\lib\libavdevice.dll.a, ffmpeg\lib\libavfilter.dll.a, ffmpeg\lib\libavformat.dll.a
-Remove-Item ffmpeg\lib\pkgconfig -Recurse
-```
+| Library | DLL | Minimum version |
+| --- | --- | --- |
+| libavcodec | `avcodec-63.dll` | 63.28.100 |
+| libavutil | `avutil-61.dll` | 61.21.100 |
+| libswscale | `swscale-10.dll` | 10.6.100 |
+| libswresample | `swresample-7.dll` | 7.7.100 |
 
-### Layout the build expects
+The checked-in layouts were generated from BtbN's
+`N-129166-gae9f4540cb-20261121` headers. Matching major versions are required and
+older minor versions are rejected before any native structure is accessed.
+Missing exports and incompatible runtimes return ordinary Go errors. DLLs are
+loaded with absolute paths and scoped dependency lookup; no global PATH or
+system-wide installation is modified. `decode.Version()` reports the loaded build.
 
-```
-third_party/ffmpeg/
-├─ include/    libavcodec, libavutil, libswscale, libswresample headers
-├─ lib/        libavcodec.dll.a, libavutil.dll.a, libswscale.dll.a, libswresample.dll.a
-└─ bin/        the DLLs that ship with the product
-```
+FFmpeg's public API is documented in the upstream
+[AVCodecContext](https://ffmpeg.org/doxygen/trunk/structAVCodecContext.html) and
+[AVFrame](https://ffmpeg.org/doxygen/trunk/structAVFrame.html) references.
 
-### Notes
+## Maintainer ABI upgrades
 
-- The import libraries are MinGW `.dll.a` files, which is what the cgo linker
-  (MinGW-w64 GCC) consumes directly. No `.def` conversion is needed.
-- The DLLs are versioned (`avcodec-63.dll` and so on). A FFmpeg upgrade renames
-  them, so `build.ps1` copies whatever is present rather than a fixed list.
-- `decode.Version()` reports the linked build; the about screen shows it, and a
-  mismatch between that string and the DLLs on disk means a stale copy is being
-  loaded.
+This is an optional maintenance operation, not part of a normal build:
+
+1. Obtain the matching FFmpeg shared development headers from
+   [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases).
+2. Run `scripts/generate-ffmpeg-abi.ps1 -Headers <include-directory> -Compiler <gcc.exe>`.
+   The generator compiles a temporary layout probe and emits Go structure padding,
+   constants, and compile-time assertions for every accessed offset and structure size.
+3. Update the supported DLL names in the runtime manager and PowerShell helpers
+   if the major versions change. Check all public function signatures against
+   the new headers and run the fixture tests with both GPU and software decoding.
+4. Keep rejecting newer unsupported ABIs; downloading a newer release must not
+   bypass the structure-layout checks.
+
+MirrPane and the downloaded GPL FFmpeg build are distributed under GPLv3; see the
+repository's LICENSE and the upstream build's licensing information.

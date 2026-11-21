@@ -96,10 +96,11 @@ class ReceiverState {
 enum Phase { booting, waiting, connecting, live, interrupted, failed }
 
 class Snapshot {
-  const Snapshot(this.phase, {this.state, this.error});
+  const Snapshot(this.phase, {this.state, this.error, this.message});
   final Phase phase;
   final ReceiverState? state;
   final String? error;
+  final String? message;
 }
 
 /// ReceiverHost owns the sidecar process and talks to its localhost API.
@@ -118,6 +119,8 @@ class ReceiverHost {
   DateTime? _startedAt;
   bool _stopped = false;
   bool _everReached = false;
+  bool _runtimeSetup = false;
+  String? _startupError;
 
   String get logPath => '${installDir.path}\\logs\\airplayd.log';
   String get configPath => '${installDir.path}\\config\\config.json';
@@ -184,10 +187,14 @@ class ReceiverHost {
       _process = await Process.start(
         exe.path,
         [
-          '-api-port', '$_port',
-          '-data', '${installDir.path}\\config',
-          '-log', logPath,
-          '-parent-pid', '$pid',
+          '-api-port',
+          '$_port',
+          '-data',
+          '${installDir.path}\\config',
+          '-log',
+          logPath,
+          '-parent-pid',
+          '$pid',
         ],
         workingDirectory: installDir.path,
         runInShell: false,
@@ -197,17 +204,45 @@ class ReceiverHost {
       return;
     }
 
-    unawaited(_process!.stdout.drain<void>());
+    _process!.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(_startupProgress, onError: (Object _) {});
     unawaited(_process!.stderr.drain<void>());
 
-    unawaited(_process!.exitCode.then((code) {
-      if (_stopped || _everReached) return;
-      _emitFailure('接收器結束了（代碼 $code）');
-    }));
+    unawaited(
+      _process!.exitCode.then((code) {
+        if (_stopped || _everReached) return;
+        _emitFailure(_startupError ?? '接收器結束了（代碼 $code）');
+      }),
+    );
 
     _http = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     _poll = Timer.periodic(const Duration(milliseconds: 350), (_) => _tick());
     unawaited(_tick());
+  }
+
+  void _startupProgress(String line) {
+    if (_stopped || _everReached) return;
+    try {
+      final event = jsonDecode(line);
+      if (event is! Map<String, dynamic> ||
+          event['event'] != 'ffmpeg_setup' ||
+          event['message'] is! String) {
+        return;
+      }
+      final message = event['message'] as String;
+      _runtimeSetup = event['done'] != true;
+      if (event['failed'] == true) {
+        _startupError = message;
+        _emitFailure(message);
+        return;
+      }
+      if (!_runtimeSetup) _startedAt = DateTime.now();
+      notifier.value = Snapshot(Phase.booting, message: message);
+    } on FormatException {
+      // Other diagnostic lines do not belong to the startup protocol.
+    }
   }
 
   Future<Map<String, dynamic>?> _postJson(
@@ -270,8 +305,9 @@ class ReceiverHost {
       final request = await client
           .getUrl(Uri.parse('http://127.0.0.1:$_port/api/state'))
           .timeout(const Duration(milliseconds: 700));
-      final response =
-          await request.close().timeout(const Duration(milliseconds: 700));
+      final response = await request.close().timeout(
+        const Duration(milliseconds: 700),
+      );
       if (response.statusCode != 200) return;
       final body = await response
           .transform(utf8.decoder)
@@ -284,9 +320,11 @@ class ReceiverHost {
       _everReached = true;
       notifier.value = Snapshot(_phaseOf(state), state: state);
     } catch (_) {
-      if (!_everReached &&
-          DateTime.now().difference(_startedAt!) > const Duration(seconds: 8)) {
-        _emitFailure('接收器沒有回應');
+      final deadline = _runtimeSetup
+          ? const Duration(minutes: 11)
+          : const Duration(seconds: 8);
+      if (!_everReached && DateTime.now().difference(_startedAt!) > deadline) {
+        _emitFailure(_startupError ?? '接收器沒有回應');
       }
     }
   }

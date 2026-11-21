@@ -407,7 +407,10 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   Widget _viewFor(Snapshot snapshot) {
     switch (snapshot.phase) {
       case Phase.booting:
-        return const _BootingView(key: ValueKey('booting'));
+        return _BootingView(
+          key: const ValueKey('booting'),
+          message: snapshot.message,
+        );
       case Phase.waiting:
       case Phase.connecting:
         return _WaitingView(
@@ -487,27 +490,37 @@ class _AppLogo extends StatelessWidget {
 }
 
 class _BootingView extends StatelessWidget {
-  const _BootingView({super.key});
+  const _BootingView({super.key, this.message});
+
+  final String? message;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _AppLogo(size: 64),
-          SizedBox(height: 20),
-          SizedBox(
+          const _AppLogo(size: 64),
+          const SizedBox(height: 20),
+          const SizedBox(
             width: 22,
             height: 22,
             child: CircularProgressIndicator(strokeWidth: 2.2, color: accent),
           ),
-          SizedBox(height: 18),
-          Text('正在啟動 鏡屏 MirrPane',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500)),
-          SizedBox(height: 8),
-          Text('正在初始化解碼引擎與 AirPlay 廣播…',
-              style: TextStyle(fontSize: 13, color: muted)),
+          const SizedBox(height: 18),
+          const Text(
+            '正在啟動 鏡屏 MirrPane',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              message ?? '正在初始化解碼引擎與 AirPlay 廣播…',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: muted),
+            ),
+          ),
         ],
       ),
     );
@@ -1678,7 +1691,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         Text('鏡屏 MirrPane 設定',
                             style: TextStyle(
                                 fontSize: 17, fontWeight: FontWeight.w500)),
-                        Text('v0.2.0 · AirPlay Screen Receiver',
+                        Text('v0.3.0 · AirPlay Screen Receiver',
                             style: TextStyle(fontSize: 11.5, color: muted)),
                       ],
                     ),

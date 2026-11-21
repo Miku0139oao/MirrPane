@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -170,18 +172,48 @@ func main() {
 		RefreshHz: float64(effFPS),
 	})
 
-	// The decoder is created up front so a missing FFmpeg runtime is reported at
-	// startup rather than as a black window later.
+	// First-run setup is reported over stdout while the localhost API is not
+	// ready yet. Flutter keeps the startup screen responsive during a download.
+	startup := func(message string, done, failed bool) {
+		note("ffmpeg: %s", message)
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			Event   string `json:"event"`
+			Message string `json:"message"`
+			Done    bool   `json:"done"`
+			Failed  bool   `json:"failed"`
+		}{"ffmpeg_setup", message, done, failed})
+	}
+	startup("正在偵測 FFmpeg…", false, false)
+	executable, err := os.Executable()
+	if err != nil {
+		startup(err.Error(), true, true)
+		os.Exit(1)
+	}
+	setupContext, cancelSetup := context.WithTimeout(context.Background(), 10*time.Minute)
+	runtimeDir, setupErr := decode.PrepareRuntime(setupContext, filepath.Join(filepath.Dir(executable), "ffmpeg"), func(message string) {
+		startup(message, false, false)
+	})
+	cancelSetup()
+	if setupErr != nil {
+		startup("FFmpeg 初始化失敗："+setupErr.Error(), true, true)
+		os.Exit(1)
+	}
+	note("ffmpeg: runtime %s", runtimeDir)
+	startup("正在初始化解碼引擎與 AirPlay 廣播…", true, false)
+
+	// Resolve version/symbol mismatches before advertising the receiver.
 	dec, err := decode.NewDecoderWithOptions(decode.Options{
 		PreferHardware: cfg.DecoderMode != "software",
 		ColorRange:     cfg.ColorRange,
 		ScaleFilter:    cfg.ScaleFilter,
 	})
 	if err != nil {
+		startup("FFmpeg 載入失敗："+err.Error(), true, true)
 		note("error: %v", err)
 		os.Exit(1)
 	}
 
+	note("decode: FFmpeg %s", decode.Version())
 	sink := newFrameSink(dec, pub, rec)
 	state := newRuntimeState()
 

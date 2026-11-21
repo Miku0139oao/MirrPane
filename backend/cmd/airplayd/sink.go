@@ -46,8 +46,8 @@ func newFrameSink(dec *decode.Decoder, pub *frames.Publisher, rec *streamRecorde
 // Handle decodes one access unit and publishes it. It reports whether a picture
 // was produced.
 func (s *frameSink) Handle(f *mirror.Frame) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
 		return false
 	}

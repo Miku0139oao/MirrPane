@@ -7,12 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.2.0)'
+        description: 'Release version (e.g. 0.3.0)'
         required: true
         type: string
 
 permissions:
   contents: write
+
+env:
+  CGO_ENABLED: '0'
 
 jobs:
   release:
@@ -24,10 +27,12 @@ jobs:
       - name: Resolve version
         id: ver
         shell: pwsh
+        env:
+          RAW_RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          $raw = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.version }}" } else { "${{ github.ref_name }}" }
+          $raw = $env:RAW_RELEASE_VERSION
           $clean = $raw.Trim().TrimStart('v', 'V')
-          if ([string]::IsNullOrWhiteSpace($clean)) { throw "empty version" }
+          if ($clean -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'invalid release version' }
           "version=$clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Setup Go
@@ -43,32 +48,13 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Configure 64-bit MinGW GCC for cgo
-        shell: pwsh
-        run: |
-          $candidates = @(
-            'C:\msys64\mingw64\bin',
-            'C:\mingw64\bin',
-            'C:\ProgramData\mingw64\mingw64\bin'
-          )
-          $found = $candidates | Where-Object { Test-Path (Join-Path $_ 'gcc.exe') } | Select-Object -First 1
-          if ($null -eq $found) {
-            $cmd = Get-Command gcc.exe -ErrorAction SilentlyContinue
-            if ($null -ne $cmd) { $found = Split-Path -Parent $cmd.Source }
-          }
-          if ($null -eq $found) { throw "64-bit MinGW gcc.exe not found on runner" }
-          $found | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "CGO_ENABLED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CC=$($found -replace '\\','/')/gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & (Join-Path $found 'gcc.exe') --version
-
-      - name: Cache FFmpeg win64 dev package
+      - name: Cache FFmpeg win64 runtime
         uses: actions/cache@v4
         with:
           path: third_party/ffmpeg
-          key: ffmpeg-win64-${{ hashFiles('scripts/fetch-ffmpeg.ps1') }}
+          key: ffmpeg-runtime-win64-abi63-${{ hashFiles('scripts/fetch-ffmpeg.ps1', 'backend/internal/ffmpeg/runtime.go') }}
 
-      - name: Fetch FFmpeg dev package
+      - name: Detect or download verified FFmpeg runtime
         shell: pwsh
         run: .\scripts\fetch-ffmpeg.ps1
 
@@ -76,8 +62,9 @@ jobs:
         shell: pwsh
         run: |
           Push-Location backend
-          $env:PATH = "$PWD\..\third_party\ffmpeg\bin;$env:PATH"
-          go test ./internal/...
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./internal/decode ./internal/fairplay ./internal/ffmpeg ./cmd/...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
 

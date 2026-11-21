@@ -4,15 +4,16 @@
 # registry keys, no AppData writes, no system-wide runtimes. Everything the
 # program needs travels with it.
 #
-# Usage:  .\package.ps1 [-Version 0.2.0] [-SkipBuild] [-Flutter C:\path\to\flutter.bat]
+# Usage:  .\package.ps1 [-Version 0.3.0] [-SkipBuild] [-Flutter C:\path\to\flutter.bat]
 
 param(
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.3.0",
     [switch]$SkipBuild,
     [string]$Flutter = ""
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'invalid release version' }
 
 $root = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Flutter)) {
@@ -31,7 +32,7 @@ if (-not $SkipBuild -and -not (Test-Path $Flutter)) {
 }
 $flutter = $Flutter
 $appName = '鏡屏'
-$dist = Join-Path $root "dist\$appName"
+$dist = Join-Path $root "dist\$appName-$Version"
 $zip = Join-Path $root "dist\MirrPane-$Version-win64.zip"
 
 Write-Host "packaging $appName $Version"
@@ -54,7 +55,10 @@ if (-not (Test-Path (Join-Path $release 'MirrPane.exe'))) {
 
 # --- stage -------------------------------------------------------------------
 
-if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+$dist = [IO.Path]::GetFullPath($dist)
+$expectedDist = [IO.Path]::GetFullPath((Join-Path $root "dist\$appName-$Version"))
+if ($dist -ne $expectedDist) { throw 'unexpected release staging directory' }
+if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 # The Flutter output, minus anything this machine happens to have written next to

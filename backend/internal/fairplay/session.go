@@ -1,23 +1,12 @@
 // Package fairplay implements the legacy FairPlay key exchange (protocol
 // version 3) that AirPlay screen mirroring uses to wrap the stream's AES key.
 //
-// The mathematics lives in C, ported from UxPlay's lib/playfair (GPLv3), because
-// it is a large table-driven cipher whose tables are best kept byte-identical to
-// the reference. This file owns the wire protocol: the three /fp-setup
-// exchanges and the derived key.
+// The pure Go cipher is ported from UxPlay's lib/playfair (GPLv3), with reference
+// vectors checked against the original C implementation. This file owns the
+// wire protocol and keeps the cipher's state private to each connection.
 package fairplay
 
-/*
-#include <stdint.h>
-
-void playfair_decrypt(unsigned char* message3, unsigned char* cipherText, unsigned char* keyOut);
-*/
-import "C"
-
-import (
-	"errors"
-	"unsafe"
-)
+import "errors"
 
 const (
 	// SetupRequestLen is the size of the first /fp-setup request body.
@@ -58,8 +47,9 @@ const (
 // serves several devices keeps one Session per connection; the state is small
 // and must not be shared.
 type Session struct {
-	version Version
-	keyMsg  [HandshakeRequestLen]byte
+	version   Version
+	keyMsg    [HandshakeRequestLen]byte
+	handshake bool
 }
 
 // NewSession returns a session ready for the first /fp-setup request.
@@ -72,6 +62,7 @@ func (s *Session) Version() Version { return s.version }
 // reply. The reply is one of four fixed messages chosen by the client's mode
 // byte, which is why it can be a table lookup.
 func (s *Session) Setup(req []byte) ([]byte, error) {
+	s.reset()
 	if len(req) != SetupRequestLen {
 		return nil, ErrMalformed
 	}
@@ -97,16 +88,16 @@ func (s *Session) Setup(req []byte) ([]byte, error) {
 // 32-byte reply. The request itself is the "key message" that later decrypts
 // the stream key, so it is kept until the connection ends.
 func (s *Session) Handshake(req []byte) ([]byte, error) {
+	s.reset()
 	if len(req) != HandshakeRequestLen {
 		return nil, ErrMalformed
 	}
 	if req[4] != 0x03 || req[12] >= 4 {
-		s.reset()
 		return nil, ErrMalformed
 	}
-	s.reset()
 	s.version = Version3
 	copy(s.keyMsg[:], req)
+	s.handshake = true
 
 	reply := make([]byte, HandshakeReplyLen)
 	copy(reply, fpHeader[:])
@@ -120,16 +111,10 @@ func (s *Session) DecryptKey(ekey []byte) ([]byte, error) {
 	if len(ekey) != EKeyLen {
 		return nil, ErrMalformed
 	}
-	if s.version != Version3 {
+	if s.version != Version3 || !s.handshake {
 		return nil, ErrOutOfOrder
 	}
-	out := make([]byte, AESKeyLen)
-	C.playfair_decrypt(
-		(*C.uchar)(unsafe.Pointer(&s.keyMsg[0])),
-		(*C.uchar)(unsafe.Pointer(&ekey[0])),
-		(*C.uchar)(unsafe.Pointer(&out[0])),
-	)
-	return out, nil
+	return playfairDecrypt(s.keyMsg[:], ekey), nil
 }
 
 // Reset clears the session so the next /fp-setup starts fresh.
@@ -137,6 +122,7 @@ func (s *Session) Reset() { s.reset() }
 
 func (s *Session) reset() {
 	s.version = VersionUnknown
+	s.handshake = false
 	for i := range s.keyMsg {
 		s.keyMsg[i] = 0
 	}
