@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"log"
 	"runtime"
+	"time"
 	"unsafe"
 )
 
@@ -29,6 +31,11 @@ type Options struct {
 
 // Decoder owns FFmpeg-allocated native objects. Calls must be serialized with
 // Close; frameSink provides this for the receiver and snapshot endpoint.
+//
+// DecodeAccessUnit may rebuild the native state in place when D3D11VA keeps
+// failing mid-stream (driver reset/TDR, dGPU power transition, session switch).
+// The rebuild runs synchronously inside that call, so it is covered by the same
+// serialization as every other use and never frees state under another call.
 type Decoder struct {
 	ff                     *ffmpegAPI
 	ctx                    *codecContext
@@ -39,7 +46,115 @@ type Decoder struct {
 	options                Options
 	img                    Image
 	ready                  bool
+	decoded                bool // a picture has been produced by the current codec context
 	pending                []byte
+
+	health       hwFailureTracker
+	reason       string // why the decoder is in software mode; "" while D3D11VA is configured
+	params       []byte // last SPS/PPS seen, replayed into a rebuilt decoder
+	replayParams bool
+}
+
+// Hardware failure policy. A run of consecutive failed access units while
+// D3D11VA is configured triggers recovery: either hwFailureFrames failures, or
+// at least hwFailureMinFrames spanning hwFailureWindow (a static screen sends
+// few frames, so a frame count alone could keep the receiver dark for long).
+const (
+	hwFailureFrames    = 30
+	hwFailureMinFrames = 5
+	hwFailureWindow    = time.Second
+	hwDeviceRetries    = 1 // device recreations before permanent software mode
+)
+
+type hwState int
+
+const (
+	hwHealthy  hwState = iota // hardware configured, last access unit decoded
+	hwDegraded                // hardware configured, consecutive failures below threshold
+	hwSoftware                // permanently software for this decoder
+)
+
+func (s hwState) String() string {
+	switch s {
+	case hwHealthy:
+		return "healthy"
+	case hwDegraded:
+		return "degraded"
+	case hwSoftware:
+		return "software"
+	}
+	return fmt.Sprintf("hwState(%d)", int(s))
+}
+
+type hwAction int
+
+const (
+	hwActionNone           hwAction = iota
+	hwActionRecreateDevice          // rebuild with a fresh D3D11VA device
+	hwActionUseSoftware             // rebuild in software and stay there
+)
+
+// hwFailureTracker is the pure decision logic behind hardware recovery. It
+// holds no FFmpeg state so it can be tested without a GPU.
+type hwFailureTracker struct {
+	maxFrames, minFrames int
+	window               time.Duration
+	retries              int
+
+	state        hwState
+	consecutive  int
+	firstFailure time.Time
+}
+
+func newHWFailureTracker() hwFailureTracker {
+	return hwFailureTracker{
+		maxFrames: hwFailureFrames,
+		minFrames: hwFailureMinFrames,
+		window:    hwFailureWindow,
+		retries:   hwDeviceRetries,
+	}
+}
+
+// success records a decoded picture and clears any failure run.
+func (t *hwFailureTracker) success() {
+	if t.state == hwSoftware {
+		return
+	}
+	t.state = hwHealthy
+	t.consecutive = 0
+}
+
+// failure records one failed access unit at now. When the run crosses the
+// threshold it returns the recovery action and the run length that caused it,
+// and starts counting afresh.
+func (t *hwFailureTracker) failure(now time.Time) (hwAction, int) {
+	if t.state == hwSoftware {
+		return hwActionNone, 0
+	}
+	if t.consecutive == 0 {
+		t.firstFailure = now
+	}
+	t.consecutive++
+	t.state = hwDegraded
+	run := t.consecutive
+	if run < t.maxFrames && (run < t.minFrames || now.Sub(t.firstFailure) < t.window) {
+		return hwActionNone, run
+	}
+	t.consecutive = 0
+	if t.retries > 0 {
+		t.retries--
+		t.state = hwHealthy
+		return hwActionRecreateDevice, run
+	}
+	t.state = hwSoftware
+	return hwActionUseSoftware, run
+}
+
+// forceSoftware pins the tracker to software, e.g. when no device could be
+// recreated.
+func (t *hwFailureTracker) forceSoftware() {
+	t.state = hwSoftware
+	t.consecutive = 0
 }
 
 func NewDecoder() (*Decoder, error) {
@@ -51,52 +166,159 @@ func NewDecoderWithOptions(opts Options) (*Decoder, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Decoder{ff: f, options: opts, hardwareFormat: pixelNone}
+	d := &Decoder{ff: f, options: opts, hardwareFormat: pixelNone, health: newHWFailureTracker()}
+	if !opts.PreferHardware {
+		d.reason = "hardware decoding not requested"
+		d.health.forceSoftware()
+	}
+	if err := d.openBest(opts.PreferHardware); err != nil {
+		d.Close()
+		return nil, err
+	}
+	return d, nil
+}
+
+// openBest opens the decoder, preferring D3D11VA when hardware is true and
+// falling back to software (loudly) when the hardware codec cannot be opened.
+// On error all native state has been released.
+func (d *Decoder) openBest(hardware bool) error {
+	if hardware {
+		err := d.open(true)
+		if err == nil {
+			if d.hardwareFormat == pixelNone {
+				d.health.forceSoftware()
+			}
+			return nil
+		}
+		d.release()
+		d.reason = "opening the D3D11VA decoder failed: " + err.Error()
+		log.Printf("decode: hardware decoding requested but %s; using software decoding", d.reason)
+		d.health.forceSoftware()
+	}
+	if err := d.open(false); err != nil {
+		d.release()
+		return err
+	}
+	return nil
+}
+
+// open allocates the codec context, optional D3D11VA device, frame, packet and
+// parser. On error the caller must release.
+func (d *Decoder) open(hardware bool) error {
+	f := d.ff
+	d.hardwareFormat = pixelNone
 	codec := f.findDecoder(codecH264)
 	if codec == 0 {
-		return nil, errors.New("decode: H.264 codec unavailable")
+		return errors.New("decode: H.264 codec unavailable")
 	}
 	d.ctx = f.allocContext(codec)
 	if d.ctx == nil {
-		return nil, errors.New("decode: allocate H.264 context")
+		return errors.New("decode: allocate H.264 context")
 	}
 	d.ctx.ThreadCount = 0
 	d.ctx.ThreadType = threadSlice
 	d.ctx.Flags |= flagLowDelay
 	d.ctx.Flags2 |= flagFast
-	if opts.PreferHardware {
-		for i := int32(0); ; i++ {
-			config := f.getHWConfig(codec, i)
-			if config == nil {
-				break
+	if hardware {
+		if reason := d.attachHardware(codec); reason != "" {
+			d.reason = reason
+			log.Printf("decode: hardware decoding requested but %s; using software decoding", reason)
+			if d.device != 0 {
+				f.bufferUnref(&d.device)
 			}
-			if config.Methods&hwDeviceContext != 0 && config.DeviceType == deviceD3D11VA {
-				if f.hwDeviceCreate(&d.device, deviceD3D11VA, 0, 0, 0) >= 0 {
-					d.ctx.HWDeviceContext = f.bufferRef(d.device)
-					if d.ctx.HWDeviceContext != 0 {
-						d.hardwareFormat = config.PixelFormat
-						d.ctx.Opaque = uintptr(config.PixelFormat + 1)
-						d.ctx.GetFormat = f.formatCallback
-					}
-				}
-				break
-			}
+		} else {
+			d.reason = ""
 		}
 	}
 	if ret := f.openCodec(d.ctx, codec, 0); ret < 0 {
-		d.Close()
-		return nil, f.error("open H.264", ret)
+		return f.error("open H.264", ret)
 	}
 	d.frame, d.packet, d.parser = f.frameAlloc(), f.packetAlloc(), f.parserInit(codecH264)
 	if d.frame == nil || d.packet == nil || d.parser == 0 {
-		d.Close()
-		return nil, errors.New("decode: allocate H.264 buffers")
+		return errors.New("decode: allocate H.264 buffers")
 	}
-	return d, nil
+	return nil
 }
 
+// attachHardware wires a D3D11VA device into d.ctx. It returns "" on success
+// or a human-readable reason why hardware decoding is unavailable.
+func (d *Decoder) attachHardware(codec uintptr) string {
+	f := d.ff
+	for i := int32(0); ; i++ {
+		config := f.getHWConfig(codec, i)
+		if config == nil {
+			return "the FFmpeg H.264 decoder offers no D3D11VA configuration"
+		}
+		if config.Methods&hwDeviceContext == 0 || config.DeviceType != deviceD3D11VA {
+			continue
+		}
+		if ret := f.hwDeviceCreate(&d.device, deviceD3D11VA, 0, 0, 0); ret < 0 {
+			return "no D3D11VA device could be created (" + f.error("create D3D11VA device", ret).Error() + ")"
+		}
+		d.ctx.HWDeviceContext = f.bufferRef(d.device)
+		if d.ctx.HWDeviceContext == 0 {
+			return "the D3D11VA device reference could not be taken"
+		}
+		d.hardwareFormat = config.PixelFormat
+		d.ctx.Opaque = uintptr(config.PixelFormat + 1)
+		d.ctx.GetFormat = f.formatCallback
+		return ""
+	}
+}
+
+// rebuild replaces all native state, keeping the last picture and the cached
+// parameter sets, which are replayed into the next access unit. It runs inside
+// a serialized DecodeAccessUnit call, so nothing else can be using the state.
+func (d *Decoder) rebuild(hardware bool) {
+	d.release()
+	if err := d.openBest(hardware); err != nil {
+		log.Printf("decode: rebuilding the H.264 decoder failed: %v; video decoding is stopped", err)
+		return
+	}
+	d.replayParams = len(d.params) > 0
+}
+
+// recordHardwareFailure feeds one failed access unit into the tracker and
+// performs the recovery it asks for.
+func (d *Decoder) recordHardwareFailure(cause error) {
+	action, run := d.health.failure(time.Now())
+	switch action {
+	case hwActionRecreateDevice:
+		log.Printf("decode: %d consecutive D3D11VA failures (last: %v); recreating the hardware decoder", run, cause)
+		d.rebuild(true)
+		if d.ctx != nil && d.hardwareFormat != pixelNone {
+			log.Print("decode: D3D11VA decoder recreated; waiting for the next keyframe")
+		} else if d.ctx != nil {
+			log.Print("decode: D3D11VA unavailable after recreation; switched to software decoding for the rest of this session")
+		}
+	case hwActionUseSoftware:
+		d.reason = fmt.Sprintf("D3D11VA failed %d consecutive frames after device recreation (last: %v)", run, cause)
+		log.Printf("decode: %s; switching to software decoding for the rest of this session", d.reason)
+		d.rebuild(false)
+		d.health.forceSoftware()
+	}
+}
+
+// Hardware reports the current decode path. Before the current codec context
+// produces a picture, it reports the configured mode; afterwards it also
+// accounts for FFmpeg choosing a software format for this stream.
 func (d *Decoder) Hardware() bool {
-	return d.ctx != nil && d.ready && d.hardwareFormat != pixelNone && d.frame.Format == d.hardwareFormat
+	return d.ctx != nil && d.frame != nil && d.hardwareFormat != pixelNone && (!d.decoded || d.frame.Format == d.hardwareFormat)
+}
+
+// Status describes the current decode path for logs and diagnostics.
+func (d *Decoder) Status() string {
+	switch {
+	case d.ctx == nil:
+		return "closed"
+	case d.hardwareFormat == pixelNone:
+		return "software (" + d.reason + ")"
+	case d.health.state == hwDegraded:
+		return fmt.Sprintf("D3D11VA (degraded: %d consecutive failures)", d.health.consecutive)
+	case d.decoded && !d.Hardware():
+		return "software (FFmpeg declined D3D11VA for this stream)"
+	}
+	return "D3D11VA"
 }
 
 func (d *Decoder) LastImage() *Image {
@@ -107,6 +329,19 @@ func (d *Decoder) LastImage() *Image {
 }
 
 func (d *Decoder) Close() {
+	d.release()
+	d.pending = nil
+	d.params = nil
+	d.img = Image{}
+	d.ready = false
+}
+
+// release frees every FFmpeg object. The codec context (and its worker
+// threads) is always freed before the hardware device reference.
+func (d *Decoder) release() {
+	d.hardwareFormat = pixelNone
+	d.decoded = false
+	d.replayParams = false
 	if d.scaler != 0 {
 		d.ff.scaleFree(d.scaler)
 		d.scaler = 0
@@ -131,9 +366,6 @@ func (d *Decoder) Close() {
 	if d.device != 0 {
 		d.ff.bufferUnref(&d.device)
 	}
-	d.pending = nil
-	d.img = Image{}
-	d.ready = false
 }
 
 // Decode parses an Annex-B byte stream. The receiver uses DecodeAccessUnit to
@@ -187,6 +419,36 @@ func (d *Decoder) DecodeAccessUnit(data []byte) (*Image, error) {
 	if len(data) == 0 {
 		return nil, ErrNoFrame
 	}
+	// AirPlay sends SPS/PPS once, ahead of the first frame. Keep a copy so a
+	// rebuilt decoder can be primed without waiting for the sender.
+	if ps := annexBParameterSets(data); len(ps) > 0 {
+		d.params = mergeParameterSets(d.params, ps)
+	}
+	hardware := d.hardwareFormat != pixelNone
+	img, err := d.decodeAccessUnit(data)
+	if hardware {
+		switch {
+		case err == nil:
+			d.health.success()
+			if d.frame.Format != d.hardwareFormat && d.reason == "" {
+				d.reason = "FFmpeg declined D3D11VA for this stream"
+				log.Printf("decode: hardware decoding requested but %s; using software decoding", d.reason)
+			}
+		case !errors.Is(err, ErrNoFrame):
+			// May rebuild the native state; data and img are not used after.
+			d.recordHardwareFailure(err)
+		}
+	}
+	return img, err
+}
+
+func (d *Decoder) decodeAccessUnit(data []byte) (*Image, error) {
+	if d.replayParams {
+		// Prepend the complete cache even if this packet supplies only SPS or
+		// PPS. Repeating a parameter set is valid H.264 and keeps both present.
+		primed := make([]byte, 0, len(d.params)+len(data))
+		data = append(append(primed, d.params...), data...)
+	}
 	if err := d.ff.packet(d.packet, data); err != nil {
 		return nil, err
 	}
@@ -195,6 +457,7 @@ func (d *Decoder) DecodeAccessUnit(data []byte) (*Image, error) {
 	if ret < 0 {
 		return nil, d.ff.error("send H.264 packet", ret)
 	}
+	d.replayParams = false
 	ret = d.ff.receiveFrame(d.ctx, d.frame)
 	if ret == errorAgain || ret == errorEOF {
 		return nil, ErrNoFrame
@@ -266,7 +529,77 @@ func (d *Decoder) copyImage() (*Image, error) {
 		return nil, fmt.Errorf("decode: converted %d rows, want %d", rows, f.Height)
 	}
 	d.ready = true
+	d.decoded = true
 	return &d.img, nil
+}
+
+// annexBParameterSets returns copies of the H.264 SPS and PPS NAL units (each
+// with a 4-byte start code) that precede the first slice of an Annex-B access
+// unit, or nil. Scanning stops at the first slice, so a frame without
+// parameter sets costs only a start-code search over its leading bytes.
+func annexBParameterSets(au []byte) []byte {
+	var out []byte
+	_, i := findStartCode(au, 0)
+	for i >= 0 && i < len(au) {
+		nalType := au[i] & 0x1f
+		if nalType >= 1 && nalType <= 5 {
+			break
+		}
+		end, next := findStartCode(au, i)
+		if end < 0 {
+			end = len(au)
+		}
+		if nalType == 7 || nalType == 8 {
+			out = append(out, 0, 0, 0, 1)
+			out = append(out, au[i:end]...)
+		}
+		i = next
+	}
+	return out
+}
+
+// mergeParameterSets replaces each parameter-set type supplied by updates,
+// retaining the other type when SPS and PPS arrive in separate packets.
+func mergeParameterSets(previous, updates []byte) []byte {
+	var out []byte
+	for _, typ := range []byte{7, 8} {
+		var replacement []byte
+		for _, sets := range [][]byte{previous, updates} {
+			var selected []byte
+			start, payload := findStartCode(sets, 0)
+			for payload >= 0 && payload < len(sets) {
+				end, next := findStartCode(sets, payload)
+				if end < 0 {
+					end = len(sets)
+				}
+				if sets[payload]&0x1f == typ {
+					selected = append(selected, sets[start:end]...)
+				}
+				start, payload = end, next
+			}
+			if len(selected) > 0 {
+				replacement = selected
+			}
+		}
+		out = append(out, replacement...)
+	}
+	return out
+}
+
+// findStartCode locates the first 00 00 01 at or after from. It returns the
+// index where the start code begins (including a leading zero of a 4-byte
+// code) and the index of the NAL payload, or -1, -1.
+func findStartCode(b []byte, from int) (start, payload int) {
+	for i := from; i+2 < len(b); i++ {
+		if b[i] == 0 && b[i+1] == 0 && b[i+2] == 1 {
+			start = i
+			if start > from && b[start-1] == 0 {
+				start--
+			}
+			return start, i + 3
+		}
+	}
+	return -1, -1
 }
 
 // Version reports the loaded runtime, or the concrete loader error.

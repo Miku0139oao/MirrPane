@@ -58,6 +58,13 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	}
 
 	img, err := s.dec.DecodeAccessUnit(f.Data)
+	// Recovery can change modes on a failed access unit, before the next
+	// keyframe arrives. Keep diagnostics current while waiting for it.
+	hw := s.dec.Hardware()
+	if err == nil || s.haveMode.Load() {
+		s.hwMode.Store(hw)
+		s.haveMode.Store(true)
+	}
 	if err != nil {
 		if err != decode.ErrNoFrame {
 			s.errRate.printf("decode: %v", err)
@@ -72,9 +79,6 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	s.width.Store(int64(img.Width))
 	s.height.Store(int64(img.Height))
 	if s.frames.Add(1) == 1 {
-		hw := s.dec.Hardware()
-		s.hwMode.Store(hw)
-		s.haveMode.Store(true)
 		mode := "software"
 		if hw {
 			mode = "D3D11VA"
