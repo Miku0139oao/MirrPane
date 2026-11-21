@@ -84,23 +84,35 @@ func HardwareAddress() string {
 var virtualInterfacePrefixes = []string{
 	"tailscale", "zerotier", "wireguard", "openvpn",
 	"virtualbox", "vmware", "loopback", "bluetooth",
-	"npcap", "wintun", "docker",
+	"npcap", "wintun", "docker", "cloudflarewarp", "clash", "mihomo", "sing-box",
+}
+
+func virtualInterfaceName(name string) bool {
+	name = strings.ToLower(name)
+	for _, prefix := range virtualInterfacePrefixes {
+		if strings.Contains(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // interfaceScore ranks a candidate LAN adapter. Higher is better; a score of
 // zero or below means "not a candidate".
 func interfaceScore(iface net.Interface) int {
-	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+	return scoreInterface(iface, addresses(&iface))
+}
+
+func scoreInterface(iface net.Interface, ips []net.IP) int {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 ||
+		iface.Flags&(net.FlagLoopback|net.FlagPointToPoint) != 0 {
 		return 0
 	}
-	name := strings.ToLower(iface.Name)
-	for _, prefix := range virtualInterfacePrefixes {
-		if strings.Contains(name, prefix) {
-			return 0
-		}
+	if virtualInterfaceName(iface.Name) {
+		return 0
 	}
 	usable := 0
-	for _, a := range addresses(&iface) {
+	for _, a := range ips {
 		if isUsableIPv4(a) {
 			usable++
 		}
@@ -121,11 +133,15 @@ func interfaceScore(iface net.Interface) int {
 // LANInterface returns the interface an iPhone on the same network should use
 // to reach this machine, or nil when there is none.
 //
-// The answer comes from the routing table: the adapter holding the default route
-// is the one connected to the network the phone is on. Interface-name heuristics
-// are only the fallback, because an adapter's name says nothing reliable about
-// what it connects to.
+// A VPN/TUN can own the internet default route without reaching local multicast.
+// Prefer an Ethernet/Wi-Fi gateway adapter (including external Hyper-V bridges)
+// before consulting that route. Adapter-name heuristics are the final fallback.
 func LANInterface() *net.Interface {
+	if idx, ok := preferredLANIndex(); ok {
+		if iface, err := net.InterfaceByIndex(idx); err == nil && interfaceScore(*iface) > 0 {
+			return iface
+		}
+	}
 	// 1.1.1.1 is used only as a route lookup target; nothing is sent to it.
 	if idx, ok := defaultRouteIndex(net.IPv4(1, 1, 1, 1)); ok {
 		if iface, err := net.InterfaceByIndex(idx); err == nil && interfaceScore(*iface) > 0 {
@@ -200,15 +216,19 @@ func addresses(iface *net.Interface) []net.IP {
 	return out
 }
 
-// isUsableIPv4 rejects loopback, link-local, CGNAT (Tailscale and friends) and
-// anything else an iPhone cannot dial.
+// isUsableIPv4 rejects loopback, link-local, CGNAT and benchmarking addresses
+// commonly assigned to TUN adapters (including Mihomo's 198.18.0.1).
 func isUsableIPv4(ip net.IP) bool {
 	v4 := ip.To4()
-	if v4 == nil || v4.IsLoopback() || v4.IsLinkLocalUnicast() || v4.IsUnspecified() {
+	if v4 == nil || !v4.IsGlobalUnicast() || v4.IsLinkLocalUnicast() {
 		return false
 	}
 	// 100.64.0.0/10 is carrier-grade NAT; Tailscale and some VPNs live here.
 	if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	// RFC 2544 benchmarking range, also used as a TUN/fake-IP network.
+	if v4[0] == 198 && (v4[1] == 18 || v4[1] == 19) {
 		return false
 	}
 	return true

@@ -107,10 +107,11 @@ func (a *Advertiser) Start() error {
 	// and _raop._tcp through two servers that share the lifetime.
 	// The interface is pinned to the LAN one: advertising every adapter makes the
 	// receiver offer addresses an iPhone cannot route to.
-	var ifaces []net.Interface
-	if lan := protocol.LANInterface(); lan != nil {
-		ifaces = []net.Interface{*lan}
+	lan := protocol.LANInterface()
+	if lan == nil {
+		return fmt.Errorf("mdns: no multicast-capable LAN interface with a usable IPv4 address")
 	}
+	ifaces := []net.Interface{*lan}
 
 	srv, err := zeroconf.Register(
 		a.name,
@@ -139,7 +140,7 @@ func (a *Advertiser) Start() error {
 		log.Printf("mdns: _raop._tcp registration skipped: %v", err)
 	}
 
-	log.Printf("mdns: advertising %q on port %d (features %s)", a.name, a.port, features)
+	log.Printf("mdns: advertising %q on %q (index %d), port %d (features %s)", a.name, lan.Name, lan.Index, a.port, features)
 	return nil
 }
 

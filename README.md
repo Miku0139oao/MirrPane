@@ -68,7 +68,7 @@ go build ./...
 go test ./...
 cd ..
 
-# 3. 完整建置 Flutter + Go sidecar，輸出 dist\鏡屏-0.3.0\ 與 zip
+# 3. 完整建置 Flutter + Go sidecar，輸出 dist\鏡屏-0.3.1\ 與 zip
 .\package.ps1
 ```
 
@@ -83,6 +83,10 @@ FFmpeg ABI 定義已隨原始碼提交，包含結構大小／欄位位移的編
 ### 驗證
 
 CI 在 Windows 上以 `CGO_ENABLED=0` 建置、測試並打包 Flutter 應用程式，另以 Linux 工作檢查不需要 FFmpeg 的 Go 協定／密碼學套件。FairPlay 的四種模式及中間雜湊由原始 C 實作的 1,024 組固定測試資料比對；解碼測試保留 H.264、AAC、色彩設定與硬解／軟解路徑。
+
+### TUN／VPN 與裝置發現
+
+Windows 會優先選擇具備 IPv4 閘道的 Ethernet／Wi-Fi 區網介面（包含 Hyper-V 外部交換器），避免把 AirPlay 廣播送往 TUN 的網際網路預設路由。`198.18.0.0/15`、CGNAT 與點對點隧道不會作為區網地址；日誌會記錄實際使用的介面名稱與索引。mDNS 套件固定至包含 Windows 多播介面修正的上游版本，接收器可在開啟 TUN 時維持區網廣播。
 
 ---
 

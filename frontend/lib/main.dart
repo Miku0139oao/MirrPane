@@ -1691,7 +1691,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         Text('鏡屏 MirrPane 設定',
                             style: TextStyle(
                                 fontSize: 17, fontWeight: FontWeight.w500)),
-                        Text('v0.3.0 · AirPlay Screen Receiver',
+                        Text('v0.3.1 · AirPlay Screen Receiver',
                             style: TextStyle(fontSize: 11.5, color: muted)),
                       ],
                     ),

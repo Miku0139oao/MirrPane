@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Test portable protocol and crypto without FFmpeg or a C compiler
         working-directory: backend
-        run: go test ./internal/fairplay ./internal/pairing ./internal/mirror ./internal/config ./internal/mdns ./internal/ffmpeg
+        run: go test ./internal/fairplay ./internal/pairing ./internal/mirror ./internal/config ./internal/protocol ./internal/mdns ./internal/ffmpeg
       - name: Cross-compile the complete Windows backend with cgo disabled
         working-directory: backend
         env:
@@ -69,7 +69,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -v ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet ./internal/decode ./internal/fairplay ./internal/ffmpeg ./cmd/...
+          go vet ./internal/decode ./internal/fairplay ./internal/ffmpeg ./internal/protocol ./internal/mdns ./cmd/...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Frontend pub get & analyze

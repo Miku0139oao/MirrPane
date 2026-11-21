@@ -4,10 +4,10 @@
 # registry keys, no AppData writes, no system-wide runtimes. Everything the
 # program needs travels with it.
 #
-# Usage:  .\package.ps1 [-Version 0.3.0] [-SkipBuild] [-Flutter C:\path\to\flutter.bat]
+# Usage:  .\package.ps1 [-Version 0.3.1] [-SkipBuild] [-Flutter C:\path\to\flutter.bat]
 
 param(
-    [string]$Version = "0.3.0",
+    [string]$Version = "0.3.1",
     [switch]$SkipBuild,
     [string]$Flutter = ""
 )

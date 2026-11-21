@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.3.0)'
+        description: 'Release version (e.g. 0.3.1)'
         required: true
         type: string
 
@@ -64,7 +64,7 @@ jobs:
           Push-Location backend
           go test ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet ./internal/decode ./internal/fairplay ./internal/ffmpeg ./cmd/...
+          go vet ./internal/decode ./internal/fairplay ./internal/ffmpeg ./internal/protocol ./internal/mdns ./cmd/...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
 
