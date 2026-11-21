@@ -7,12 +7,17 @@
 # Usage:  .\package.ps1 [-Version 0.3.1] [-SkipBuild] [-Flutter C:\path\to\flutter.bat]
 
 param(
-    [string]$Version = "0.3.1",
+    [string]$Version = "",
     [switch]$SkipBuild,
     [string]$Flutter = ""
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $pubspec = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'frontend\pubspec.yaml') -Raw
+    if ($pubspec -notmatch '(?m)^version:\s*([^+\s]+)') { throw 'frontend/pubspec.yaml version missing' }
+    $Version = $Matches[1]
+}
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'invalid release version' }
 
 $root = $PSScriptRoot
@@ -42,7 +47,8 @@ Write-Host "packaging $appName $Version"
 if (-not $SkipBuild) {
     Push-Location (Join-Path $root 'frontend')
     try {
-        & $flutter build windows --release --no-tree-shake-icons
+        # One value drives the UI, Windows version resources, and zip name.
+        & $flutter build windows --release "--build-name=$Version" "--dart-define=MIRRPANE_VERSION=$Version"
         if ($LASTEXITCODE -ne 0) { throw "flutter build failed" }
     }
     finally { Pop-Location }
@@ -73,8 +79,19 @@ if ($LASTEXITCODE -ne 0) { throw "sidecar build failed" }
 # The Visual C++ runtime Flutter's runner links against. Windows does not always
 # have it, and asking the user to install it would break "unzip and run".
 $crt = 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'
+# Exact redistributable toolset; never choose a runner's newest installed CRT.
+$crtVersion = '14.44.35112'
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$vsRoot = $null
+if (Test-Path -LiteralPath $vswhere) { $vsRoot = & $vswhere -latest -products '*' -property installationPath }
+$crtRoot = if ($vsRoot) { Join-Path $vsRoot "VC\Redist\MSVC\$crtVersion\x64\Microsoft.VC143.CRT" } else { '' }
+$hasPinnedCRT = $crtRoot -and (@($crt | Where-Object { -not (Test-Path -LiteralPath (Join-Path $crtRoot $_)) }).Count -eq 0)
+if (-not $hasPinnedCRT) {
+    Write-Warning "Pinned Visual Studio CRT $crtVersion is absent; falling back to System32 (package CRT is machine-dependent)."
+    $crtRoot = Join-Path $env:SystemRoot 'System32'
+}
 foreach ($dll in $crt) {
-    $src = Join-Path $env:SystemRoot "System32\$dll"
+    $src = Join-Path $crtRoot $dll
     if (Test-Path $src) {
         Copy-Item $src -Destination $dist -Force
     } else {
@@ -83,6 +100,28 @@ foreach ($dll in $crt) {
 }
 
 New-Item -ItemType Directory -Path (Join-Path $dist 'logs') -Force | Out-Null
+
+# Ship both GPL texts and exact upstream/source/build pointers with the DLLs.
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $dist 'LICENSE') -Force
+Copy-Item -LiteralPath (Join-Path $dist 'backend\COPYING') -Destination (Join-Path $dist 'COPYING') -Force
+$runtimeManager = Get-Content -LiteralPath (Join-Path $root 'backend\internal\ffmpeg\runtime.go') -Raw
+if ($runtimeManager -notmatch 'releaseTag\s*=\s*"([^"]+)"') { throw 'FFmpeg release pin missing' }
+$ffmpegTag = $Matches[1]
+if ($runtimeManager -notmatch 'assetSHA256\s*=\s*"([0-9a-f]{64})"') { throw 'FFmpeg SHA256 pin missing' }
+$ffmpegDigest = $Matches[1]
+$sourceNotice = @"
+MirrPane ${Version}: GNU GPL version 3; see LICENSE.
+Application source: https://github.com/Miku0139oao/MirrPane
+FFmpeg shared runtime: N-129166-gae9f4540cb-20261121; GNU GPL version 3; see COPYING.
+Pinned binary/build release: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/$ffmpegTag
+Pinned binary SHA256: $ffmpegDigest
+FFmpeg corresponding source: https://github.com/FFmpeg/FFmpeg/tree/ae9f4540cb6a549118aacef8361dc2f8da9d5f4a
+Build scripts, dependency versions, patches and configuration:
+https://github.com/FFmpeg-Builds/FFmpeg-Builds/tree/7f2a6b1050d302144de8366afa37a75e46f326aa
+Obtain all enabled dependencies using the matching build scripts, not just FFmpeg's source tree.
+Release distributors must provide the complete corresponding source for their conveyed build.
+"@
+Set-Content -LiteralPath (Join-Path $dist 'SOURCE.txt') -Value $sourceNotice -Encoding utf8
 
 # --- readme ------------------------------------------------------------------
 

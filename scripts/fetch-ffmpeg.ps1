@@ -1,6 +1,6 @@
-# Detect the local shared runtime, or download and verify the latest BtbN build.
+# Detect the local shared runtime, or download and verify the pinned BtbN build.
 # Only runtime DLLs are needed; no headers, import libraries, or MinGW.
-param([switch]$Force, [switch]$PassThru)
+param([switch]$Force, [switch]$PassThru, [switch]$Pinned)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $root 'third_party\ffmpeg'
@@ -24,7 +24,13 @@ if (-not (Test-Runtime $runtimeDir)) {
         }
     }
 }
-if ($Force -or -not (Test-Runtime $runtimeDir)) {
+if ($Pinned) {
+    # Read the Go pin instead of maintaining a second digest in PowerShell.
+    $manager = Get-Content -LiteralPath (Join-Path $root 'backend\internal\ffmpeg\runtime.go') -Raw
+    if ($manager -notmatch 'assetSHA256\s*=\s*"([0-9a-f]{64})"') { throw 'FFmpeg SHA256 pin missing' }
+    $runtimeDir = Join-Path $runtimeRoot ('runtime-' + $Matches[1].Substring(0, 16))
+}
+if ($Force -or -not (Test-Runtime $runtimeDir) -or ($Pinned -and -not (Test-Path -LiteralPath (Join-Path $runtimeDir 'COPYING')))) {
     $previousCGO = $env:CGO_ENABLED
     Push-Location (Join-Path $root 'backend')
     try {

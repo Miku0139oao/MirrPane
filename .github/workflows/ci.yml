@@ -59,7 +59,7 @@ jobs:
 
       - name: Detect or download verified FFmpeg runtime
         shell: pwsh
-        run: .\scripts\fetch-ffmpeg.ps1
+        run: .\scripts\fetch-ffmpeg.ps1 -Pinned
 
       - name: Backend build & test
         shell: pwsh

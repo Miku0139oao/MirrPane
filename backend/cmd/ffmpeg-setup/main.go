@@ -15,7 +15,7 @@ import (
 func main() {
 	output := flag.String("output", "../third_party/ffmpeg", "portable cache directory")
 	flag.Parse()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	dir, err := ffmpeg.DownloadLatest(ctx, *output, func(s string) { fmt.Fprintln(os.Stderr, s) })
 	if err != nil {

@@ -189,7 +189,9 @@ func main() {
 		startup(err.Error(), true, true)
 		os.Exit(1)
 	}
-	setupContext, cancelSetup := context.WithTimeout(context.Background(), 10*time.Minute)
+	// The downloader enforces a 30s idle timeout per read and retries resumable
+	// ranges, so the outer cap only bounds the whole provisioning step.
+	setupContext, cancelSetup := context.WithTimeout(context.Background(), 30*time.Minute)
 	runtimeDir, setupErr := decode.PrepareRuntime(setupContext, filepath.Join(filepath.Dir(executable), "ffmpeg"), func(message string) {
 		startup(message, false, false)
 	})
