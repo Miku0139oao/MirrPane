@@ -287,6 +287,7 @@ func main() {
 	srv.OnPairVerify = recv.PairVerify
 	srv.OnSetup = recv.Setup
 	srv.OnTeardown = recv.Teardown
+	srv.OnDisconnect = recv.DropSession
 
 	if err := srv.Serve(controlPort.ln); err != nil {
 		note("error: %v", err)

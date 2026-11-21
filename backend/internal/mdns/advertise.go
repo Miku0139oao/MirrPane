@@ -6,19 +6,42 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/grandcat/zeroconf"
 
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 )
 
+type serviceServer interface {
+	Shutdown()
+}
+
+// lanInterface includes the addresses because an adapter can retain its index
+// across a DHCP renewal or Wi-Fi reconnect. ipv4 is the sorted IPv4 address set.
+type lanInterface struct {
+	iface net.Interface
+	ipv4  string
+}
+
 // Advertiser publishes the _airplay._tcp and _raop._tcp records.
 type Advertiser struct {
-	server *zeroconf.Server
-	raop   *zeroconf.Server
+	server serviceServer
+	raop   serviceServer
 	mu     sync.Mutex
+	lan    lanInterface
+	stop   chan struct{}
+	done   chan struct{}
+
+	// Dependencies are set before Start; tests need neither real adapters nor
+	// multicast sockets, and can shorten the polling interval.
+	resolveInterface func() (lanInterface, error)
+	register         func(string, string, string, int, []string, []net.Interface) (serviceServer, error)
+	watchInterval    time.Duration
 
 	name    string
 	port    int
@@ -34,7 +57,40 @@ type Advertiser struct {
 
 // New creates an advertiser. port is the HTTP control port the receiver listens on.
 func New(name string, port int, device protocol.DeviceInfo) *Advertiser {
-	return &Advertiser{name: name, port: port, device: device}
+	return &Advertiser{
+		name: name, port: port, device: device,
+		resolveInterface: resolveLANInterface,
+		register:         registerService,
+		watchInterval:    5 * time.Second,
+	}
+}
+
+func registerService(instance, service, domain string, port int, txt []string, ifaces []net.Interface) (serviceServer, error) {
+	return zeroconf.Register(instance, service, domain, port, txt, ifaces)
+}
+
+func resolveLANInterface() (lanInterface, error) {
+	lan := protocol.LANInterface()
+	if lan == nil {
+		return lanInterface{}, fmt.Errorf("mdns: no multicast-capable LAN interface with a usable IPv4 address")
+	}
+	addrs, err := lan.Addrs()
+	if err != nil {
+		return lanInterface{}, fmt.Errorf("mdns: addresses for %q: %w", lan.Name, err)
+	}
+	var ips []string
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			if ip := ipnet.IP.To4(); ip != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	if len(ips) == 0 {
+		return lanInterface{}, fmt.Errorf("mdns: LAN interface %q lost its IPv4 address", lan.Name)
+	}
+	sort.Strings(ips)
+	return lanInterface{iface: *lan, ipv4: strings.Join(ips, ",")}, nil
 }
 
 // SetPinEnabled toggles whether the TXT records claim a password is required.
@@ -44,14 +100,68 @@ func (a *Advertiser) SetPinEnabled(enabled bool) {
 	a.mu.Unlock()
 }
 
-// Start registers the DNS-SD services and blocks until they are live or fails.
+// Start registers the DNS-SD services and watches for LAN changes until Stop.
+// Repeated calls while the watchdog is running are harmless, even if a failed
+// re-registration is waiting for the next retry.
 func (a *Advertiser) Start() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.server != nil {
+	if a.stop != nil {
 		return nil
 	}
+	if err := a.refreshLocked(); err != nil {
+		return err
+	}
+	a.stop = make(chan struct{})
+	a.done = make(chan struct{})
+	go a.watch(a.stop, a.done, a.watchInterval)
+	return nil
+}
+
+func (a *Advertiser) watch(stop <-chan struct{}, done chan<- struct{}, interval time.Duration) {
+	defer close(done)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		a.mu.Lock()
+		// Stop may have won the mutex after this tick. An old watchdog must
+		// never restart services, including after a subsequent Start.
+		select {
+		case <-stop:
+			a.mu.Unlock()
+			return
+		default:
+		}
+		if err := a.refreshLocked(); err != nil {
+			log.Printf("mdns: refresh failed (will retry): %v", err)
+		}
+		a.mu.Unlock()
+	}
+}
+
+// refreshLocked reconciles the two services against one LAN snapshot. A failed
+// lookup or registration leaves them stopped so the next tick can retry.
+func (a *Advertiser) refreshLocked() error {
+	lan, err := a.resolveInterface()
+	if err != nil {
+		a.stopServicesLocked()
+		return err
+	}
+	if a.server != nil && a.lan.iface.Index == lan.iface.Index && a.lan.ipv4 == lan.ipv4 {
+		a.startRAOPLocked(lan.iface)
+		return nil
+	}
+	a.stopServicesLocked()
+	return a.startServicesLocked(lan)
+}
+
+func (a *Advertiser) startServicesLocked(lan lanInterface) error {
 
 	// The _airplay._tcp record carries the AirPlay screen-mirroring service.
 	// Its TXT keys are the ones UxPlay (GPLv3) advertises; see lib/dnssdint.h
@@ -107,13 +217,9 @@ func (a *Advertiser) Start() error {
 	// and _raop._tcp through two servers that share the lifetime.
 	// The interface is pinned to the LAN one: advertising every adapter makes the
 	// receiver offer addresses an iPhone cannot route to.
-	lan := protocol.LANInterface()
-	if lan == nil {
-		return fmt.Errorf("mdns: no multicast-capable LAN interface with a usable IPv4 address")
-	}
-	ifaces := []net.Interface{*lan}
+	ifaces := []net.Interface{lan.iface}
 
-	srv, err := zeroconf.Register(
+	srv, err := a.register(
 		a.name,
 		"_airplay._tcp",
 		"local.",
@@ -125,23 +231,30 @@ func (a *Advertiser) Start() error {
 		return fmt.Errorf("register _airplay._tcp: %w", err)
 	}
 	a.server = srv
+	a.lan = lan
+	a.startRAOPLocked(lan.iface)
 
+	log.Printf("mdns: advertising %q on %q (index %d, IPv4 %s), port %d (features %s)", a.name, lan.iface.Name, lan.iface.Index, lan.ipv4, a.port, features)
+	return nil
+}
+
+func (a *Advertiser) startRAOPLocked(iface net.Interface) {
+	if a.raop != nil {
+		return
+	}
 	// Best effort: _raop._tcp is optional for screen mirroring.
-	if raopSrv, err := zeroconf.Register(
+	if raopSrv, err := a.register(
 		raopServiceName(a.device.MAC)+"@"+a.name,
 		"_raop._tcp",
 		"local.",
 		a.port,
-		raopTXT,
-		ifaces,
+		a.raopTXT,
+		[]net.Interface{iface},
 	); err == nil {
 		a.raop = raopSrv
 	} else {
 		log.Printf("mdns: _raop._tcp registration skipped: %v", err)
 	}
-
-	log.Printf("mdns: advertising %q on %q (index %d), port %d (features %s)", a.name, lan.Name, lan.Index, a.port, features)
-	return nil
 }
 
 func boolString(b bool) string {
@@ -181,10 +294,24 @@ func (a *Advertiser) TXTRecord(raop bool) []byte {
 	return out
 }
 
-// Stop unregisters the services.
+// Stop unregisters both services and waits for the watchdog to exit. Waiting
+// outside mu lets an already queued tick observe cancellation without deadlock.
 func (a *Advertiser) Stop() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	if a.stop != nil {
+		close(a.stop)
+		a.stop = nil
+	}
+	// Retain done so concurrent Stop calls also wait for this watchdog.
+	done := a.done
+	a.stopServicesLocked()
+	a.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (a *Advertiser) stopServicesLocked() {
 	if a.raop != nil {
 		a.raop.Shutdown()
 		a.raop = nil
@@ -193,6 +320,7 @@ func (a *Advertiser) Stop() {
 		a.server.Shutdown()
 		a.server = nil
 	}
+	a.lan = lanInterface{}
 }
 
 // String reports the current advertised state for the logs.
