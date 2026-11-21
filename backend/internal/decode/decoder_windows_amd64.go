@@ -16,6 +16,10 @@ import (
 
 var ErrNoFrame = errors.New("decode: no frame ready")
 
+// errShortDestination means the caller's buffer cannot hold the picture. It is
+// a contract error, not a decode failure, so it must not trip hardware recovery.
+var errShortDestination = errors.New("decode: destination too small")
+
 // QueryPerformanceCounter bindings. The decoder reports its per-stage cost in
 // nanoseconds; QPC is the same clock the publisher stamps into the shared
 // control block, so a timeline can be built across both sides.
@@ -106,6 +110,7 @@ type Decoder struct {
 	img                    Image
 	ready                  bool
 	decoded                bool // a picture has been produced by the current codec context
+	frameReady             bool // d.frame holds a picture waiting for CopyImageTo
 	pending                []byte
 
 	health       hwFailureTracker
@@ -393,6 +398,7 @@ func (d *Decoder) Close() {
 	d.params = nil
 	d.img = Image{}
 	d.ready = false
+	d.frameReady = false
 }
 
 // release frees every FFmpeg object. The codec context (and its worker
@@ -400,6 +406,7 @@ func (d *Decoder) Close() {
 func (d *Decoder) release() {
 	d.hardwareFormat = pixelNone
 	d.decoded = false
+	d.frameReady = false
 	d.replayParams = false
 	if d.scaler != 0 {
 		d.ff.scaleFree(d.scaler)
@@ -471,12 +478,52 @@ func (d *Decoder) Decode(data []byte) (*Image, error) {
 	return nil, ErrNoFrame
 }
 
+// DecodeAccessUnit decodes one access unit and converts it into the decoder's
+// own reused buffer. Callers that can render straight into their destination
+// (the frame sink renders into the shared-memory slot) use ReceiveAccessUnit
+// followed by CopyImageTo instead and skip that copy entirely.
 func (d *Decoder) DecodeAccessUnit(data []byte) (*Image, error) {
+	if err := d.ReceiveAccessUnit(data, true); err != nil {
+		return nil, err
+	}
+	w, h := d.FrameSize()
+	if w <= 0 || h <= 0 {
+		// Surface the conversion path's own error (invalid size, or a failed
+		// hardware download before it) so hardware recovery still sees it.
+		_, err := d.CopyImageTo(nil, 0)
+		return nil, err
+	}
+	stride := w * 4
+	need := stride * h
+	if cap(d.img.Pixels) < need {
+		d.img.Pixels = make([]byte, need)
+	}
+	d.img = Image{Width: w, Height: h, Stride: stride, Pixels: d.img.Pixels[:need]}
+	timings, err := d.CopyImageTo(d.img.Pixels, stride)
+	if err != nil {
+		return nil, err
+	}
+	d.img.Timings = timings
+	d.ready = true
+	return &d.img, nil
+}
+
+// ReceiveAccessUnit decodes one access unit and leaves the picture in the
+// decoder for CopyImageTo. It never touches the GPU→system-memory download or
+// the colour converter: that work is deferred so a producer with no consumer
+// can skip it without skipping the decode itself (P/B frames are references,
+// so every access unit must still be fed to FFmpeg).
+//
+// convert tells the decoder whether the caller will follow with CopyImageTo.
+// When it is false the access unit is accounted for as a healthy decode at
+// once, so a deliberately skipped conversion is not mistaken for a hardware
+// failure by the recovery tracker.
+func (d *Decoder) ReceiveAccessUnit(data []byte, convert bool) error {
 	if d.ctx == nil {
-		return nil, errors.New("decode: decoder is closed")
+		return errors.New("decode: decoder is closed")
 	}
 	if len(data) == 0 {
-		return nil, ErrNoFrame
+		return ErrNoFrame
 	}
 	// AirPlay sends SPS/PPS once, ahead of the first frame. Keep a copy so a
 	// rebuilt decoder can be primed without waiting for the sender.
@@ -484,24 +531,36 @@ func (d *Decoder) DecodeAccessUnit(data []byte) (*Image, error) {
 		d.params = mergeParameterSets(d.params, ps)
 	}
 	hardware := d.hardwareFormat != pixelNone
-	img, err := d.decodeAccessUnit(data)
+	err := d.receiveAccessUnit(data)
 	if hardware {
 		switch {
 		case err == nil:
-			d.health.success()
+			if !convert {
+				d.health.success()
+			}
 			if d.frame.Format != d.hardwareFormat && d.reason == "" {
 				d.reason = "FFmpeg declined D3D11VA for this stream"
 				log.Printf("decode: hardware decoding requested but %s; using software decoding", d.reason)
 			}
 		case !errors.Is(err, ErrNoFrame):
-			// May rebuild the native state; data and img are not used after.
+			// May rebuild the native state; data and the frame are not used after.
 			d.recordHardwareFailure(err)
 		}
 	}
-	return img, err
+	return err
 }
 
-func (d *Decoder) decodeAccessUnit(data []byte) (*Image, error) {
+// FrameSize reports the size of the picture ReceiveAccessUnit left waiting for
+// CopyImageTo, or zero when there is none.
+func (d *Decoder) FrameSize() (width, height int) {
+	if d.frame == nil || !d.frameReady {
+		return 0, 0
+	}
+	return int(d.frame.Width), int(d.frame.Height)
+}
+
+func (d *Decoder) receiveAccessUnit(data []byte) error {
+	d.frameReady = false
 	if d.replayParams {
 		// Prepend the complete cache even if this packet supplies only SPS or
 		// PPS. Repeating a parameter set is valid H.264 and keeps both present.
@@ -509,46 +568,83 @@ func (d *Decoder) decodeAccessUnit(data []byte) (*Image, error) {
 		data = append(append(primed, d.params...), data...)
 	}
 	if err := d.ff.packet(d.packet, data); err != nil {
-		return nil, err
+		return err
 	}
 	ret := d.ff.sendPacket(d.ctx, d.packet)
 	d.ff.packetUnref(d.packet)
 	if ret < 0 {
-		return nil, d.ff.error("send H.264 packet", ret)
+		return d.ff.error("send H.264 packet", ret)
 	}
 	d.replayParams = false
 	ret = d.ff.receiveFrame(d.ctx, d.frame)
 	if ret == errorAgain || ret == errorEOF {
-		return nil, ErrNoFrame
+		return ErrNoFrame
 	}
 	if ret < 0 {
-		return nil, d.ff.error("receive H.264 frame", ret)
+		return d.ff.error("receive H.264 frame", ret)
 	}
-	return d.copyImage()
+	d.frameReady = true
+	d.decoded = true
+	return nil
 }
 
-func (d *Decoder) copyImage() (*Image, error) {
-	f := d.frame
+// CopyImageTo downloads the received picture from the GPU when needed and runs
+// sws_scale into dst, which must hold height rows of dstStride bytes with at
+// least width*4 bytes used per row. It reports where the time went. The
+// picture is consumed: the next conversion needs another ReceiveAccessUnit.
+func (d *Decoder) CopyImageTo(dst []byte, dstStride int) (DecodeTimings, error) {
+	if d.ctx == nil {
+		return DecodeTimings{}, errors.New("decode: decoder is closed")
+	}
+	if !d.frameReady || d.frame == nil {
+		return DecodeTimings{}, errors.New("decode: no received picture")
+	}
+	hardware := d.hardwareFormat != pixelNone
+	timings, err := d.copyImageTo(dst, dstStride)
+	d.frameReady = false
+	if err != nil {
+		// A short destination is the caller's mistake, not a hardware fault.
+		if hardware && !errors.Is(err, errShortDestination) {
+			d.recordHardwareFailure(err)
+		}
+		return timings, err
+	}
+	if hardware {
+		d.health.success()
+	}
+	return timings, nil
+}
+
+func (d *Decoder) copyImageTo(dst []byte, dstStride int) (DecodeTimings, error) {
 	var timings DecodeTimings
+	f := d.frame
+	src := f
 	if d.hardwareFormat != pixelNone && f.Format == d.hardwareFormat {
 		if d.software == nil {
 			d.software = d.ff.frameAlloc()
 		}
 		if d.software == nil {
-			return nil, errors.New("decode: allocate hardware transfer frame")
+			return timings, errors.New("decode: allocate hardware transfer frame")
 		}
 		d.ff.frameUnref(d.software)
 		start := qpcNow()
 		ret := d.ff.hwFrameTransfer(d.software, f, 0)
 		timings.TransferNanos = qpcElapsedNanos(start)
 		if ret < 0 {
-			return nil, d.ff.error("download hardware frame", ret)
+			return timings, d.ff.error("download hardware frame", ret)
 		}
-		f = d.software
+		src = d.software
 	}
-	w, h := int(f.Width), int(f.Height)
+	w, h := int(src.Width), int(src.Height)
 	if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
-		return nil, fmt.Errorf("decode: invalid frame size %dx%d", w, h)
+		return timings, fmt.Errorf("decode: invalid frame size %dx%d", w, h)
+	}
+	rowBytes := w * 4
+	if dstStride < rowBytes {
+		return timings, fmt.Errorf("%w: stride %d shorter than a row (%d)", errShortDestination, dstStride, rowBytes)
+	}
+	if need := (h-1)*dstStride + rowBytes; len(dst) < need {
+		return timings, fmt.Errorf("%w: buffer is %d bytes, need %d", errShortDestination, len(dst), need)
 	}
 	convertStart := qpcNow()
 	flags := int32(scaleFast)
@@ -558,16 +654,16 @@ func (d *Decoder) copyImage() (*Image, error) {
 	case "bicubic":
 		flags = scaleBicubic
 	}
-	d.scaler = d.ff.scaleContext(d.scaler, f.Width, f.Height, f.Format, f.Width, f.Height, pixelRGBA, flags, 0, 0, 0)
+	d.scaler = d.ff.scaleContext(d.scaler, src.Width, src.Height, src.Format, src.Width, src.Height, pixelRGBA, flags, 0, 0, 0)
 	if d.scaler == 0 {
-		return nil, errors.New("decode: allocate color converter")
+		return timings, errors.New("decode: allocate color converter")
 	}
 	full := int32(0)
-	if d.options.ColorRange == "full" || (d.options.ColorRange != "limited" && (d.frame.ColorRange == colorFull || d.frame.Format == pixelYUVJ420P)) {
+	if d.options.ColorRange == "full" || (d.options.ColorRange != "limited" && (f.ColorRange == colorFull || f.Format == pixelYUVJ420P)) {
 		full = 1
 	}
 	matrix := int32(matrixDefault)
-	switch d.frame.ColorSpace {
+	switch f.ColorSpace {
 	case spaceBT709:
 		matrix = matrixBT709
 	case spaceBT2020NCL, spaceBT2020CL:
@@ -577,26 +673,17 @@ func (d *Decoder) copyImage() (*Image, error) {
 	}
 	coeff := d.ff.scaleCoefficients(matrix)
 	if ret := d.ff.scaleColorspace(d.scaler, coeff, full, coeff, 1, 0, 1<<16, 1<<16); ret < 0 {
-		return nil, d.ff.error("set color range", ret)
+		return timings, d.ff.error("set color range", ret)
 	}
-	stride := w * 4
-	need := stride * h
-	if cap(d.img.Pixels) < need {
-		d.img.Pixels = make([]byte, need)
-	}
-	d.img = Image{Width: w, Height: h, Stride: stride, Pixels: d.img.Pixels[:need]}
-	output := [4]*byte{&d.img.Pixels[0]}
-	lines := [4]int32{int32(stride)}
-	rows := d.ff.scale(d.scaler, &f.Data[0], &f.LineSize[0], 0, f.Height, &output[0], &lines[0])
-	runtime.KeepAlive(d.img.Pixels)
+	output := [4]*byte{&dst[0]}
+	lines := [4]int32{int32(dstStride)}
+	rows := d.ff.scale(d.scaler, &src.Data[0], &src.LineSize[0], 0, src.Height, &output[0], &lines[0])
+	runtime.KeepAlive(dst)
 	timings.ConvertNanos = qpcElapsedNanos(convertStart)
-	if rows != f.Height {
-		return nil, fmt.Errorf("decode: converted %d rows, want %d", rows, f.Height)
+	if rows != src.Height {
+		return timings, fmt.Errorf("decode: converted %d rows, want %d", rows, src.Height)
 	}
-	d.img.Timings = timings
-	d.ready = true
-	d.decoded = true
-	return &d.img, nil
+	return timings, nil
 }
 
 // annexBParameterSets returns copies of the H.264 SPS and PPS NAL units (each

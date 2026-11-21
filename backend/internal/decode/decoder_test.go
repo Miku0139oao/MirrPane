@@ -98,6 +98,143 @@ func TestVersionIsReported(t *testing.T) {
 	}
 }
 
+// The direct path renders into caller-supplied memory at an arbitrary row
+// stride. It must not touch the decoder's own picture buffer, and it must not
+// write into the padding between rows.
+func TestReceiveAccessUnitAndCopyImageTo(t *testing.T) {
+	stream, err := os.ReadFile("testdata/sample.h264")
+	if err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	units := accessUnits(stream)
+	if len(units) == 0 {
+		t.Fatal("no access units in fixture")
+	}
+
+	d, err := NewDecoderWithOptions(Options{PreferHardware: false, ColorRange: "auto", ScaleFilter: "fast"})
+	if err != nil {
+		t.Fatalf("NewDecoderWithOptions: %v", err)
+	}
+	defer d.Close()
+
+	const pad = 64
+	shortRejected, converted := false, false
+	for _, u := range units {
+		if err := d.ReceiveAccessUnit(u, true); errors.Is(err, ErrNoFrame) {
+			continue
+		} else if err != nil {
+			t.Fatalf("ReceiveAccessUnit: %v", err)
+		}
+		w, h := d.FrameSize()
+		if w != 320 || h != 240 {
+			t.Fatalf("frame size %dx%d, want 320x240", w, h)
+		}
+		if d.LastImage() != nil {
+			t.Fatal("the direct path filled the decoder's own buffer")
+		}
+
+		// A short destination must be refused before any row is converted.
+		if !shortRejected {
+			shortRejected = true
+			if _, err := d.CopyImageTo(make([]byte, w*4*h-1), w*4); err == nil {
+				t.Fatal("a short destination was accepted")
+			}
+			continue
+		}
+
+		stride := w*4 + pad
+		dst := make([]byte, stride*h)
+		timings, err := d.CopyImageTo(dst, stride)
+		if err != nil {
+			t.Fatalf("CopyImageTo: %v", err)
+		}
+		if timings.TransferNanos < 0 || timings.ConvertNanos < 0 {
+			t.Fatalf("negative timings: %+v", timings)
+		}
+		for y := 0; y < h; y++ {
+			for _, b := range dst[y*stride+w*4 : (y+1)*stride] {
+				if b != 0 {
+					t.Fatalf("row %d padding was written", y)
+				}
+			}
+		}
+		// testsrc2 is not uniform; an empty conversion would be all black.
+		var min, max byte = 255, 0
+		for y := 0; y < h; y++ {
+			row := dst[y*stride : y*stride+w*4]
+			for x := 0; x < len(row); x += 4 {
+				if row[x] < min {
+					min = row[x]
+				}
+				if row[x] > max {
+					max = row[x]
+				}
+			}
+		}
+		if max-min < 8 {
+			t.Fatalf("blue channel spans only %d..%d; the frame looks empty", min, max)
+		}
+		converted = true
+		break
+	}
+	if !shortRejected {
+		t.Fatal("no picture was produced for the short-destination check")
+	}
+	if !converted {
+		t.Fatal("no picture was produced for the stride check")
+	}
+
+	// One received picture converts once; a second attempt must be refused.
+	if w, h := d.FrameSize(); w != 0 || h != 0 {
+		t.Fatalf("FrameSize after conversion = %dx%d, want 0x0", w, h)
+	}
+	if _, err := d.CopyImageTo(make([]byte, 320*240*4), 320*4); err == nil {
+		t.Fatal("converted a picture twice")
+	}
+}
+
+// Skipping the download and conversion must not disturb decoding: P/B frames
+// are references, so both paths must yield exactly the same pictures.
+func TestGatedReceiveMatchesFullDecode(t *testing.T) {
+	stream, err := os.ReadFile("testdata/sample.h264")
+	if err != nil {
+		t.Skipf("fixture missing: %v", err)
+	}
+	units := accessUnits(stream)
+	if len(units) == 0 {
+		t.Fatal("no access units in fixture")
+	}
+
+	count := func(convert bool) int {
+		d, err := NewDecoderWithOptions(Options{PreferHardware: false, ColorRange: "auto", ScaleFilter: "fast"})
+		if err != nil {
+			t.Fatalf("NewDecoderWithOptions: %v", err)
+		}
+		defer d.Close()
+		pictures := 0
+		for _, u := range units {
+			err := d.ReceiveAccessUnit(u, convert)
+			if errors.Is(err, ErrNoFrame) {
+				continue
+			}
+			if err != nil {
+				t.Fatalf("ReceiveAccessUnit(convert=%v): %v", convert, err)
+			}
+			pictures++
+		}
+		return pictures
+	}
+
+	full := count(true)
+	gated := count(false)
+	if full == 0 {
+		t.Fatal("the fixture produced no pictures")
+	}
+	if gated != full {
+		t.Fatalf("gated decode produced %d pictures, full decode %d", gated, full)
+	}
+}
+
 func TestDecodeAccessUnit(t *testing.T) {
 	stream, err := os.ReadFile("testdata/sample.h264")
 	if err != nil {

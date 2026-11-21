@@ -1,6 +1,7 @@
 package frames
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -118,7 +119,7 @@ func TestPublishRoundTrip(t *testing.T) {
 			t.Fatalf("published slot still claimed: %d", s.Claim)
 		}
 		// The pixels must be readable at the slot's base.
-		base := unsafe.Slice((*byte)(unsafe.Pointer(p.slots+uintptr(slot)*uintptr(p.stride))), w*h*4)
+		base := unsafe.Slice((*byte)(unsafe.Add(p.slots, uintptr(slot)*uintptr(p.stride))), w*h*4)
 		for i := 0; i < 8; i++ {
 			if base[i] != img[i] {
 				t.Fatalf("frame %d byte %d = %#x, want %#x", frame, i, base[i], img[i])
@@ -134,6 +135,206 @@ func TestPublishRoundTrip(t *testing.T) {
 	}
 	if p.ctrl.PixelFormat != FormatRGBA {
 		t.Fatalf("pixel format = %d, want RGBA", p.ctrl.PixelFormat)
+	}
+}
+
+// Acquire/Commit is the direct-to-slot path the decoder uses: the producer
+// renders into mapped memory and only the commit publishes it.
+func TestAcquireCommitRoundTrip(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestAcquire`, 64, 64)
+	if err != nil {
+		t.Skipf("shared memory unavailable: %v", err)
+	}
+	defer p.Close()
+
+	const w, h = 40, 24
+	c, err := p.Acquire(w, h)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if c.Stride() != w*4 {
+		t.Fatalf("claim stride = %d, want %d", c.Stride(), w*4)
+	}
+	if len(c.Pixels()) != w*h*4 {
+		t.Fatalf("claim buffer = %d bytes, want %d", len(c.Pixels()), w*h*4)
+	}
+	for i := range c.Pixels() {
+		c.Pixels()[i] = byte(i)
+	}
+
+	before := atomic.LoadUint64(&p.ctrl.Publish)
+	c.Commit()
+	after := atomic.LoadUint64(&p.ctrl.Publish)
+	if after == before {
+		t.Fatal("commit did not advance the publish word")
+	}
+	slot := int(after & 0x3)
+	if slot != c.index {
+		t.Fatalf("publish word names slot %d, claim was slot %d", slot, c.index)
+	}
+	s := &p.ctrl.Slots[slot]
+	if s.Width != w || s.Height != h || s.Stride != w*4 || s.Format != FormatRGBA {
+		t.Fatalf("slot metadata = %dx%d stride %d format %d", s.Width, s.Height, s.Stride, s.Format)
+	}
+	if s.Claim != claimFree {
+		t.Fatalf("committed slot still claimed: %d", s.Claim)
+	}
+	if got := atomic.LoadUint64(&p.ctrl.FrameSeq); got != 1 {
+		t.Fatalf("frame sequence = %d, want 1", got)
+	}
+
+	// The pixels committed must be exactly what the caller rendered.
+	base := unsafe.Slice((*byte)(unsafe.Add(p.slots, uintptr(slot)*uintptr(p.stride))), w*h*4)
+	for i := 0; i < w*h*4; i++ {
+		if base[i] != byte(i) {
+			t.Fatalf("slot byte %d = %#x, want %#x", i, base[i], byte(i))
+		}
+	}
+
+	// Committing again must not publish the same picture twice.
+	c.Commit()
+	if got := atomic.LoadUint64(&p.ctrl.Publish); got != after {
+		t.Fatalf("double commit advanced the publish word to %#x", got)
+	}
+}
+
+// A claimed-but-uncommitted slot must not be observable: the publish word still
+// names the previous picture and Latest returns it unchanged. Cancelling must
+// give the slot back without publishing.
+func TestAcquireUncommittedSlotNotPublished(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestUncommitted`, 64, 64)
+	if err != nil {
+		t.Skipf("shared memory unavailable: %v", err)
+	}
+	defer p.Close()
+
+	const w, h = 32, 16
+	img := make([]byte, w*h*4)
+	for i := range img {
+		img[i] = 0x5a
+	}
+	if err := p.Publish(w, h, w*4, img); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	prevPublish := atomic.LoadUint64(&p.ctrl.Publish)
+	prevPic, ok := p.Latest()
+	if !ok {
+		t.Fatal("no picture after a publish")
+	}
+
+	c, err := p.Acquire(w, h)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	// Simulate a half-written slot: the pixels are already scribbled over but
+	// the commit has not happened.
+	for i := range c.Pixels() {
+		c.Pixels()[i] = 0xAB
+	}
+	if got := atomic.LoadUint64(&p.ctrl.Publish); got != prevPublish {
+		t.Fatalf("publish word changed before commit: %#x", got)
+	}
+	if got := p.ctrl.Slots[c.index].Claim; got != claimWriter {
+		t.Fatalf("acquired slot claim = %d, want claimWriter", got)
+	}
+	pic, ok := p.Latest()
+	if !ok || pic.Seq != prevPic.Seq {
+		t.Fatalf("Latest saw the uncommitted picture: ok=%v seq=%d want %d", ok, pic.Seq, prevPic.Seq)
+	}
+	for i := range pic.Pixels {
+		if pic.Pixels[i] != 0x5a {
+			t.Fatalf("Latest returned half-written pixel %d = %#x", i, pic.Pixels[i])
+		}
+	}
+
+	c.Cancel()
+	if got := p.ctrl.Slots[c.index].Claim; got != claimFree {
+		t.Fatalf("cancelled slot claim = %d, want claimFree", got)
+	}
+	if got := atomic.LoadUint64(&p.ctrl.Publish); got != prevPublish {
+		t.Fatalf("cancel published a picture: %#x", got)
+	}
+	if pic, ok := p.Latest(); !ok || pic.Seq != prevPic.Seq {
+		t.Fatalf("Latest changed after a cancel: ok=%v seq=%d", ok, pic.Seq)
+	}
+}
+
+// With every slot claimed there is one more slot than a real consumer can hold
+// busy at once, so the fourth acquire is refused rather than overwriting a
+// slot in use.
+func TestAcquireRefusesWhenAllSlotsBusy(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestBusy`, 64, 64)
+	if err != nil {
+		t.Skipf("shared memory unavailable: %v", err)
+	}
+	defer p.Close()
+
+	claims := make([]*Claim, 0, SlotCount)
+	for i := 0; i < SlotCount; i++ {
+		c, err := p.Acquire(8, 8)
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		claims = append(claims, c)
+	}
+	if _, err := p.Acquire(8, 8); !errors.Is(err, ErrNoSlot) {
+		t.Fatalf("acquire with every slot busy = %v, want ErrNoSlot", err)
+	}
+	for _, c := range claims {
+		c.Cancel()
+	}
+	if _, err := p.Acquire(8, 8); err != nil {
+		t.Fatalf("acquire after cancelling: %v", err)
+	}
+}
+
+// Latest is the snapshot path: a detached copy of the newest published frame.
+func TestLatestCopiesNewestPicture(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestLatest`, 64, 64)
+	if err != nil {
+		t.Skipf("shared memory unavailable: %v", err)
+	}
+	defer p.Close()
+
+	if _, ok := p.Latest(); ok {
+		t.Fatal("Latest found a picture before any publish")
+	}
+
+	first := make([]byte, 16*8*4)
+	for i := range first {
+		first[i] = 0x11
+	}
+	if err := p.Publish(16, 8, 16*4, first); err != nil {
+		t.Fatalf("publish first: %v", err)
+	}
+	second := make([]byte, 24*12*4)
+	for i := range second {
+		second[i] = 0x22
+	}
+	if err := p.Publish(24, 12, 24*4, second); err != nil {
+		t.Fatalf("publish second: %v", err)
+	}
+
+	pic, ok := p.Latest()
+	if !ok {
+		t.Fatal("Latest found no picture after publishing")
+	}
+	if pic.Width != 24 || pic.Height != 12 || pic.Stride != 24*4 {
+		t.Fatalf("latest = %dx%d stride %d", pic.Width, pic.Height, pic.Stride)
+	}
+	if len(pic.Pixels) != pic.Stride*pic.Height {
+		t.Fatalf("latest buffer = %d bytes, want %d", len(pic.Pixels), pic.Stride*pic.Height)
+	}
+	for i, b := range pic.Pixels {
+		if b != 0x22 {
+			t.Fatalf("latest byte %d = %#x, want the second picture", i, b)
+		}
+	}
+	// The result is a copy: changing it must not reach shared memory.
+	pic.Pixels[0] = 0x33
+	again, _ := p.Latest()
+	if again.Pixels[0] != 0x22 {
+		t.Fatal("Latest aliased the mapped slot")
 	}
 }
 

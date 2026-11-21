@@ -28,9 +28,10 @@ type frameSink struct {
 	mu     sync.RWMutex
 	closed bool
 
-	dec *decode.Decoder
-	pub *frames.Publisher
-	rec *streamRecorder
+	dec  *decode.Decoder
+	pub  *frames.Publisher
+	rec  *streamRecorder
+	gate *frames.ConsumerGate
 
 	frames   atomic.Uint64
 	width    atomic.Int64
@@ -91,11 +92,16 @@ type SinkStats struct {
 }
 
 func newFrameSink(dec *decode.Decoder, pub *frames.Publisher, rec *streamRecorder) *frameSink {
-	return &frameSink{dec: dec, pub: pub, rec: rec}
+	return &frameSink{dec: dec, pub: pub, rec: rec, gate: frames.DefaultConsumerGate()}
 }
 
-// Handle decodes one access unit and publishes it. It reports whether a picture
-// was produced.
+// Handle decodes one access unit and, when a consumer is rendering, publishes
+// it. It reports whether a picture was produced.
+//
+// Every access unit is decoded: P and B frames are references, so skipping any
+// of them would corrupt everything after. Only the GPU download, the colour
+// conversion and the publish are gated on consumer liveness — that is the work
+// that is wasted when the window is minimised or its raster thread has stalled.
 func (s *frameSink) Handle(f *mirror.Frame) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -113,8 +119,12 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		return false
 	}
 
+	// Decide before decoding so the decoder can skip the download and
+	// conversion in the same call, without ever skipping the decode.
+	live := s.pub != nil && s.gate.Allow(s.pub.ConsumerStats())
+
 	decodeStart := time.Now()
-	img, err := s.dec.DecodeAccessUnit(f.Data)
+	err := s.dec.ReceiveAccessUnit(f.Data, live)
 	decodeTime := time.Since(decodeStart)
 	// Recovery can change modes on a failed access unit, before the next
 	// keyframe arrives. Keep diagnostics current while waiting for it.
@@ -130,22 +140,38 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		return false
 	}
 
-	publishErr := s.pub.Publish(img.Width, img.Height, img.Stride, img.Pixels)
-	if publishErr != nil {
-		s.errRate.printf("video: publish: %v", publishErr)
-	}
-	s.metrics.record(decodeTime, img.Timings, s.pub.LastPublishNanos())
-
-	s.width.Store(int64(img.Width))
-	s.height.Store(int64(img.Height))
+	width, height := s.dec.FrameSize()
+	s.width.Store(int64(width))
+	s.height.Store(int64(height))
 	if s.frames.Add(1) == 1 {
 		mode := "software"
 		if hw {
 			mode = "D3D11VA"
 		}
 		log.Printf("decode: first picture %dx%d, %s (%d bytes per frame)",
-			img.Width, img.Height, mode, len(img.Pixels))
+			width, height, mode, width*height*4)
 	}
+	if !live {
+		return true
+	}
+
+	// Render straight into the published slot: no heap frame and no second copy
+	// of the whole picture.
+	claim, err := s.pub.Acquire(width, height)
+	if err != nil {
+		if !errors.Is(err, frames.ErrNoSlot) {
+			s.errRate.printf("video: publish: %v", err)
+		}
+		return false
+	}
+	timings, err := s.dec.CopyImageTo(claim.Pixels(), claim.Stride())
+	if err != nil {
+		claim.Cancel()
+		s.errRate.printf("video: convert: %v", err)
+		return false
+	}
+	claim.Commit()
+	s.metrics.record(decodeTime, timings, s.pub.LastPublishNanos())
 	return true
 }
 
@@ -160,22 +186,25 @@ func (s *frameSink) Mode() string {
 	return "software"
 }
 
-// SnapshotPNG writes the most recent decoded picture to path as a PNG image.
+// SnapshotPNG writes the most recent published picture to path as a PNG image.
+// The picture comes from the shared-memory slot the reader sees, so a snapshot
+// works whether or not the sink is currently publishing (consumer gating keeps
+// the last published picture intact).
 func (s *frameSink) SnapshotPNG(path string) error {
 	s.mu.Lock()
-	if s.closed || s.dec == nil {
+	if s.closed || s.pub == nil {
 		s.mu.Unlock()
 		return errors.New("no active decoder")
 	}
-	img := s.dec.LastImage()
-	if img == nil {
+	pic, ok := s.pub.Latest()
+	if !ok {
 		s.mu.Unlock()
 		return errors.New("no picture available yet")
 	}
 	rgba := &image.RGBA{
-		Pix:    append([]byte(nil), img.Pixels...),
-		Stride: img.Stride,
-		Rect:   image.Rect(0, 0, img.Width, img.Height),
+		Pix:    pic.Pixels,
+		Stride: pic.Stride,
+		Rect:   image.Rect(0, 0, pic.Width, pic.Height),
 	}
 	s.mu.Unlock()
 

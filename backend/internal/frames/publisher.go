@@ -20,10 +20,15 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// ErrNoSlot means every slot is currently held, so the picture was dropped.
+// Publishing is latest-frame-wins: this is backpressure, not a failure.
+var ErrNoSlot = errors.New("frames: no free slot")
 
 // Magic identifies the mapping, so a consumer can reject a foreign section.
 const Magic uint64 = 0x314D4853524D4641 // "AFRMSHM1" little endian
@@ -156,8 +161,8 @@ type Publisher struct {
 	mapped windows.Handle
 	base   uintptr
 	ctrl   *control
-	slots  uintptr // base + SlotDataOffset
-	stride uint32  // bytes per slot
+	slots  unsafe.Pointer // base + SlotDataOffset
+	stride uint32         // bytes per slot
 
 	event windows.Handle
 
@@ -246,7 +251,7 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 		current: 0,
 	}
 	p.ctrl = (*control)(unsafe.Pointer(base))
-	p.slots = base + SlotDataOffset
+	p.slots = unsafe.Add(unsafe.Pointer(p.ctrl), SlotDataOffset)
 
 	if reused &&
 		p.ctrl.Magic == Magic &&
@@ -323,9 +328,9 @@ func (p *Publisher) Heartbeat() {
 	atomic.StoreUint64(&p.ctrl.HeartbeatQPC, uint64(nowQPC()))
 }
 
-// LastPublishNanos reports how long the most recent Publish took, in
-// nanoseconds: claiming a slot, copying the pixels and publishing the word.
-// Zero before the first picture.
+// LastPublishNanos reports how long the most recent commit took, in
+// nanoseconds: filling in the slot metadata, storing the publish word and
+// signalling the event. Zero before the first picture.
 func (p *Publisher) LastPublishNanos() int64 { return p.lastPublishNanos.Load() }
 
 // ConsumerStats is one snapshot of the producer→consumer progress words. The UI
@@ -371,6 +376,105 @@ func (p *Publisher) ConsumerStats() ConsumerStats {
 		ConsumerAgeNanos: age,
 		RawDropped:       atomic.LoadUint64(&p.ctrl.Dropped),
 	}
+}
+
+// ConsumerGate decides whether a decoded picture is worth downloading from the
+// GPU, colour-converting and publishing. When the UI is minimised, occluded or
+// its raster thread has stalled, nothing adopts the published pictures; doing
+// that work anyway burns power and frame time for pixels nobody sees.
+//
+// The gate never suppresses decoding: P/B frames are references, so the caller
+// still decodes every access unit. It only suppresses the download, the colour
+// conversion and the publish.
+//
+// A gated producer still emits a probe picture at probeEvery, because adoption
+// is what re-arms the gate and a publish word that never changes is never
+// re-adopted. That bounds the cost of being hidden to about one conversion per
+// probe interval while guaranteeing the UI recovers within one interval of
+// becoming visible again.
+type ConsumerGate struct {
+	staleAfter int64 // nanoseconds since the last adoption before gating
+	probeEvery int64 // nanoseconds between probe pictures while gated
+	nextProbe  int64 // nanoseconds; the earliest next probe
+	clock      func() int64
+}
+
+// Default consumer-gating timings. A second of silence means the reader is not
+// rasterising: normal display adopts every rendered frame (about 16 ms at 60Hz).
+// The same second bounds how long a restored window can show a frozen picture
+// before the probe publishes a new one.
+const (
+	ConsumerStaleAfter = time.Second
+	ConsumerProbeEvery = time.Second
+)
+
+// NewConsumerGate builds a gate with the given timings.
+func NewConsumerGate(staleAfter, probeEvery time.Duration) *ConsumerGate {
+	return &ConsumerGate{
+		staleAfter: int64(staleAfter),
+		probeEvery: int64(probeEvery),
+		clock:      clockNanos,
+	}
+}
+
+// DefaultConsumerGate is the gate the frame sink uses.
+func DefaultConsumerGate() *ConsumerGate {
+	return NewConsumerGate(ConsumerStaleAfter, ConsumerProbeEvery)
+}
+
+// clockNanos reports QPC as nanoseconds, or zero when the counter is unavailable.
+func clockNanos() int64 {
+	now := nowQPC()
+	if now <= 0 {
+		return 0
+	}
+	return int64(float64(now) * 1e9 / float64(qpcFrequency()))
+}
+
+// Allow reports whether this picture should be produced for the consumer
+// described by c.
+//
+//   - Before any reader attaches there is nothing to display, so only probes
+//     are produced (one immediately, so the first picture is ready for a UI that
+//     starts afterwards).
+//   - A reader that attached but has not adopted a picture yet is seeded with
+//     full-rate frames: it cannot stamp freshness without something to adopt.
+//   - A recent adoption means the reader is consuming; produce everything.
+//   - A stale adoption means the reader has stopped rendering; produce only
+//     probes.
+//
+// A clock failure fails open: without QPC there is no way to measure staleness,
+// so the producer behaves as it always did.
+func (g *ConsumerGate) Allow(c ConsumerStats) bool {
+	if g == nil {
+		return true
+	}
+	now := g.clock()
+	if now <= 0 {
+		return true
+	}
+	switch {
+	case c.ConsumerPID == 0 && c.Adopted == 0:
+		return g.probe(now)
+	case c.Adopted == 0:
+		// Attached, but no picture adopted yet: publish normally to seed it.
+		g.nextProbe = now + g.probeEvery
+		return true
+	case c.ConsumerAgeNanos <= g.staleAfter:
+		g.nextProbe = now + g.probeEvery
+		return true
+	default:
+		return g.probe(now)
+	}
+}
+
+// probe reports whether a probe picture is due, and schedules the next one.
+func (g *ConsumerGate) probe(now int64) bool {
+	if now < g.nextProbe {
+		return false
+	}
+	g.nextProbe = now + g.probeEvery
+	return true
 }
 
 // StatsWindow is how many recent samples the rolling aggregates keep. At 60 fps
@@ -443,53 +547,139 @@ func (r *RollingStats) window() []float64 {
 	return r.samples[:]
 }
 
-// Publish writes one picture. pixels must be tightly packed rows of width*4
-// bytes; imgStride is the row stride inside pixels.
+// Publish writes one picture by copying it into a claimed slot. pixels must be
+// tightly packed rows of width*4 bytes; imgStride is the row stride inside
+// pixels. Producers that can render straight into the mapping (the video
+// decoder) use Acquire/Commit instead and skip this copy entirely.
 //
 // It never blocks: when no slot is free the frame is dropped and recorded in the
 // control block.
 func (p *Publisher) Publish(width, height, imgStride int, pixels []byte) error {
+	rowBytes := width * 4
 	if width <= 0 || height <= 0 {
 		return errors.New("frames: empty image")
 	}
-	rowBytes := width * 4
 	if imgStride < rowBytes {
 		return fmt.Errorf("frames: stride %d shorter than a row (%d)", imgStride, rowBytes)
 	}
-	if need := uint64(imgStride) * uint64(height); need > uint64(p.stride) {
-		return fmt.Errorf("frames: frame of %dx%d needs %d bytes, slot holds %d", width, height, need, p.stride)
+	if need := (height-1)*imgStride + rowBytes; len(pixels) < need {
+		return fmt.Errorf("frames: pixels are %d bytes, need %d", len(pixels), need)
 	}
 
-	start := nowQPC()
-	i := p.claimSlot()
-	if i < 0 {
-		atomic.AddUint64(&p.ctrl.Dropped, 1)
-		return nil // dropped, not an error: this is the designed backpressure
+	c, err := p.Acquire(width, height)
+	if err != nil {
+		if errors.Is(err, ErrNoSlot) {
+			return nil // dropped, not an error: this is the designed backpressure
+		}
+		return err
 	}
-
-	slot := &p.ctrl.Slots[i]
-	p.seq++
-	slot.Seq++
-	slot.FrameSeq = p.seq
-	slot.Width = uint32(width)
-	slot.Height = uint32(height)
-	slot.Stride = uint32(rowBytes)
-	slot.Format = FormatRGBA
-	slot.WriterPID = p.ctrl.ProducerPID
-	slot.WriteQPC = uint64(nowQPC())
-
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(p.slots+uintptr(i)*uintptr(p.stride))), int(p.stride))
+	dst := c.Pixels()
 	if imgStride == rowBytes {
-		copy(dst[:width*height*4], pixels)
+		copy(dst, pixels)
 	} else {
 		for y := 0; y < height; y++ {
 			copy(dst[y*rowBytes:(y+1)*rowBytes], pixels[y*imgStride:y*imgStride+rowBytes])
 		}
 	}
+	c.Commit()
+	return nil
+}
+
+// Claim is one slot reserved for a picture. The slot stays in the writer state,
+// where a reader cannot adopt it, until Commit publishes it or Cancel gives it
+// back. While a claim is outstanding, Publish keeps pointing at the previously
+// published slot, so a half-written picture is never visible.
+//
+// A Claim is owned by the goroutine that acquired it and must be settled with
+// Commit or Cancel.
+type Claim struct {
+	pub       *Publisher
+	index     int
+	width     int
+	height    int
+	rowStride int
+	pixels    []byte
+	done      bool
+}
+
+// Acquire reserves a free slot for a picture of width x height and returns it
+// ready to be filled. Pixels reports the mapped buffer to render into and
+// Stride its row stride; the slot keeps one row's worth of padding inside the
+// mapped memory, so the reader's frame_byte_count contract is unchanged.
+//
+// It returns ErrNoSlot when every slot is held. The caller must settle the
+// claim with Commit or Cancel before the next Acquire.
+func (p *Publisher) Acquire(width, height int) (*Claim, error) {
+	if p.ctrl == nil {
+		return nil, errors.New("frames: publisher is closed")
+	}
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("frames: empty image")
+	}
+	rowStride := width * 4
+	need := uint64(rowStride) * uint64(height)
+	if need > uint64(p.stride) {
+		return nil, fmt.Errorf("frames: frame of %dx%d needs %d bytes, slot holds %d", width, height, need, p.stride)
+	}
+
+	i := p.claimSlot()
+	if i < 0 {
+		// Every slot is busy. Record the drop so the difference between "the
+		// sender stopped" and "we could not display it" stays visible.
+		atomic.AddUint64(&p.ctrl.Dropped, 1)
+		return nil, ErrNoSlot
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Add(p.slots, uintptr(i)*uintptr(p.stride))), int(p.stride))
+	return &Claim{
+		pub:       p,
+		index:     i,
+		width:     width,
+		height:    height,
+		rowStride: rowStride,
+		pixels:    dst[:need],
+	}, nil
+}
+
+// Pixels is the mapped buffer to render the picture into: height rows of
+// rowStride bytes. Only the first width*4 bytes of each row are visible to the
+// reader.
+func (c *Claim) Pixels() []byte { return c.pixels }
+
+// Stride is the row stride, in bytes, to render each row at. It is always
+// width*4, which is the contract the C++ reader expects.
+func (c *Claim) Stride() int { return c.rowStride }
+
+// Commit fills the slot metadata, stores the publish word and wakes the reader.
+// It must be called after the pixels are in place. It is a no-op once the claim
+// has been settled.
+//
+// Ordering: the pixel and metadata writes are sequenced before the atomic store
+// of Publish, and the slot is only released to the reader afterwards. A reader
+// that adopts the slot (CAS free -> reader) therefore happens-after every write
+// this commit observes, and a half-filled slot is never named by Publish and
+// never returns to claimFree.
+func (c *Claim) Commit() {
+	if c == nil || c.done {
+		return
+	}
+	c.done = true
+	p := c.pub
+	start := nowQPC()
+
+	slot := &p.ctrl.Slots[c.index]
+	p.seq++
+	slot.Seq++
+	slot.FrameSeq = p.seq
+	slot.Width = uint32(c.width)
+	slot.Height = uint32(c.height)
+	slot.Stride = uint32(c.rowStride)
+	slot.Format = FormatRGBA
+	slot.WriterPID = p.ctrl.ProducerPID
+	slot.WriteQPC = uint64(nowQPC())
 
 	// The publish word carries the slot index so a reader never has to guess
 	// which slot the new metadata belongs to.
-	atomic.StoreUint64(&p.ctrl.Publish, p.seq<<2|uint64(i))
+	atomic.StoreUint64(&p.ctrl.Publish, p.seq<<2|uint64(c.index))
 	atomic.AddUint64(&p.ctrl.FrameSeq, 1)
 	published := nowQPC()
 	atomic.StoreUint64(&p.ctrl.LastPublishQPC, uint64(published))
@@ -498,12 +688,60 @@ func (p *Publisher) Publish(width, height, imgStride int, pixels []byte) error {
 		p.lastPublishNanos.Store(qpcNanos(published - start))
 	}
 	atomic.StoreUint32(&slot.Claim, claimFree)
-	p.current = i
+	p.current = c.index
 
 	if p.event != 0 {
 		_ = windows.SetEvent(p.event)
 	}
-	return nil
+}
+
+// Cancel gives the slot back without publishing it. Nothing a reader can see
+// changes: the publish word still names the previous picture.
+func (c *Claim) Cancel() {
+	if c == nil || c.done {
+		return
+	}
+	c.done = true
+	atomic.StoreUint32(&c.pub.ctrl.Slots[c.index].Claim, claimFree)
+}
+
+// Picture is a detached copy of one published frame.
+type Picture struct {
+	Width, Height int
+	Stride        int
+	Pixels        []byte
+	Seq           uint64
+}
+
+// Latest copies the newest published picture out of its slot. ok is false
+// before the first picture. The caller must serialise this with Publish,
+// Acquire, Commit and Cancel (the frame sink's mutex does that), so the copy
+// cannot race a claim.
+func (p *Publisher) Latest() (Picture, bool) {
+	if p.ctrl == nil {
+		return Picture{}, false
+	}
+	publish := atomic.LoadUint64(&p.ctrl.Publish)
+	if publish == 0 {
+		return Picture{}, false
+	}
+	i := int(publish & 0x3)
+	if i >= SlotCount {
+		return Picture{}, false
+	}
+	slot := &p.ctrl.Slots[i]
+	width, height, stride := int(slot.Width), int(slot.Height), int(slot.Stride)
+	if width <= 0 || height <= 0 || stride < width*4 {
+		return Picture{}, false
+	}
+	need := stride * height
+	if need > int(p.stride) {
+		return Picture{}, false
+	}
+	src := unsafe.Slice((*byte)(unsafe.Add(p.slots, uintptr(i)*uintptr(p.stride))), need)
+	out := make([]byte, need)
+	copy(out, src)
+	return Picture{Width: width, Height: height, Stride: stride, Pixels: out, Seq: publish >> 2}, true
 }
 
 // claimSlot CASes one of the two slots that are not currently published into the
