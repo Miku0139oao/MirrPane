@@ -616,6 +616,11 @@ func splitAVC(payload []byte) (sps, pps []byte, ok bool) {
 // splitHEVC extracts VPS, SPS and PPS. Each unit is introduced by a four-byte
 // tag followed by a big-endian length at offset 3.
 func splitHEVC(payload []byte) (vps, sps, pps []byte, ok bool) {
+	// SEC-004: the parameter-set block starts at offset 0x75. Slicing below
+	// that must not panic on a short, attacker-supplied payload.
+	if len(payload) < 0x75+5 {
+		return nil, nil, nil, false
+	}
 	read := func(ptr []byte, tag []byte) ([]byte, int, bool) {
 		if len(ptr) < 5 || !bytes.Equal(ptr[:4], tag) {
 			return nil, 0, false

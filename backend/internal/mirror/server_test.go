@@ -132,6 +132,15 @@ func TestSplitHEVC(t *testing.T) {
 	}
 }
 
+// SEC-004: a short payload routed here by the hvc1 tag must be rejected, not
+// panic on payload[0x75:].
+func TestSplitHEVCShortPayloadDoesNotPanic(t *testing.T) {
+	payload := []byte{0, 0, 0, 0, 'h', 'v', 'c', '1'}
+	if _, _, _, ok := splitHEVC(payload); ok {
+		t.Fatal("splitHEVC accepted a payload shorter than 0x75")
+	}
+}
+
 func TestGeometryParsing(t *testing.T) {
 	header := make([]byte, HeaderLen)
 	putF32 := func(off int, v float32) {
