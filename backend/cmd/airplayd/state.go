@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/config"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 	"github.com/miku0139/airplay-go/backend/internal/receiver"
+	"github.com/miku0139/airplay-go/backend/internal/trust"
 )
 
 // runtimeState is what the UI asks for over the local API. It lives beside the
@@ -85,6 +88,8 @@ type apiState struct {
 	ScaleFilter  string  `json:"scaleFilter"`
 	AudioBuffer  string  `json:"audioBuffer"`
 
+	PendingSender *receiver.PendingSender `json:"pendingSender"`
+
 	// Pipeline telemetry. All durations are milliseconds over the last
 	// frames.StatsWindow pictures; keys are additive so older app builds keep
 	// parsing the body.
@@ -120,6 +125,14 @@ func statusName(s receiver.Status) string {
 	}
 }
 
+type receiverControl interface {
+	Disconnect()
+	ClearTrustedSenders() error
+	PendingSenders() []receiver.PendingSender
+	ApproveSender(string) error
+	RejectSender(string) error
+}
+
 // apiHandler serves the localhost endpoints the app polls and calls. It is
 // bound to 127.0.0.1 only.
 func apiHandler(
@@ -128,7 +141,7 @@ func apiHandler(
 	cfg *config.Config,
 	state *runtimeState,
 	sink *frameSink,
-	recv *receiver.Receiver,
+	recv receiverControl,
 	speaker *audioout.Player,
 	shotsDir string,
 ) http.Handler {
@@ -203,6 +216,11 @@ func apiHandler(
 			AudioUnderruns:  audioStats.UnderrunCount,
 			AudioHighWater:  audioStats.HighWaterMs,
 		}
+		if recv != nil {
+			if pending := recv.PendingSenders(); len(pending) > 0 {
+				body.PendingSender = &pending[0]
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		if err := json.NewEncoder(w).Encode(body); err != nil {
@@ -221,6 +239,70 @@ func apiHandler(
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+
+	mux.HandleFunc("/api/pairing/trust/reset", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if recv == nil {
+			http.Error(w, "receiver unavailable", http.StatusInternalServerError)
+			return
+		}
+		if err := recv.ClearTrustedSenders(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	trustDecision := func(approve bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Fingerprint string `json:"fingerprint"`
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&req); err != nil || !trust.ValidFingerprint(req.Fingerprint) {
+				http.Error(w, "invalid sender fingerprint", http.StatusBadRequest)
+				return
+			}
+			if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+				http.Error(w, "invalid approval request", http.StatusBadRequest)
+				return
+			}
+			if recv == nil {
+				http.Error(w, "receiver unavailable", http.StatusInternalServerError)
+				return
+			}
+			var err error
+			if approve {
+				err = recv.ApproveSender(req.Fingerprint)
+			} else {
+				err = recv.RejectSender(req.Fingerprint)
+			}
+			if err != nil {
+				status := http.StatusInternalServerError
+				switch {
+				case errors.Is(err, receiver.ErrInvalidFingerprint):
+					status = http.StatusBadRequest
+				case errors.Is(err, receiver.ErrNotPending):
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}
+	mux.HandleFunc("/api/pairing/trust/approve", trustDecision(true))
+	mux.HandleFunc("/api/pairing/trust/reject", trustDecision(false))
 
 	mux.HandleFunc("/api/audio", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -274,6 +356,12 @@ func apiHandler(
 func requireLocalHostAndOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if !isAllowedAPIHost(r.Host) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return

@@ -55,6 +55,9 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	if session.Verified() {
 		t.Fatal("new session is verified")
 	}
+	if session.PeerPublicKey() != nil {
+		t.Fatal("new session exposed an unverified sender key")
+	}
 
 	if _, err := session.Verify(make([]byte, VerifyStep1Len)); err == ErrMissingKey {
 		// Expected: pair-setup must come first.
@@ -88,6 +91,9 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	}
 	if session.Verified() {
 		t.Fatal("first pair-verify step verified the sender")
+	}
+	if session.PeerPublicKey() != nil {
+		t.Fatal("first pair-verify step exposed an unverified sender key")
 	}
 	serverX := resp[:X25519KeyLen]
 	encServerSig := resp[X25519KeyLen:]
@@ -127,11 +133,22 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	if !session.Verified() {
 		t.Fatal("completed pair-verify did not verify the sender")
 	}
+	peerIdentity := session.PeerPublicKey()
+	if !bytes.Equal(peerIdentity, client.edPub) {
+		t.Fatal("verified sender public key differs from the signing identity")
+	}
+	peerIdentity[0] ^= 0xff
+	if !bytes.Equal(session.PeerPublicKey(), client.edPub) {
+		t.Fatal("public key accessor exposed mutable session state")
+	}
 	if _, err := session.Setup(make([]byte, SetupRequestLen)); err != nil {
 		t.Fatal(err)
 	}
 	if session.Verified() {
 		t.Fatal("new pair-setup retained the previous verification")
+	}
+	if session.PeerPublicKey() != nil {
+		t.Fatal("new pair-setup retained the previous verified sender key")
 	}
 }
 
@@ -155,6 +172,9 @@ func TestPairVerifyRejectsBadSignature(t *testing.T) {
 	}
 	if session.Verified() {
 		t.Fatal("bad signature verified the sender")
+	}
+	if session.PeerPublicKey() != nil {
+		t.Fatal("bad signature exposed a verified sender identity")
 	}
 }
 

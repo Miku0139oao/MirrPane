@@ -41,6 +41,7 @@ const maxPayload = 8 << 20
 const (
 	pendingLifetime = 8 * time.Second
 	streamIdleTime  = 4 * time.Second
+	maxPendingPeers = 16
 )
 
 // reportTrailer is the size of the opaque trailer some streaming reports carry
@@ -143,6 +144,12 @@ type pendingStream struct {
 	candidates []resolvedKey
 }
 
+type streamAttempt struct {
+	pending *pendingStream
+	at      time.Time
+	sender  netip.Addr
+}
+
 // Server listens for the mirror stream.
 type Server struct {
 	log      *log.Logger
@@ -153,8 +160,10 @@ type Server struct {
 
 	mu          sync.Mutex
 	pending     *pendingStream
+	attempts    map[net.Conn]streamAttempt
 	conn        net.Conn
 	sender      netip.Addr
+	setupSender netip.Addr
 	streamID    uint64
 	connectedAt time.Time
 	lastFrame   time.Time
@@ -209,14 +218,20 @@ func (s *Server) logf(format string, args ...any) {
 func (s *Server) DropClient() {
 	s.mu.Lock()
 	c := s.conn
+	attempts := s.attempts
 	s.conn = nil
 	s.pending = nil
+	s.attempts = nil
 	s.sender = netip.Addr{}
+	s.setupSender = netip.Addr{}
 	s.streamID = 0
 	s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
 	s.mu.Unlock()
 	if c != nil {
 		_ = c.Close()
+	}
+	for peer := range attempts {
+		_ = peer.Close()
 	}
 }
 
@@ -281,20 +296,18 @@ func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...
 	}
 	s.mu.Lock()
 	now := time.Now()
-	if (s.conn != nil && s.sender != pending.sender && !s.staleLocked(now)) ||
+	if (s.conn != nil && s.setupSender != pending.sender && !s.staleLocked(now)) ||
 		(s.pending != nil && s.pending.sender != pending.sender && now.Before(s.pending.expires)) {
 		s.mu.Unlock()
 		return false
 	}
-	var old net.Conn
-	if s.conn != nil && s.sender != pending.sender {
-		old, s.conn = s.conn, nil
-	}
+	oldAttempts := s.attempts
+	s.attempts = nil
 	pending.expires = now.Add(pendingLifetime)
 	s.pending = pending
 	s.mu.Unlock()
-	if old != nil {
-		_ = old.Close()
+	for peer := range oldAttempts {
+		_ = peer.Close()
 	}
 	return true
 }
@@ -303,7 +316,12 @@ func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...
 func (s *Server) ResetKey() {
 	s.mu.Lock()
 	s.pending = nil
+	attempts := s.attempts
+	s.attempts = nil
 	s.mu.Unlock()
+	for peer := range attempts {
+		_ = peer.Close()
+	}
 }
 
 // Busy reports a live stream or a fresh pending setup. A raw TCP connection
@@ -324,18 +342,23 @@ func (s *Server) staleLocked(now time.Time) bool {
 	return now.Sub(last) >= streamIdleTime
 }
 
-// admit consumes no authorization until a valid frame arrives, so a half-open
-// connection from the expected IP cannot lock out the real sender.
-func (s *Server) admit(conn net.Conn) *pendingStream {
+func sourceIP(conn net.Conn) (netip.Addr, error) {
 	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
-		return nil
+		return netip.Addr{}, err
 	}
 	sender, err := netip.ParseAddr(host)
+	return sender.Unmap(), err
+}
+
+// admit grants only a bounded decryption attempt, never ownership. A different
+// data address is allowed while no healthy stream owns the slot; a same-address
+// reconnect may also prove its new setup key while the old stream stays live.
+func (s *Server) admit(conn net.Conn) *pendingStream {
+	sender, err := sourceIP(conn)
 	if err != nil {
 		return nil
 	}
-	sender = sender.Unmap()
 	s.mu.Lock()
 	now := time.Now()
 	pending := s.pending
@@ -343,23 +366,83 @@ func (s *Server) admit(conn net.Conn) *pendingStream {
 		s.pending = nil
 		pending = nil
 	}
-	if pending == nil || pending.sender != sender ||
-		(s.conn != nil && s.sender != sender && !s.staleLocked(now)) {
+	if pending == nil ||
+		(s.conn != nil && s.sender != sender && pending.sender != sender && !s.staleLocked(now)) {
 		s.mu.Unlock()
 		return nil
 	}
-	old := s.conn
-	s.conn, s.sender, s.streamID = conn, sender, pending.streamID
-	s.connectedAt, s.lastFrame = now, time.Time{}
-	s.received, s.frames = 0, 0
-	// Bound half-open/keyless peers without timing out an established stream
-	// when an iPhone suspends video after locking its screen.
+	if s.attempts == nil {
+		s.attempts = make(map[net.Conn]streamAttempt)
+	}
+	// Replace the same source immediately. At capacity, prefer the oldest
+	// foreign source so alternate-family legitimate data peers also get a turn.
+	var replaced net.Conn
+	for peer, attempt := range s.attempts {
+		if attempt.sender == sender {
+			replaced = peer
+			break
+		}
+	}
+	if replaced == nil && len(s.attempts) >= maxPendingPeers {
+		var oldest time.Time
+		for peer, attempt := range s.attempts {
+			if attempt.sender != pending.sender && (replaced == nil || attempt.at.Before(oldest)) {
+				replaced, oldest = peer, attempt.at
+			}
+		}
+		if replaced == nil {
+			for peer, attempt := range s.attempts {
+				if replaced == nil || attempt.at.Before(oldest) {
+					replaced, oldest = peer, attempt.at
+				}
+			}
+		}
+	}
+	delete(s.attempts, replaced)
+	s.attempts[conn] = streamAttempt{pending: pending, at: now, sender: sender}
 	_ = conn.SetReadDeadline(now.Add(streamIdleTime))
+	s.mu.Unlock()
+	if replaced != nil {
+		_ = replaced.Close()
+	}
+	return pending
+}
+
+// acceptFrame commits a speculative connection only after a nonempty frame
+// decrypts with this setup's stream-ID-derived key. Raw sockets cannot evict a
+// healthy sender or consume its pending authorization.
+func (s *Server) acceptFrame(st *streamState, valid bool) (accepted, connected bool) {
+	s.mu.Lock()
+	if s.conn == st.conn {
+		s.mu.Unlock()
+		return true, false
+	}
+	now := time.Now()
+	sender, err := sourceIP(st.conn)
+	if !valid || err != nil || s.attempts[st.conn].pending != st.pending || s.pending != st.pending ||
+		!now.Before(st.pending.expires) ||
+		(s.conn != nil && s.sender != sender && st.pending.sender != sender && !s.staleLocked(now)) {
+		s.mu.Unlock()
+		return false, false
+	}
+	old := s.conn
+	attempts := s.attempts
+	s.attempts, s.pending = nil, nil
+	s.conn, s.sender, s.setupSender, s.streamID = st.conn, sender, st.pending.sender, st.pending.streamID
+	s.connectedAt, s.lastFrame = now, now
+	s.received, s.frames = st.received, 0
+	// Established streams may suspend video when the phone locks its screen.
+	_ = st.conn.SetReadDeadline(time.Time{})
 	s.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
-	return pending
+	for peer := range attempts {
+		if peer != st.conn {
+			_ = peer.Close()
+		}
+	}
+	return true, true
 }
 
 // Stats reports bytes and access units seen since the stream opened.
@@ -394,17 +477,15 @@ func (s *Server) serve(conn net.Conn) {
 		s.logf("mirror: rejected connection from %s: no matching fresh setup", remote)
 		return
 	}
-	s.logf("mirror: sender connected from %s", remote)
-
-	if s.handlers.OnConnected != nil {
-		s.handlers.OnConnected(remote)
-	}
+	s.logf("mirror: checking stream key from %s", remote)
 	defer func() {
 		s.mu.Lock()
 		current := s.conn == conn
+		delete(s.attempts, conn)
 		if current {
 			s.conn = nil
 			s.sender = netip.Addr{}
+			s.setupSender = netip.Addr{}
 			s.streamID = 0
 			s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
 			if s.pending == pending {
@@ -437,9 +518,11 @@ func (s *Server) serve(conn net.Conn) {
 
 // streamState is the per-connection decode state.
 type streamState struct {
-	srv     *Server
-	conn    net.Conn
-	pending *pendingStream
+	srv          *Server
+	conn         net.Conn
+	pending      *pendingStream
+	received     uint64
+	paramsHeader []byte
 
 	// cands are the key candidates in preference order. active is the index of
 	// the one that produced a well-formed first frame, or -1 until one is known.
@@ -483,11 +566,14 @@ func (st *streamState) read(r io.Reader) {
 			}
 		}
 		st.srv.mu.Lock()
-		if st.conn != nil && st.srv.conn != st.conn {
+		if st.conn != nil && st.srv.conn != st.conn && st.srv.attempts[st.conn].pending != st.pending {
 			st.srv.mu.Unlock()
 			return
 		}
-		st.srv.received += uint64(HeaderLen + int(n))
+		st.received += uint64(HeaderLen + int(n))
+		if st.conn == nil || st.srv.conn == st.conn {
+			st.srv.received += uint64(HeaderLen + int(n))
+		}
 		st.srv.mu.Unlock()
 
 		st.handle(header, payload)
@@ -517,7 +603,7 @@ func (st *streamState) handle(header, payload []byte) {
 // handleReport forwards the sender's performance report. When the device is
 // locked it appends a 25 kB trailer that is not part of the plist.
 func (st *streamState) handleReport(payload []byte) {
-	if len(payload) == 0 || st.srv.handlers.OnReport == nil {
+	if len(payload) == 0 || st.srv.handlers.OnReport == nil || !st.current() {
 		return
 	}
 	plist := payload
@@ -564,6 +650,20 @@ func (st *streamState) handleVideo(payload []byte, ntp, duration uint64) {
 	if st.haveSPS {
 		st.spsPPS = nil
 		st.haveSPS = false
+	}
+	if st.conn != nil {
+		accepted, connected := st.srv.acceptFrame(st, valid)
+		if !accepted {
+			return
+		}
+		if connected {
+			remote := st.conn.RemoteAddr().String()
+			st.srv.logf("mirror: sender connected from %s", remote)
+			if st.srv.handlers.OnConnected != nil {
+				st.srv.handlers.OnConnected(remote)
+			}
+			st.publishParams()
+		}
 	}
 	st.srv.mu.Lock()
 	if st.conn != nil && st.srv.conn != st.conn {
@@ -666,6 +766,25 @@ func (st *streamState) handleParams(header, payload []byte, ntp uint64) {
 
 	st.spsNTP = ntp
 	st.haveSPS = true
+	st.paramsHeader = append(st.paramsHeader[:0], header...)
+	if st.current() {
+		st.publishParams()
+	}
+}
+
+func (st *streamState) current() bool {
+	st.srv.mu.Lock()
+	defer st.srv.mu.Unlock()
+	return st.conn == nil || st.srv.conn == st.conn
+}
+
+// Speculative peers may provide codec parameters, but cannot publish geometry
+// or pause/resume events before a valid encrypted video frame proves the key.
+func (st *streamState) publishParams() {
+	header := st.paramsHeader
+	if len(header) != HeaderLen {
+		return
+	}
 
 	// The header carries the geometry; report it alongside the codec.
 	if st.srv.handlers.OnGeometry != nil {

@@ -55,6 +55,14 @@ type testAudio struct {
 	configures, resets, clears int
 }
 
+// Media-ownership tests use multiple explicitly authorized identities. The
+// persisted owner-approval policy is exercised separately in trust_test.go.
+type allowTestSenders struct{}
+
+func (allowTestSenders) TrustSender(string) error    { return nil }
+func (allowTestSenders) IsTrustedSender(string) bool { return true }
+func (allowTestSenders) ClearTrustedSenders() error  { return nil }
+
 func (a *testAudio) Ports() (int, int) { return 7200, 7201 }
 func (a *testAudio) Configure(keys []audio.Key, iv []byte, _ ...[]byte) {
 	a.keys = make([]audio.Key, len(keys))
@@ -78,7 +86,7 @@ func bindingReceiver(t *testing.T) (*Receiver, *testMirror, *testAudio) {
 		t.Fatal(err)
 	}
 	m, a := &testMirror{}, &testAudio{}
-	r := &Receiver{keys: keys, log: log.New(io.Discard, "", 0),
+	r := &Receiver{keys: keys, trust: allowTestSenders{}, log: log.New(io.Discard, "", 0),
 		mirror: m, audioRx: a, timing: &udpStub{port: 7300}, sessions: make(map[string]*clientSession)}
 	return r, m, a
 }
@@ -87,13 +95,19 @@ func bindingReceiver(t *testing.T) (*Receiver, *testMirror, *testAudio) {
 // chooses when to send step 2, so the test can exercise incomplete pairing.
 func beginVerification(t *testing.T, r *Receiver, remote string) []byte {
 	t.Helper()
-	if _, err := r.PairSetup(remote, make([]byte, pairing.SetupRequestLen)); err != nil {
-		t.Fatal(err)
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return beginVerificationAs(t, r, remote, priv)
+}
+
+func beginVerificationAs(t *testing.T, r *Receiver, remote string, priv ed25519.PrivateKey) []byte {
+	t.Helper()
+	if _, err := r.PairSetup(remote, make([]byte, pairing.SetupRequestLen)); err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
 	x, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +357,9 @@ func TestFullCleanupDropsClientAndPendingKeys(t *testing.T) {
 			case "disconnect":
 				r.Disconnect()
 			case "control close":
+				clock := installGraceClock(r)
 				r.DropSession(remote) // Wired to ipc.Server.OnDisconnect.
+				clock.fireAll()
 			case "stop":
 				r.DropAllSessions()
 			}
@@ -369,7 +385,9 @@ func TestAudioTeardownKeepsMirrorBindingAndPairing(t *testing.T) {
 		r.sessions[remote] == nil || !r.sessions[remote].pair.Verified() || !r.sessions[remote].haveEKey {
 		t.Fatal("audio-only teardown dropped pairing, key material or mirror binding")
 	}
+	clock := installGraceClock(r)
 	r.DropSession(remote)
+	clock.fireAll()
 	if m.client || m.pending || a.clears != 1 {
 		t.Fatal("control close after audio teardown retained media state")
 	}

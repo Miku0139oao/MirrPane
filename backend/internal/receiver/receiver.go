@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"howett.net/plist"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/mirror"
 	"github.com/miku0139/airplay-go/backend/internal/pairing"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/miku0139/airplay-go/backend/internal/trust"
 )
 
 // Status is what the receiver reports to the UI.
@@ -61,12 +64,21 @@ type audioReceiver interface {
 	Close()
 }
 
+// TrustStore persists only owner-directed approvals and checks current trust
+// on every stream setup, including sessions verified before revocation.
+type TrustStore interface {
+	TrustSender(string) error
+	IsTrustedSender(string) bool
+	ClearTrustedSenders() error
+}
+
 // Receiver serves one sender at a time, keyed by client address.
 type Receiver struct {
 	info   protocol.DeviceInfo
 	log    *log.Logger
 	events Events
 	keys   *pairing.Keys
+	trust  TrustStore
 
 	mirror  mirrorServer
 	timing  *udpStub
@@ -74,10 +86,17 @@ type Receiver struct {
 	display struct{ width, height int }
 
 	// mu serializes control requests, session state and shared-media ownership.
-	mu           sync.Mutex
-	sessions     map[string]*clientSession
-	activeRemote string
-	cleanStop    atomic.Bool
+	mu              sync.Mutex
+	sessions        map[string]*clientSession
+	activeRemote    string
+	cleanStop       atomic.Bool
+	controlGrace    time.Duration
+	afterFunc       func(time.Duration, func()) disconnectTimer
+	now             func() time.Time
+	pending         map[string]pendingApproval
+	rejected        map[string]time.Time
+	approvalSources map[netip.Prefix][]time.Time
+	pinnedSender    string
 }
 
 // clientSession is the state of one sender, keyed by its IP address.
@@ -94,11 +113,16 @@ type clientSession struct {
 	// lastStreamID is the mirror stream connection ID from /setup.
 	lastStreamID uint64
 	haveEKey     bool
+	closeTimer   disconnectTimer
+	closeVersion uint64
 }
 
 // New starts the mirror, timing and audio listeners and returns the receiver.
 // The listeners bind before mDNS starts so the advertised ports are real.
-func New(info protocol.DeviceInfo, keys *pairing.Keys, logger *log.Logger, events Events) (*Receiver, error) {
+func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logger *log.Logger, events Events) (*Receiver, error) {
+	if trusted == nil {
+		return nil, errors.New("receiver: a sender trust store is required")
+	}
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -107,6 +131,7 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, logger *log.Logger, event
 		log:      logger,
 		events:   events,
 		keys:     keys,
+		trust:    trusted,
 		sessions: make(map[string]*clientSession),
 	}
 
@@ -184,6 +209,9 @@ func (r *Receiver) AudioStats() (received, dropped, decoded uint64) {
 
 // Close releases every listener.
 func (r *Receiver) Close() {
+	r.mu.Lock()
+	r.cancelAllDisconnectsLocked()
+	r.mu.Unlock()
 	if r.mirror != nil {
 		_ = r.mirror.Close()
 	}
@@ -226,6 +254,7 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 		}
 	}
 	r.mu.Lock()
+	r.cancelDisconnectLocked(remote)
 	owner := r.activeRemote == "" || r.activeRemote == remote
 	if audioOnly {
 		if owner && r.audioRx != nil {
@@ -250,14 +279,16 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 func (r *Receiver) Disconnect() {
 	r.mu.Lock()
 	r.cleanStop.Store(true)
-	clear(r.sessions)
+	r.cancelAllDisconnectsLocked()
 	r.dropMediaLocked()
+	clear(r.sessions)
 	r.mu.Unlock()
 	r.setState(StatusIdle, "disconnected by user")
 }
 
 // dropMediaLocked releases both the active client and any unused setup keys.
 func (r *Receiver) dropMediaLocked() {
+	r.cancelDisconnectLocked(r.activeRemote)
 	if r.mirror != nil {
 		r.mirror.DropClient()
 		r.mirror.ResetKey()
@@ -278,10 +309,17 @@ func (r *Receiver) setState(s Status, reason string) {
 func (r *Receiver) session(remote string) *clientSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.sessionLocked(remote)
+	return r.clientSessionLocked(remote)
 }
 
+// sessionLocked is for pairing/setup requests that resume a control session.
 func (r *Receiver) sessionLocked(remote string) *clientSession {
+	r.cancelDisconnectLocked(remote)
+	return r.clientSessionLocked(remote)
+}
+
+// clientSessionLocked looks up state without extending media/control grace.
+func (r *Receiver) clientSessionLocked(remote string) *clientSession {
 	cs, ok := r.sessions[remote]
 	if !ok {
 		cs = &clientSession{
@@ -293,28 +331,43 @@ func (r *Receiver) sessionLocked(remote string) *clientSession {
 	return cs
 }
 
-// DropSession forgets a client, e.g. when it disconnects.
+// DropSession invalidates pairing/stream-key proof on the last control close.
+// The owner's media keeps a short grace period; reconnects must verify afresh.
+// Unowned sessions can be forgotten immediately.
 func (r *Receiver) DropSession(remote string) {
 	r.mu.Lock()
-	delete(r.sessions, remote)
-	owner := r.activeRemote == remote && remote != ""
-	if owner {
-		r.cleanStop.Store(true)
-		r.dropMediaLocked()
+	if r.activeRemote != remote || remote == "" || r.sessions[remote] == nil {
+		_, hadSession := r.sessions[remote]
+		r.cancelDisconnectLocked(remote)
+		delete(r.sessions, remote)
+		idle := hadSession && r.activeRemote == "" && len(r.sessions) == 0
+		r.mu.Unlock()
+		if idle {
+			r.setState(StatusIdle, "control connection closed")
+		}
+		return
+	}
+	cs := r.sessions[remote]
+	// Media retains its own key/cipher copies during grace. Control state must
+	// not let the next connection at this IP inherit the former peer's proof.
+	cs.pair = pairing.NewSession(r.keys)
+	cs.fp = fairplay.NewSession()
+	cs.ecdh, cs.aes, cs.iv, cs.aesCandidates = nil, nil, nil, nil
+	cs.haveEKey, cs.lastStreamID = false, 0
+	if cs.closeTimer == nil {
+		r.scheduleDisconnectLocked(remote, cs)
 	}
 	r.mu.Unlock()
-	if owner {
-		r.setState(StatusIdle, "control connection closed")
-	}
 }
 
 // DropAllSessions forgets every sender, including their FairPlay and pairing
 // state, when the HTTP /stop endpoint stops the receiver session.
 func (r *Receiver) DropAllSessions() {
 	r.mu.Lock()
-	clear(r.sessions)
 	r.cleanStop.Store(true)
+	r.cancelAllDisconnectsLocked()
 	r.dropMediaLocked()
+	clear(r.sessions)
 	r.mu.Unlock()
 }
 
@@ -322,7 +375,8 @@ func (r *Receiver) DropAllSessions() {
 // body the second; the reply lengths follow from that.
 func (r *Receiver) FPSetup(remote string, body []byte) ([]byte, error) {
 	r.mu.Lock()
-	cs := r.sessionLocked(remote)
+	cs := r.clientSessionLocked(remote)
+	connecting := r.activeRemote == ""
 	var reply []byte
 	var err error
 	switch len(body) {
@@ -334,7 +388,7 @@ func (r *Receiver) FPSetup(remote string, body []byte) ([]byte, error) {
 		err = fairplay.ErrMalformed
 	}
 	r.mu.Unlock()
-	if err == nil && len(body) == fairplay.SetupRequestLen {
+	if err == nil && len(body) == fairplay.SetupRequestLen && connecting {
 		r.setState(StatusConnecting, "fairplay setup")
 	}
 	return reply, wrapProtocol(err)
@@ -344,12 +398,15 @@ func (r *Receiver) FPSetup(remote string, body []byte) ([]byte, error) {
 func (r *Receiver) PairSetup(remote string, body []byte) ([]byte, error) {
 	r.mu.Lock()
 	cs := r.sessionLocked(remote)
+	connecting := r.activeRemote == ""
 	reply, err := cs.pair.Setup(body)
 	r.mu.Unlock()
 	if err != nil {
 		return nil, &protocolError{status: 400, err: err}
 	}
-	r.setState(StatusConnecting, "pair-setup")
+	if connecting {
+		r.setState(StatusConnecting, "pair-setup")
+	}
 	return reply, nil
 }
 
@@ -375,11 +432,49 @@ func (r *Receiver) PairVerify(remote string, body []byte) ([]byte, error) {
 	return reply, nil
 }
 
+// authorizeSetupLocked never enrolls a sender. A verified but unknown identity
+// is recorded for local approval before any stream keys or media can change.
+func (r *Receiver) authorizeSetupLocked(fingerprint, remote, label string) error {
+	if r.trust == nil {
+		return &protocolError{status: 503, err: errors.New("receiver: sender trust store unavailable")}
+	}
+	if r.trust.IsTrustedSender(fingerprint) {
+		return nil
+	}
+	r.recordPendingLocked(fingerprint, remote, label)
+	return &protocolError{status: 403, err: ErrUntrusted}
+}
+
+// ClearTrustedSenders durably clears approvals and immediately revokes all
+// pairing/media sessions and pending decisions. Identity resets also clear trust.
+func (r *Receiver) ClearTrustedSenders() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.trust == nil {
+		return errors.New("receiver: sender trust store unavailable")
+	}
+	if err := r.trust.ClearTrustedSenders(); err != nil {
+		return err
+	}
+	r.cleanStop.Store(true)
+	r.cancelAllDisconnectsLocked()
+	r.dropMediaLocked()
+	clear(r.sessions)
+	clear(r.pending)
+	clear(r.rejected)
+	clear(r.approvalSources)
+	r.pinnedSender = ""
+	return nil
+}
+
 // ErrNoKey reports that /setup asked for a stream before FairPlay produced a key.
 var ErrNoKey = errors.New("receiver: no stream key yet")
 
 // ErrNotPaired reports a stream setup before pair-verify finished.
 var ErrNotPaired = errors.New("receiver: complete pair-verify before stream setup")
+
+// ErrUntrusted reports a verified sender that has not been enrolled by policy.
+var ErrUntrusted = errors.New("receiver: sender is not trusted")
 
 // ErrBusy reports that another sender owns a live stream or pending setup.
 var ErrBusy = errors.New("receiver: another sender is streaming")
@@ -420,6 +515,12 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 	_, hasEIV := req["eiv"]
 	if (hasEKey || hasEIV || len(streams) > 0) && !cs.pair.Verified() {
 		return nil, &protocolError{status: 403, err: ErrNotPaired}
+	}
+	if cs.pair.Verified() {
+		fingerprint := trust.Fingerprint(cs.pair.PeerPublicKey())
+		if err := r.authorizeSetupLocked(fingerprint, remote, senderLabel(req)); err != nil {
+			return nil, err
+		}
 	}
 	// Stage all per-sender changes until the complete request is accepted.
 	next := *cs
@@ -549,7 +650,7 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 func (r *Receiver) PairVerifySecret(remote string, secret []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cs := r.sessionLocked(remote)
+	cs := r.clientSessionLocked(remote)
 	cs.ecdh = append([]byte(nil), secret...)
 }
 

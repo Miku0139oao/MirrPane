@@ -120,6 +120,15 @@ func NewSession(keys *Keys) *Session {
 // As with the other session methods, the caller serializes access.
 func (s *Session) Verified() bool { return s.status == statusFinished }
 
+// PeerPublicKey returns a copy of the sender's Ed25519 public key only after
+// its pair-verify signature has been checked. The caller serializes access.
+func (s *Session) PeerPublicKey() []byte {
+	if !s.Verified() {
+		return nil
+	}
+	return append([]byte(nil), s.edTheirs...)
+}
+
 // Setup answers /pair-setup. The request is ignored, exactly as in the
 // reference: it only tells the sender who we are.
 func (s *Session) Setup(req []byte) ([]byte, error) {

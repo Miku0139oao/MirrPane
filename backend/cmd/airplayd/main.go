@@ -29,6 +29,7 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/pairing"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 	"github.com/miku0139/airplay-go/backend/internal/receiver"
+	"github.com/miku0139/airplay-go/backend/internal/trust"
 )
 
 // frameCount counts received access units, for the first-frames log line.
@@ -112,6 +113,11 @@ func main() {
 		os.Exit(1)
 	}
 	keys, err := pairing.KeysFromSeed(mustSeed(cfg))
+	if err != nil {
+		note("error: %v", err)
+		os.Exit(1)
+	}
+	trusted, err := trust.Open(dataFolder, keys.PublicKey())
 	if err != nil {
 		note("error: %v", err)
 		os.Exit(1)
@@ -230,7 +236,7 @@ func main() {
 	}
 
 	var recv *receiver.Receiver
-	recv, err = receiver.New(info, keys, log.Default(), receiver.Events{
+	recv, err = receiver.New(info, keys, trusted, log.Default(), receiver.Events{
 		OnFrame: func(f *mirror.Frame) {
 			n := frameCount.Add(1)
 			sink.Handle(f)

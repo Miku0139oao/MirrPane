@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,9 +10,10 @@ import (
 
 	"github.com/miku0139/airplay-go/backend/internal/config"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/miku0139/airplay-go/backend/internal/receiver"
 )
 
-func newTestAPIHandler() http.Handler {
+func newTestAPIHandler(receivers ...receiverControl) http.Handler {
 	info := protocol.NewDeviceInfo("鏡屏", "AA:BB:CC:DD:EE:FF")
 	cfg := &config.Config{
 		Name:        "鏡屏",
@@ -23,7 +25,122 @@ func newTestAPIHandler() http.Handler {
 		ScaleFilter: "fast",
 		AudioBuffer: "balanced",
 	}
-	return apiHandler(info, 7000, cfg, newRuntimeState(), nil, nil, nil, "")
+	var recv receiverControl
+	if len(receivers) > 0 {
+		recv = receivers[0]
+	}
+	return apiHandler(info, 7000, cfg, newRuntimeState(), nil, recv, nil, "")
+}
+
+type trustResetControl struct {
+	resets                    int
+	err                       error
+	pending                   []receiver.PendingSender
+	approved, rejected        []string
+	approvalErr, rejectionErr error
+}
+
+func (c *trustResetControl) Disconnect() {}
+func (c *trustResetControl) ClearTrustedSenders() error {
+	c.resets++
+	if c.err == nil {
+		c.pending = nil
+	}
+	return c.err
+}
+
+func (c *trustResetControl) PendingSenders() []receiver.PendingSender {
+	return append([]receiver.PendingSender(nil), c.pending...)
+}
+
+func (c *trustResetControl) ApproveSender(fingerprint string) error {
+	if c.approvalErr != nil {
+		return c.approvalErr
+	}
+	for i, pending := range c.pending {
+		if pending.Fingerprint == fingerprint {
+			c.pending = append(c.pending[:i], c.pending[i+1:]...)
+			c.approved = append(c.approved, fingerprint)
+			return nil
+		}
+	}
+	return receiver.ErrNotPending
+}
+
+func (c *trustResetControl) RejectSender(fingerprint string) error {
+	if c.rejectionErr != nil {
+		return c.rejectionErr
+	}
+	for i, pending := range c.pending {
+		if pending.Fingerprint == fingerprint {
+			c.pending = append(c.pending[:i], c.pending[i+1:]...)
+			break
+		}
+	}
+	c.rejected = append(c.rejected, fingerprint)
+	return nil
+}
+
+func TestTrustRecoveryEndpointIsLoopbackOnlyAndIdempotent(t *testing.T) {
+	control := &trustResetControl{}
+	h := newTestAPIHandler(control)
+	for _, remote := range []string{"127.0.0.1:1234", "[::1]:1234", "[::ffff:127.0.0.1]:1234"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/pairing/trust/reset", nil)
+		req.Host = "127.0.0.1:54321"
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" ||
+			strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+			t.Fatalf("trust reset from %s = %d %q", remote, rec.Code, rec.Body.String())
+		}
+	}
+	if control.resets != 3 {
+		t.Fatalf("trust reset called receiver %d times, want 3", control.resets)
+	}
+	for _, tc := range []struct {
+		name, method, remote, host, origin string
+		status                             int
+	}{
+		{"LAN source with loopback Host", http.MethodPost, "192.168.1.20:1234", "127.0.0.1:54321", "", 403},
+		{"IPv6 LAN source", http.MethodPost, "[2001:db8::20]:1234", "127.0.0.1:54321", "", 403},
+		{"missing source", http.MethodPost, "", "127.0.0.1:54321", "", 403},
+		{"invalid source", http.MethodPost, "localhost:1234", "127.0.0.1:54321", "", 403},
+		{"cross origin", http.MethodPost, "127.0.0.1:1234", "127.0.0.1:54321", "http://evil.example", 403},
+		{"opaque origin", http.MethodPost, "127.0.0.1:1234", "127.0.0.1:54321", "null", 403},
+		{"rebound Host", http.MethodPost, "127.0.0.1:1234", "evil.example:54321", "", 403},
+		{"read method", http.MethodGet, "127.0.0.1:1234", "127.0.0.1:54321", "", 405},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/pairing/trust/reset", nil)
+			req.Host, req.RemoteAddr = tc.host, tc.remote
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.status || control.resets != 3 {
+				t.Fatalf("rejected reset = %d, receiver calls %d", rec.Code, control.resets)
+			}
+		})
+	}
+}
+
+func TestTrustRecoveryEndpointReportsFailures(t *testing.T) {
+	for _, control := range []receiverControl{nil, &trustResetControl{err: errors.New("trust persistence failed")}} {
+		h := newTestAPIHandler(control)
+		req := httptest.NewRequest(http.MethodPost, "/api/pairing/trust/reset", nil)
+		req.Host, req.RemoteAddr = "127.0.0.1:54321", "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		want := "receiver unavailable"
+		if control != nil {
+			want = "trust persistence failed"
+		}
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("failed trust reset = %d %q", rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func TestAPIHostAndOriginValidation(t *testing.T) {
@@ -47,6 +164,7 @@ func TestAPIHostAndOriginValidation(t *testing.T) {
 	for _, tc := range accepted {
 		t.Run("accept/"+tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+			req.RemoteAddr = "127.0.0.1:1234"
 			req.Host = tc.host
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
@@ -93,6 +211,7 @@ func TestAPIHostAndOriginValidation(t *testing.T) {
 	for _, tc := range rejected {
 		t.Run("reject/"+tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.RemoteAddr = "127.0.0.1:1234"
 			req.Host = tc.host
 			if tc.emptyO {
 				req.Header.Set("Origin", "")
