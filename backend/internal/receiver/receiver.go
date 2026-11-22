@@ -379,7 +379,8 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 		r.audioRx.Configure(audioKeys, eiv)
 		r.log.Printf("setup: stream key derived for %s (%d candidate(s))", remote, len(cs.aesCandidates))
 		for _, c := range cs.aesCandidates {
-			r.log.Printf("setup:   candidate %q key % x", c.Name, c.Key)
+			// SEC-002: never write stream key material to the log.
+			r.log.Printf("setup:   candidate %q", c.Name)
 		}
 	}
 
