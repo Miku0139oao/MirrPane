@@ -71,17 +71,59 @@ type fakeService struct {
 }
 
 func (s *fakeService) Shutdown() {
-	s.stops++
 	s.onStop()
 }
 
 type fakeLAN struct {
+	mu           sync.Mutex
 	current      lanInterface
 	err          error
 	resolveCalls int
 	failService  string
 	services     []*fakeService
 	events       []string
+}
+
+type fakeLANState struct {
+	resolveCalls int
+	services     []fakeService
+	events       []string
+}
+
+// These helpers release the fake's lock before the test calls the advertiser:
+// advertiser callbacks take a.mu before f.mu, never the other way around.
+func (f *fakeLAN) setInterface(index int, ipv4 string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.current.iface.Index = index
+	f.current.ipv4 = ipv4
+}
+
+func (f *fakeLAN) setError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *fakeLAN) setRegistrationFailure(service string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failService = service
+}
+
+func (f *fakeLAN) snapshot() fakeLANState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state := fakeLANState{
+		resolveCalls: f.resolveCalls,
+		services:     make([]fakeService, len(f.services)),
+		events:       slices.Clone(f.events),
+	}
+	for i, s := range f.services {
+		state.services[i] = *s
+		state.services[i].txt = slices.Clone(s.txt)
+	}
+	return state
 }
 
 func newWatchdogTestAdvertiser() (*Advertiser, *fakeLAN) {
@@ -92,10 +134,14 @@ func newWatchdogTestAdvertiser() (*Advertiser, *fakeLAN) {
 	a := testAdvertiser(false)
 	a.watchInterval = 10 * time.Millisecond
 	a.resolveInterface = func() (lanInterface, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		f.resolveCalls++
 		return f.current, f.err
 	}
 	a.register = func(instance, service, domain string, port int, txt []string, ifaces []net.Interface) (serviceServer, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		if service == f.failService {
 			return nil, errors.New("multicast registration unavailable")
 		}
@@ -107,7 +153,12 @@ func newWatchdogTestAdvertiser() (*Advertiser, *fakeLAN) {
 			service:  service,
 			iface:    ifaces[0],
 			txt:      slices.Clone(txt),
-			onStop:   func() { f.events = append(f.events, "stop "+service) },
+		}
+		s.onStop = func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			s.stops++
+			f.events = append(f.events, "stop "+service)
 		}
 		f.services = append(f.services, s)
 		f.events = append(f.events, "start "+service)
@@ -136,10 +187,11 @@ func TestWatchdogSameInterfaceDoesNotRestart(t *testing.T) {
 		for range 3 {
 			watchdogTick(a)
 		}
-		if f.resolveCalls != 4 || len(f.services) != 2 {
-			t.Fatalf("unchanged LAN: %d lookups, %d services", f.resolveCalls, len(f.services))
+		state := f.snapshot()
+		if state.resolveCalls != 4 || len(state.services) != 2 {
+			t.Fatalf("unchanged LAN: %d lookups, %d services", state.resolveCalls, len(state.services))
 		}
-		for _, s := range f.services {
+		for _, s := range state.services {
 			if s.stops != 0 {
 				t.Fatalf("unchanged LAN stopped %s", s.service)
 			}
@@ -152,10 +204,11 @@ func TestWatchdogSameInterfaceDoesNotRestart(t *testing.T) {
 			t.Fatal("Stop returned before the watchdog exited")
 		}
 		watchdogTick(a)
-		if f.resolveCalls != 4 {
+		state = f.snapshot()
+		if state.resolveCalls != 4 {
 			t.Fatal("watchdog kept resolving after Stop")
 		}
-		for _, s := range f.services {
+		for _, s := range state.services {
 			if s.stops != 1 {
 				t.Fatalf("repeated Stop shut down %s %d times", s.service, s.stops)
 			}
@@ -181,22 +234,22 @@ func TestWatchdogChangedInterfaceRestartsBothServices(t *testing.T) {
 				}
 				defer a.Stop()
 				synctest.Wait()
-				f.current.iface.Index = tc.index
-				f.current.ipv4 = tc.ipv4
+				f.setInterface(tc.index, tc.ipv4)
 				watchdogTick(a)
-				if len(f.services) != 4 {
-					t.Fatalf("got %d service registrations, want 4", len(f.services))
+				state := f.snapshot()
+				if len(state.services) != 4 {
+					t.Fatalf("got %d service registrations, want 4", len(state.services))
 				}
 				wantEvents := []string{
 					"start _airplay._tcp", "start _raop._tcp",
 					"stop _raop._tcp", "stop _airplay._tcp",
 					"start _airplay._tcp", "start _raop._tcp",
 				}
-				if !slices.Equal(f.events, wantEvents) {
-					t.Fatalf("restart order = %v, want %v", f.events, wantEvents)
+				if !slices.Equal(state.events, wantEvents) {
+					t.Fatalf("restart order = %v, want %v", state.events, wantEvents)
 				}
-				for i, old := range f.services[:2] {
-					next := f.services[i+2]
+				for i, old := range state.services[:2] {
+					next := state.services[i+2]
 					if old.stops != 1 || next.stops != 0 || next.iface.Index != tc.index {
 						t.Fatalf("%s: old stops %d, new stops %d, interface %d", old.service, old.stops, next.stops, next.iface.Index)
 					}
@@ -205,7 +258,7 @@ func TestWatchdogChangedInterfaceRestartsBothServices(t *testing.T) {
 					}
 				}
 				watchdogTick(a)
-				if len(f.services) != 4 {
+				if len(f.snapshot().services) != 4 {
 					t.Fatal("stable replacement LAN restarted again")
 				}
 			})
@@ -221,19 +274,19 @@ func TestWatchdogRecoversAfterLANLoss(t *testing.T) {
 		}
 		defer a.Stop()
 		synctest.Wait()
-		f.err = errors.New("LAN disconnected")
+		f.setError(errors.New("LAN disconnected"))
 		watchdogTick(a)
 		if a.String() != "not advertising" {
 			t.Fatal("still advertising after losing the LAN")
 		}
-		for _, s := range f.services {
+		for _, s := range f.snapshot().services {
 			if s.stops != 1 {
 				t.Fatalf("LAN loss left %s running", s.service)
 			}
 		}
-		f.err = nil
+		f.setError(nil)
 		watchdogTick(a)
-		if len(f.services) != 4 || a.String() == "not advertising" {
+		if len(f.snapshot().services) != 4 || a.String() == "not advertising" {
 			t.Fatal("advertising did not recover when the same LAN returned")
 		}
 	})
@@ -250,25 +303,27 @@ func TestWatchdogRetriesRegistration(t *testing.T) {
 				defer a.Stop()
 				done := a.done
 				synctest.Wait()
-				f.current.ipv4 = "192.168.1.21"
-				f.failService = service
+				f.setInterface(7, "192.168.1.21")
+				f.setRegistrationFailure(service)
 				watchdogTick(a)
 				wantServices := 2
 				if service == "_raop._tcp" {
 					wantServices++ // AirPlay remains available while RAOP retries.
 				}
-				if len(f.services) != wantServices {
-					t.Fatalf("registration failure: %d services, want %d", len(f.services), wantServices)
+				state := f.snapshot()
+				if len(state.services) != wantServices {
+					t.Fatalf("registration failure: %d services, want %d", len(state.services), wantServices)
 				}
 				if err := a.Start(); err != nil || a.done != done {
 					t.Fatalf("Start replaced a retrying watchdog: %v", err)
 				}
-				f.failService = ""
+				f.setRegistrationFailure("")
 				watchdogTick(a)
-				if len(f.services) != 4 {
-					t.Fatalf("retry created %d services, want 4", len(f.services))
+				state = f.snapshot()
+				if len(state.services) != 4 {
+					t.Fatalf("retry created %d services, want 4", len(state.services))
 				}
-				for _, s := range f.services[2:] {
+				for _, s := range state.services[2:] {
 					if s.stops != 0 {
 						t.Fatalf("retry stopped the new %s", s.service)
 					}
@@ -296,7 +351,7 @@ func TestStopDuringWatchdogRestart(t *testing.T) {
 		defer a.Stop()
 		done := a.done
 		synctest.Wait()
-		f.current.iface.Index = 8
+		f.setInterface(8, "192.168.1.20")
 		time.Sleep(a.watchInterval)
 		<-entered
 		stopping, stopped := make(chan struct{}), make(chan struct{})
@@ -313,17 +368,18 @@ func TestStopDuringWatchdogRestart(t *testing.T) {
 		default:
 			t.Fatal("Stop returned with a live watchdog")
 		}
-		if len(f.services) != 4 {
-			t.Fatalf("expected an in-flight restart, got %d registrations", len(f.services))
+		state := f.snapshot()
+		if len(state.services) != 4 {
+			t.Fatalf("expected an in-flight restart, got %d registrations", len(state.services))
 		}
-		for _, s := range f.services {
+		for _, s := range state.services {
 			if s.stops != 1 {
 				t.Fatalf("Stop left %s with %d shutdowns", s.service, s.stops)
 			}
 		}
-		calls := f.resolveCalls
+		calls := state.resolveCalls
 		watchdogTick(a)
-		if f.resolveCalls != calls || a.String() != "not advertising" {
+		if f.snapshot().resolveCalls != calls || a.String() != "not advertising" {
 			t.Fatal("watchdog restarted after Stop returned")
 		}
 	})
@@ -343,7 +399,7 @@ func TestConcurrentStartStop(t *testing.T) {
 		}
 		wg.Wait()
 		a.Stop()
-		for _, s := range f.services {
+		for _, s := range f.snapshot().services {
 			if s.stops != 1 {
 				t.Fatalf("concurrent Stop shut down %s %d times", s.service, s.stops)
 			}
@@ -354,7 +410,8 @@ func TestConcurrentStartStop(t *testing.T) {
 		}
 		defer a.Stop()
 		watchdogTick(a)
-		for _, s := range f.services[len(f.services)-2:] {
+		state := f.snapshot()
+		for _, s := range state.services[len(state.services)-2:] {
 			if s.stops != 0 {
 				t.Fatalf("an old watchdog stopped the new %s", s.service)
 			}

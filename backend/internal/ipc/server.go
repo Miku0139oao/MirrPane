@@ -42,7 +42,17 @@ type Server struct {
 	OnTeardown   func(remote string, body []byte)
 	OnFeedback   func(remote string, body []byte)
 	OnEvent      func(remote string, body []byte)
+	// OnDisconnect forgets a sender after its last control connection closes. It
+	// may follow a full OnTeardown, so forgetting the sender must be idempotent.
 	OnDisconnect func(remote string)
+	// OnStop releases all sender sessions for the HTTP /stop endpoint.
+	OnStop func()
+
+	// connCount tracks open control connections per sender IP. A sender may
+	// open short auxiliary connections (for example /info) while its mirror
+	// session is live, so the disconnect hook only fires when the last one closes.
+	connMu    sync.Mutex
+	connCount map[string]int
 
 	// TXTRecord returns the DNS-SD TXT record in wire form for /info?txtAirPlay
 	// (raop false) or /info?txtRAOP (raop true). Set after mDNS starts.
@@ -246,9 +256,6 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		if s.OnTeardown != nil {
 			s.OnTeardown(remote, req.Body)
 		}
-		if s.OnDisconnect != nil {
-			s.OnDisconnect(remote)
-		}
 		return &Response{}
 
 	case "ANNOUNCE":
@@ -269,8 +276,8 @@ func (s *Server) dispatchHTTP(req *Request, path string) *Response {
 			// is needed.
 			return &Response{}
 		case path == "/stop":
-			if s.OnDisconnect != nil {
-				s.OnDisconnect(remoteOf(req))
+			if s.OnStop != nil {
+				s.OnStop()
 			}
 			return &Response{}
 		case path == "/fp-setup2":
@@ -292,10 +299,6 @@ func (s *Server) dispatchHTTP(req *Request, path string) *Response {
 	log.Printf("ipc: unhandled %s %s %s", req.Method, req.Target, req.Protocol)
 	return &Response{Status: 200}
 }
-
-// remoteOf is a placeholder so the HTTP branch can name the sender the same way
-// the RTSP branch does; the request does not carry it.
-func remoteOf(req *Request) string { return "" }
 
 // binary answers a body as a binary blob. An empty reply is written as a bare
 // 200 with no Content-Type, which is how UxPlay answers a pair-verify request it

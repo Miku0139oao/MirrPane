@@ -205,6 +205,10 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 	}
 	r.cleanStop.Store(true)
 	r.audioRx.ResetStream()
+	// Audio-only teardown returned above and must retain its pairing/key state.
+	// No receiver lock is held here; a later control-connection close may safely
+	// drop the same session again.
+	r.DropSession(remote)
 	r.setState(StatusIdle, "sender stopped mirroring")
 }
 
@@ -246,6 +250,14 @@ func (r *Receiver) session(remote string) *clientSession {
 func (r *Receiver) DropSession(remote string) {
 	r.mu.Lock()
 	delete(r.sessions, remote)
+	r.mu.Unlock()
+}
+
+// DropAllSessions forgets every sender, including their FairPlay and pairing
+// state, when the HTTP /stop endpoint stops the receiver session.
+func (r *Receiver) DropAllSessions() {
+	r.mu.Lock()
+	clear(r.sessions)
 	r.mu.Unlock()
 }
 

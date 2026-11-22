@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -264,9 +265,47 @@ func (r *Response) write(w *bufio.Writer, req *Request) error {
 	return w.Flush()
 }
 
+// retainConn records one more open control connection for remote.
+func (s *Server) retainConn(remote string) {
+	s.connMu.Lock()
+	if s.connCount == nil {
+		s.connCount = make(map[string]int)
+	}
+	s.connCount[remote]++
+	s.connMu.Unlock()
+}
+
+// releaseConn reports whether remote's last control connection closed. It
+// returns false for a release with no retained connection, so a double close
+// cannot fire the disconnect hook twice.
+func (s *Server) releaseConn(remote string) bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	n := s.connCount[remote]
+	if n > 1 {
+		s.connCount[remote] = n - 1
+		return false
+	}
+	delete(s.connCount, remote)
+	return n == 1
+}
+
 // serveConn answers every request on one connection until the sender closes it.
 func (s *Server) serveConn(conn net.Conn) {
-	defer conn.Close()
+	remote := ipOf(conn.RemoteAddr().String())
+	addr, err := netip.ParseAddr(remote)
+	// LAN and link-local senders are valid; loopback, unspecified and in-memory
+	// local connections do not own a remote receiver session.
+	notifyDisconnect := err == nil && !addr.Unmap().IsLoopback() && !addr.Unmap().IsUnspecified()
+	if notifyDisconnect {
+		s.retainConn(remote)
+	}
+	defer func() {
+		_ = conn.Close()
+		if notifyDisconnect && s.releaseConn(remote) && s.OnDisconnect != nil {
+			s.OnDisconnect(remote)
+		}
+	}()
 
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
@@ -275,8 +314,6 @@ func (s *Server) serveConn(conn net.Conn) {
 
 	r := bufio.NewReaderSize(conn, 32<<10)
 	w := bufio.NewWriterSize(conn, 32<<10)
-	remote := ipOf(conn.RemoteAddr().String())
-
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 		req, err := readRequest(r)

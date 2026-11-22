@@ -290,6 +290,7 @@ func main() {
 	srv.OnSetup = recv.Setup
 	srv.OnTeardown = recv.Teardown
 	srv.OnDisconnect = recv.DropSession
+	srv.OnStop = recv.DropAllSessions
 
 	if err := srv.Serve(controlPort.ln); err != nil {
 		note("error: %v", err)
