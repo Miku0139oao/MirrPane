@@ -25,8 +25,9 @@ import (
 var DLLs = [...]string{"avutil-61.dll", "swresample-7.dll", "swscale-10.dll", "avcodec-63.dll"}
 
 const (
-	// Generated ABI layouts: N-129166-gae9f4540cb-20261121. Update this pin
-	// only together with the decode ABI checks and corresponding source notice.
+	// The asset filename omits the date. Packaging cross-checks this dated ABI
+	// build ID against assetName and releaseTag. Update with the decode layouts.
+	buildID     = "N-129166-gae9f4540cb-20261121"
 	releaseTag  = "autobuild-2026-11-21-12-37"
 	releaseURL  = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/" + releaseTag
 	assetName   = "ffmpeg-N-129166-gae9f4540cb-win64-gpl-shared.zip"

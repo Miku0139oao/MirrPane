@@ -105,19 +105,49 @@ New-Item -ItemType Directory -Path (Join-Path $dist 'logs') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $dist 'LICENSE') -Force
 Copy-Item -LiteralPath (Join-Path $dist 'backend\COPYING') -Destination (Join-Path $dist 'COPYING') -Force
 $runtimeManager = Get-Content -LiteralPath (Join-Path $root 'backend\internal\ffmpeg\runtime.go') -Raw
-if ($runtimeManager -notmatch 'releaseTag\s*=\s*"([^"]+)"') { throw 'FFmpeg release pin missing' }
+if ($runtimeManager -notmatch '(?m)^\s*releaseTag\s*=\s*"([^"]+)"') { throw 'FFmpeg release pin missing' }
 $ffmpegTag = $Matches[1]
-if ($runtimeManager -notmatch 'assetSHA256\s*=\s*"([0-9a-f]{64})"') { throw 'FFmpeg SHA256 pin missing' }
+if ($runtimeManager -notmatch '(?m)^\s*assetSHA256\s*=\s*"([0-9a-f]{64})"') { throw 'FFmpeg SHA256 pin missing' }
 $ffmpegDigest = $Matches[1]
+if ($runtimeManager -notmatch '(?m)^\s*assetName\s*=\s*"([^"]+)"') { throw 'FFmpeg assetName pin missing in runtime.go' }
+$ffmpegAsset = $Matches[1]
+if ($ffmpegAsset -cnotmatch '^ffmpeg-(N-\d+-g([0-9a-f]{7,40}))(?:-(\d{8}))?-win64-gpl-shared\.zip$') {
+    throw "FFmpeg assetName has an unsupported format: $ffmpegAsset (expected ffmpeg-N-<build>-g<commit>[-YYYYMMDD]-win64-gpl-shared.zip)"
+}
+$ffmpegBuild = $Matches[1]
+$ffmpegCommit = $Matches[2]
+$ffmpegAssetDate = $Matches[3]
+# Current upstream filenames omit the date; runtime.go's dated ABI build ID
+# supplies it. Also validate a filename date if upstream ever includes one.
+if ($runtimeManager -notmatch '(?m)^\s*buildID\s*=\s*"([^"]+)"') { throw 'FFmpeg dated buildID missing in runtime.go' }
+$ffmpegBuildID = $Matches[1]
+if ($ffmpegBuildID -cnotmatch '^(.+)-(\d{8})$' -or $Matches[1] -cne $ffmpegBuild) {
+    throw "FFmpeg buildID does not match assetName: $ffmpegBuildID versus $ffmpegAsset"
+}
+$ffmpegBuildDate = $Matches[2]
+if ($ffmpegAssetDate -and $ffmpegAssetDate -cne $ffmpegBuildDate) {
+    throw "FFmpeg assetName date $ffmpegAssetDate does not match buildID date $ffmpegBuildDate"
+}
+if ($ffmpegTag -cnotmatch '^autobuild-(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}$') { throw "FFmpeg releaseTag has an unsupported format: $ffmpegTag" }
+$ffmpegReleaseDate = $Matches[1]
+try {
+    $ffmpegReleaseDate = [datetime]::ParseExact($ffmpegReleaseDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture).ToString('yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
+} catch {
+    throw "FFmpeg releaseTag contains an invalid date: $ffmpegTag"
+}
+if ($ffmpegReleaseDate -cne $ffmpegBuildDate) {
+    throw "FFmpeg releaseTag date $ffmpegReleaseDate does not match buildID date $ffmpegBuildDate"
+}
 $sourceNotice = @"
 MirrPane ${Version}: GNU GPL version 3; see LICENSE.
 Application source: https://github.com/Miku0139oao/MirrPane
-FFmpeg shared runtime: N-129166-gae9f4540cb-20261121; GNU GPL version 3; see COPYING.
+FFmpeg shared runtime: $ffmpegBuildID; GNU GPL version 3; see COPYING.
+Pinned binary asset: $ffmpegAsset
 Pinned binary/build release: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/$ffmpegTag
 Pinned binary SHA256: $ffmpegDigest
-FFmpeg corresponding source: https://github.com/FFmpeg/FFmpeg/tree/ae9f4540cb6a549118aacef8361dc2f8da9d5f4a
+FFmpeg corresponding source: https://github.com/FFmpeg/FFmpeg/tree/$ffmpegCommit
 Build scripts, dependency versions, patches and configuration:
-https://github.com/FFmpeg-Builds/FFmpeg-Builds/tree/7f2a6b1050d302144de8366afa37a75e46f326aa
+https://github.com/FFmpeg-Builds/FFmpeg-Builds/tree/$ffmpegTag
 Obtain all enabled dependencies using the matching build scripts, not just FFmpeg's source tree.
 Release distributors must provide the complete corresponding source for their conveyed build.
 "@
