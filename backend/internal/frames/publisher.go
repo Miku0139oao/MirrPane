@@ -395,9 +395,9 @@ func (p *Publisher) ConsumerStats() ConsumerStats {
 // is what re-arms the gate and a publish word that never changes is never
 // re-adopted. A probe only consumes its interval once it actually commits a
 // picture (callers report the outcome through Published), so an access unit
-// that yields no frame cannot postpone the next probe. Publishing a probe after
-// a gated stretch opens a short resume burst at full rate, so a restored window
-// is not stuck at one picture per second while the reader catches up.
+// that yields no frame cannot postpone the next probe. A hidden reader pays for
+// one probe per interval; a reader that was merely idle (static sender) gets a
+// short resume burst so the first frames after the pause are not gated.
 type ConsumerGate struct {
 	staleAfter   int64 // nanoseconds since the last adoption before gating
 	probeEvery   int64 // nanoseconds between probe pictures while gated
@@ -405,8 +405,6 @@ type ConsumerGate struct {
 	nextProbe    int64 // nanoseconds; the earliest next probe
 	graceUntil   int64 // nanoseconds; allow everything until then (resume burst)
 	probePending bool  // a probe was allowed and its outcome is not reported yet
-	gated        bool  // the previous picture was suppressed
-	consumerSeen bool  // a reader has attached (PID or an adoption is visible)
 	clock        func() int64
 }
 
@@ -469,7 +467,6 @@ func (g *ConsumerGate) Allow(c ConsumerStats) bool {
 	if now <= 0 {
 		return true
 	}
-	g.consumerSeen = c.ConsumerPID != 0 || c.Adopted > 0
 	allow := false
 	switch {
 	case c.ConsumerPID == 0 && c.Adopted == 0:
@@ -496,9 +493,6 @@ func (g *ConsumerGate) Allow(c ConsumerStats) bool {
 	default:
 		allow = g.requestProbe(now)
 	}
-	if !allow {
-		g.gated = true
-	}
 	return allow
 }
 
@@ -516,16 +510,14 @@ func (g *ConsumerGate) Published(committed bool) {
 	}
 	now := g.clock()
 	if now <= 0 {
-		g.gated = false
 		return
 	}
 	g.nextProbe = now + g.probeEvery
-	if g.gated && g.consumerSeen {
-		// The reader may have been hidden; give it a burst to adopt again
-		// before gating resumes.
-		g.graceUntil = now + g.resumeBurst
-	}
-	g.gated = false
+	// No resume burst here: a probe committed while the reader is hidden would
+	// otherwise run the full pipeline for the burst window (~30 frames) even
+	// though nobody is watching. On restore, the reader adopts the probe frame
+	// and its fresh timestamp re-arms full rate; the static-screen wake path
+	// above opens the burst where it is actually needed.
 }
 
 // requestProbe reports whether a probe picture is due. A probe stays pending
@@ -714,11 +706,10 @@ func (c *Claim) Stride() int { return c.rowStride }
 // It must be called after the pixels are in place. It is a no-op once the claim
 // has been settled.
 //
-// Ordering: the pixel and metadata writes are sequenced before the atomic store
-// of Publish, and the slot is only released to the reader afterwards. A reader
-// that adopts the slot (CAS free -> reader) therefore happens-after every write
-// this commit observes, and a half-filled slot is never named by Publish and
-// never returns to claimFree.
+// Ordering: the pixel and metadata writes are sequenced before the atomics that
+// release the slot and store Publish. The slot is released first, so a reader
+// that sees the new word can always claim it and a reader still holding the
+// old word can never claim this slot early.
 func (c *Claim) Commit() {
 	if c == nil || c.done {
 		return

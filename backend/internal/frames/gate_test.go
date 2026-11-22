@@ -36,21 +36,16 @@ func TestConsumerGateStaleVsFresh(t *testing.T) {
 	}
 	g.Published(true)
 
-	// Committing a probe after a gated stretch opens a resume burst so the
-	// reader can catch up without waiting a full second.
+	// A probe committed while the reader is still hidden must not open a
+	// full-rate burst: the following pictures stay gated so a minimised window
+	// costs one conversion per probe interval, not a burst every second.
 	now += int64(100 * time.Millisecond)
-	if !g.Allow(stale) {
-		t.Fatal("resume burst did not allow the first picture after the probe")
-	}
-	g.Published(true)
-
-	// Once the burst ends and the reader is still not adopting, gating resumes.
-	now += int64(500 * time.Millisecond)
 	if g.Allow(stale) {
-		t.Fatal("gate never resumed gating after the resume burst")
+		t.Fatal("hidden reader got a resume burst after a probe")
 	}
 
-	// A fresh adoption re-arms the gate immediately, not merely at the next probe.
+	// The reader adopts the probe and stamps freshness: full rate resumes
+	// immediately, without waiting for the next probe.
 	now += int64(time.Millisecond)
 	if !g.Allow(fresh) {
 		t.Fatal("gate did not re-arm on a fresh adoption")
