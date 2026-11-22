@@ -172,6 +172,16 @@ func (r *Response) AddHeader(name, value string) {
 	r.Headers = append(r.Headers, header{name, value})
 }
 
+// logTarget bounds the request target echoed to the log so a crafted long
+// target cannot inflate the log file.
+func logTarget(target string) string {
+	const max = 120
+	if len(target) <= max {
+		return target
+	}
+	return target[:max] + "…"
+}
+
 // statusText renders the reason phrase AirPlay senders expect to see.
 func statusText(code int) string {
 	switch code {
@@ -185,6 +195,8 @@ func statusText(code int) string {
 		return "Unauthorized"
 	case 403:
 		return "Forbidden"
+	case 429:
+		return "Too Many Requests"
 	case 431:
 		return "Request Header Fields Too Large"
 	case 451:
@@ -336,7 +348,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		log.Printf("ipc: %q %q from %s -> %d (%d ms, %d in, %d out)",
-			req.Method, req.Target, conn.RemoteAddr(), resp.Status,
+			req.Method, logTarget(req.Target), conn.RemoteAddr(), resp.Status,
 			time.Since(start).Milliseconds(), len(req.Body), len(resp.Body))
 		if resp.Disconnect || req.Close {
 			return

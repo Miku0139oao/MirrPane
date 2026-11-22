@@ -55,6 +55,15 @@ type Server struct {
 	connMu    sync.Mutex
 	connCount map[string]int
 
+	// limMu/limiters bound per-sender request rates so a pairing or handshake
+	// flood cannot hold the receiver-wide control lock for an unbounded time.
+	limMu    sync.Mutex
+	limiters map[string]*requestBudget
+	prefixes map[string]*prefixWindow
+
+	limitLogAt    time.Time
+	limitLogCount int
+
 	// TXTRecord returns the DNS-SD TXT record in wire form for /info?txtAirPlay
 	// (raop false) or /info?txtRAOP (raop true). Set after mDNS starts.
 	TXTRecord func(raop bool) []byte
@@ -168,6 +177,10 @@ func closeOnce(ch chan struct{}) {
 // lib/raop.c: RTSP/1.0 methods carry the protocol, HTTP/1.1 carries the web API
 // endpoints (reverse, scrub, rate, stop, fp-setup2, server-info).
 func (s *Server) dispatch(req *Request, remote string) *Response {
+	if !s.allowRequest(remote) {
+		s.noteRateLimited(remote)
+		return &Response{Status: 429}
+	}
 	path := req.Path()
 
 	switch {
@@ -220,14 +233,14 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		// A known method on an unknown URL is not an error: UxPlay leaves its
 		// pre-initialised 200 in place. Endpoints such as /event, /volume and
 		// /pair-remove land here.
-		log.Printf("ipc: tolerated %q %q", req.Method, req.Target)
+		log.Printf("ipc: tolerated %q %q", req.Method, logTarget(req.Target))
 		return &Response{}
 
 	case "GET":
 		if strings.HasPrefix(req.Target, "/info") {
 			return s.handleInfo(req)
 		}
-		log.Printf("ipc: tolerated %q %q", req.Method, req.Target)
+		log.Printf("ipc: tolerated %q %q", req.Method, logTarget(req.Target))
 		return &Response{}
 
 	case "OPTIONS":
@@ -263,7 +276,7 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		return &Response{Status: 453}
 	}
 
-	log.Printf("ipc: unhandled %q %q %q", req.Method, req.Target, req.Protocol)
+	log.Printf("ipc: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
 	return &Response{Status: 501}
 }
 
@@ -305,7 +318,7 @@ func (s *Server) dispatchHTTP(req *Request, remote, path string) *Response {
 			return &Response{Status: 404}
 		}
 	}
-	log.Printf("ipc: unhandled %q %q %q", req.Method, req.Target, req.Protocol)
+	log.Printf("ipc: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
 	return &Response{Status: 200}
 }
 
@@ -555,7 +568,8 @@ func (s *Server) handleSetParameter(req *Request) *Response {
 	case strings.HasPrefix(body, "progress:"):
 		// Live mirroring has no scrubbing; accept and ignore.
 	default:
-		log.Printf("ipc: unhandled set_parameter %q", body)
+		// Never echo the (up to 4 MiB) body to the log.
+		log.Printf("ipc: unhandled set_parameter (%d bytes)", len(body))
 	}
 	return &Response{}
 }

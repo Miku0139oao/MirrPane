@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -134,5 +135,25 @@ func TestConfigSaveAtomicAndMode0600(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config.json mode = %#o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestLoadDoesNotRewriteUnchangedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	raw := []byte(`{"name":"Stable","deviceId":"AA:BB:CC:DD:EE:FF","pairingId":"11111111-2222-3333-4444-555555555555","keySeed":"` + seed + `","width":1920,"height":1080,"maxFps":60,"decoderMode":"auto","colorRange":"auto","scaleFilter":"fast","audioBuffer":"balanced"}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir, "鏡屏"); err != nil {
+		t.Fatalf("Load unchanged: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, after) {
+		t.Fatalf("Load rewrote unchanged config.json:\n got: %s\nwant: %s", after, raw)
 	}
 }

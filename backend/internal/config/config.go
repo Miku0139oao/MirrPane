@@ -53,11 +53,21 @@ func Load(dir, defaultName string) (*Config, error) {
 		if err := json.Unmarshal(data, &c); err != nil {
 			return nil, fmt.Errorf("config: parse %s: %w", path, err)
 		}
+		before := c
 		if err := c.fill(defaultName); err != nil {
 			return nil, err
 		}
-		if err := c.Save(dir); err != nil {
-			return nil, err
+		if c != before {
+			if err := c.Save(dir); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return nil, fmt.Errorf("config: chmod %s: %w", path, err)
+			}
+			if err := RestrictFileACL(path); err != nil {
+				return nil, fmt.Errorf("config: restrict %s: %w", path, err)
+			}
 		}
 		return &c, nil
 	case errors.Is(err, os.ErrNotExist):
@@ -173,6 +183,10 @@ func (c *Config) Save(dir string) error {
 		_ = tmp.Close()
 		return fmt.Errorf("config: chmod %s: %w", tmpName, err)
 	}
+	if err := RestrictFileACL(tmpName); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("config: restrict %s: %w", tmpName, err)
+	}
 	_, writeErr := tmp.Write(append(data, '\n'))
 	closeErr := tmp.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
@@ -184,6 +198,9 @@ func (c *Config) Save(dir string) error {
 	cleanup = false
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fmt.Errorf("config: chmod %s: %w", path, err)
+	}
+	if err := RestrictFileACL(path); err != nil {
+		return fmt.Errorf("config: restrict %s: %w", path, err)
 	}
 	return nil
 }
