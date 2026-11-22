@@ -154,18 +154,21 @@ func apiHandler(
 			audioStats = speaker.Stats()
 		}
 		body := apiState{
-			Status:       statusName(status),
-			Reason:       reason,
-			Name:         info.Name,
-			IP:           protocol.LocalIPv4(),
-			Port:         port,
-			Sender:       sender,
-			Width:        width,
-			Height:       height,
-			VideoFrames:  frameCount.Load(),
-			AudioFrames:  audioFrames.Load(),
-			Pictures:     pictures,
-			Dropped:      stats.LagFrames,
+			Status:      statusName(status),
+			Reason:      reason,
+			Name:        info.Name,
+			IP:          protocol.LocalIPv4(),
+			Port:        port,
+			Sender:      sender,
+			Width:       width,
+			Height:      height,
+			VideoFrames: frameCount.Load(),
+			AudioFrames: audioFrames.Load(),
+			Pictures:    pictures,
+			// "dropped" stays the honest slot-contention counter; producer→
+			// consumer lag is reported separately so a hidden window does not
+			// look like dropped frames forever.
+			Dropped:      stats.RawDropped,
 			Decoder:      decoderMode,
 			Muted:        muted,
 			Volume:       volume,

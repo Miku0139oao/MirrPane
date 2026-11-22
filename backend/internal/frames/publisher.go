@@ -250,7 +250,11 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 		next:    1,
 		current: 0,
 	}
-	p.ctrl = (*control)(unsafe.Pointer(base))
+	// MapViewOfFile returns a uintptr. unsafe.Add on a nil base converts it
+	// without an explicit uintptr→unsafe.Pointer conversion, which go vet's
+	// unsafeptr check rejects even though this is the only way to name a
+	// mapped view in Go.
+	p.ctrl = (*control)(unsafe.Add(unsafe.Pointer(nil), base))
 	p.slots = unsafe.Add(unsafe.Pointer(p.ctrl), SlotDataOffset)
 
 	if reused &&
@@ -389,14 +393,21 @@ func (p *Publisher) ConsumerStats() ConsumerStats {
 //
 // A gated producer still emits a probe picture at probeEvery, because adoption
 // is what re-arms the gate and a publish word that never changes is never
-// re-adopted. That bounds the cost of being hidden to about one conversion per
-// probe interval while guaranteeing the UI recovers within one interval of
-// becoming visible again.
+// re-adopted. A probe only consumes its interval once it actually commits a
+// picture (callers report the outcome through Published), so an access unit
+// that yields no frame cannot postpone the next probe. Publishing a probe after
+// a gated stretch opens a short resume burst at full rate, so a restored window
+// is not stuck at one picture per second while the reader catches up.
 type ConsumerGate struct {
-	staleAfter int64 // nanoseconds since the last adoption before gating
-	probeEvery int64 // nanoseconds between probe pictures while gated
-	nextProbe  int64 // nanoseconds; the earliest next probe
-	clock      func() int64
+	staleAfter   int64 // nanoseconds since the last adoption before gating
+	probeEvery   int64 // nanoseconds between probe pictures while gated
+	resumeBurst  int64 // nanoseconds of full-rate frames after a gated probe commits
+	nextProbe    int64 // nanoseconds; the earliest next probe
+	graceUntil   int64 // nanoseconds; allow everything until then (resume burst)
+	probePending bool  // a probe was allowed and its outcome is not reported yet
+	gated        bool  // the previous picture was suppressed
+	consumerSeen bool  // a reader has attached (PID or an adoption is visible)
+	clock        func() int64
 }
 
 // Default consumer-gating timings. A second of silence means the reader is not
@@ -404,16 +415,18 @@ type ConsumerGate struct {
 // The same second bounds how long a restored window can show a frozen picture
 // before the probe publishes a new one.
 const (
-	ConsumerStaleAfter = time.Second
-	ConsumerProbeEvery = time.Second
+	ConsumerStaleAfter  = time.Second
+	ConsumerProbeEvery  = time.Second
+	ConsumerResumeBurst = 500 * time.Millisecond
 )
 
 // NewConsumerGate builds a gate with the given timings.
 func NewConsumerGate(staleAfter, probeEvery time.Duration) *ConsumerGate {
 	return &ConsumerGate{
-		staleAfter: int64(staleAfter),
-		probeEvery: int64(probeEvery),
-		clock:      clockNanos,
+		staleAfter:  int64(staleAfter),
+		probeEvery:  int64(probeEvery),
+		resumeBurst: int64(ConsumerResumeBurst),
+		clock:       clockNanos,
 	}
 }
 
@@ -440,8 +453,11 @@ func clockNanos() int64 {
 //   - A reader that attached but has not adopted a picture yet is seeded with
 //     full-rate frames: it cannot stamp freshness without something to adopt.
 //   - A recent adoption means the reader is consuming; produce everything.
-//   - A stale adoption means the reader has stopped rendering; produce only
-//     probes.
+//   - An old adoption with nothing un-adopted means the screen is static, not
+//     that the reader is gone; produce everything and open a resume burst so
+//     the first frames after the pause are not gated while the reader wakes.
+//   - Only when published pictures are waiting un-adopted for longer than
+//     staleAfter is the reader considered stalled; then probes are produced.
 //
 // A clock failure fails open: without QPC there is no way to measure staleness,
 // so the producer behaves as it always did.
@@ -453,27 +469,72 @@ func (g *ConsumerGate) Allow(c ConsumerStats) bool {
 	if now <= 0 {
 		return true
 	}
+	g.consumerSeen = c.ConsumerPID != 0 || c.Adopted > 0
+	allow := false
 	switch {
 	case c.ConsumerPID == 0 && c.Adopted == 0:
-		return g.probe(now)
+		allow = g.requestProbe(now)
 	case c.Adopted == 0:
 		// Attached, but no picture adopted yet: publish normally to seed it.
+		g.probePending = false
 		g.nextProbe = now + g.probeEvery
-		return true
+		allow = true
 	case c.ConsumerAgeNanos <= g.staleAfter:
+		g.probePending = false
 		g.nextProbe = now + g.probeEvery
-		return true
+		g.graceUntil = 0
+		allow = true
+	case c.Published <= c.Adopted:
+		// Every published picture was adopted; the reader is idle, not stalled.
+		g.probePending = false
+		g.nextProbe = now + g.probeEvery
+		g.graceUntil = now + g.resumeBurst
+		allow = true
+	case now < g.graceUntil:
+		g.probePending = false
+		allow = true
 	default:
-		return g.probe(now)
+		allow = g.requestProbe(now)
 	}
+	if !allow {
+		g.gated = true
+	}
+	return allow
 }
 
-// probe reports whether a probe picture is due, and schedules the next one.
-func (g *ConsumerGate) probe(now int64) bool {
-	if now < g.nextProbe {
-		return false
+// Published reports the outcome of an allowed picture. It must be called once
+// for every Allow that returned true: committed says whether a picture was
+// actually published. A probe only starts its interval on commit, so a probe
+// access unit that produced no frame does not waste the next second.
+func (g *ConsumerGate) Published(committed bool) {
+	if g == nil {
+		return
+	}
+	g.probePending = false
+	if !committed {
+		return
+	}
+	now := g.clock()
+	if now <= 0 {
+		g.gated = false
+		return
 	}
 	g.nextProbe = now + g.probeEvery
+	if g.gated && g.consumerSeen {
+		// The reader may have been hidden; give it a burst to adopt again
+		// before gating resumes.
+		g.graceUntil = now + g.resumeBurst
+	}
+	g.gated = false
+}
+
+// requestProbe reports whether a probe picture is due. A probe stays pending
+// until Published reports its outcome.
+func (g *ConsumerGate) requestProbe(now int64) bool {
+	if g.probePending || now < g.nextProbe {
+		return false
+	}
+	g.probePending = true
 	return true
 }
 
@@ -678,20 +739,23 @@ func (c *Claim) Commit() {
 	slot.WriteQPC = uint64(nowQPC())
 
 	// The publish word carries the slot index so a reader never has to guess
-	// which slot the new metadata belongs to.
+	// which slot the new metadata belongs to. Release the slot first: a reader
+	// that sees the new word can always claim it, while a reader still holding
+	// the old word can never claim this slot early. The metadata and pixel
+	// writes are sequenced before both atomics.
+	atomic.StoreUint32(&slot.Claim, claimFree)
 	atomic.StoreUint64(&p.ctrl.Publish, p.seq<<2|uint64(c.index))
 	atomic.AddUint64(&p.ctrl.FrameSeq, 1)
-	published := nowQPC()
-	atomic.StoreUint64(&p.ctrl.LastPublishQPC, uint64(published))
-	atomic.StoreUint64(&p.ctrl.HeartbeatQPC, uint64(published))
-	if start > 0 && published > start {
-		p.lastPublishNanos.Store(qpcNanos(published - start))
-	}
-	atomic.StoreUint32(&slot.Claim, claimFree)
 	p.current = c.index
 
 	if p.event != 0 {
 		_ = windows.SetEvent(p.event)
+	}
+	published := nowQPC()
+	atomic.StoreUint64(&p.ctrl.LastPublishQPC, uint64(published))
+	atomic.StoreUint64(&p.ctrl.HeartbeatQPC, uint64(published))
+	if start > 0 && published >= start {
+		p.lastPublishNanos.Store(qpcNanos(published - start))
 	}
 }
 

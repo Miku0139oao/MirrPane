@@ -290,7 +290,10 @@ const FlutterDesktopPixelBuffer* FrameReader::OnFrame(size_t /*width*/,
 
         // Publish the consumer's progress so the producer can compute lag and
         // freshness. Interlocked keeps the same ordering discipline as the rest
-        // of the control block.
+        // of the control block. The three words are updated separately, so the
+        // producer's diagnostics may briefly observe a new timestamp with the
+        // previous adopted count; that skew is harmless for telemetry and the
+        // gate only relies on the timestamp's freshness.
         const uint64_t adopted_qpc = QueryCounter();
         InterlockedExchange(
             reinterpret_cast<volatile LONG*>(&ctrl->consumer_slot),

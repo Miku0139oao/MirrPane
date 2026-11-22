@@ -126,14 +126,13 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	decodeStart := time.Now()
 	err := s.dec.ReceiveAccessUnit(f.Data, live)
 	decodeTime := time.Since(decodeStart)
-	// Recovery can change modes on a failed access unit, before the next
-	// keyframe arrives. Keep diagnostics current while waiting for it.
-	hw := s.dec.Hardware()
-	if err == nil || s.haveMode.Load() {
-		s.hwMode.Store(hw)
-		s.haveMode.Store(true)
-	}
 	if err != nil {
+		if live {
+			// The probe (or a full-rate picture) produced no frame: return the
+			// slot in the probe schedule instead of wasting the interval.
+			s.gate.Published(false)
+		}
+		s.refreshMode(false)
 		if err != decode.ErrNoFrame {
 			s.errRate.printf("decode: %v", err)
 		}
@@ -141,17 +140,18 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	}
 
 	width, height := s.dec.FrameSize()
+	if width <= 0 || height <= 0 {
+		if live {
+			s.gate.Published(false)
+		}
+		return false
+	}
 	s.width.Store(int64(width))
 	s.height.Store(int64(height))
-	if s.frames.Add(1) == 1 {
-		mode := "software"
-		if hw {
-			mode = "D3D11VA"
-		}
-		log.Printf("decode: first picture %dx%d, %s (%d bytes per frame)",
-			width, height, mode, width*height*4)
-	}
+
 	if !live {
+		s.countPicture(width, height)
+		s.refreshMode(true)
 		return true
 	}
 
@@ -159,20 +159,52 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	// of the whole picture.
 	claim, err := s.pub.Acquire(width, height)
 	if err != nil {
+		s.gate.Published(false)
 		if !errors.Is(err, frames.ErrNoSlot) {
 			s.errRate.printf("video: publish: %v", err)
 		}
+		s.refreshMode(true)
 		return false
 	}
 	timings, err := s.dec.CopyImageTo(claim.Pixels(), claim.Stride())
 	if err != nil {
 		claim.Cancel()
+		s.gate.Published(false)
 		s.errRate.printf("video: convert: %v", err)
+		s.refreshMode(true)
 		return false
 	}
 	claim.Commit()
+	s.gate.Published(true)
+	s.countPicture(width, height)
+	// Conversion may have triggered a hardware fallback, so report the mode
+	// only after the picture was produced.
+	s.refreshMode(true)
 	s.metrics.record(decodeTime, timings, s.pub.LastPublishNanos())
 	return true
+}
+
+// countPicture updates the picture counter and logs the first frame.
+func (s *frameSink) countPicture(width, height int) {
+	if s.frames.Add(1) != 1 {
+		return
+	}
+	mode := "software"
+	if s.dec.Hardware() {
+		mode = "D3D11VA"
+	}
+	log.Printf("decode: first picture %dx%d, %s (%d bytes per frame)",
+		width, height, mode, width*height*4)
+}
+
+// refreshMode publishes the decoder mode for /api/state. Before the first
+// decoded picture it stays empty; afterwards it follows fallbacks immediately.
+func (s *frameSink) refreshMode(decoded bool) {
+	if !decoded && !s.haveMode.Load() {
+		return
+	}
+	s.hwMode.Store(s.dec.Hardware())
+	s.haveMode.Store(true)
 }
 
 // Mode reports "D3D11VA", "software", or "" before the first decoded picture.
@@ -230,16 +262,16 @@ func (s *frameSink) Size() (int, int) {
 // Frames reports how many pictures have been produced.
 func (s *frameSink) Frames() uint64 { return s.frames.Load() }
 
-// Dropped reports pictures the UI never adopted: frames the producer announced
-// minus frames the reader took. The old claim-contention counter could not fire
-// with three slots and a one-slot reader, so this is the honest replacement.
+// Dropped reports pictures the writer could not publish because every slot was
+// held. It is not the producer→consumer lag: use Stats().LagFrames for frames
+// that were published but never adopted (expected while the window is hidden).
 func (s *frameSink) Dropped() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.pub == nil {
 		return 0
 	}
-	return s.pub.ConsumerStats().LagFrames
+	return s.pub.ConsumerStats().RawDropped
 }
 
 // Stats reports the rolling pipeline telemetry and the consumer's progress. It

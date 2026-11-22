@@ -178,6 +178,9 @@ func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
 func (r *Receiver) ResetStream() {
 	r.decMu.Lock()
 	defer r.decMu.Unlock()
+	if r.closed {
+		return
+	}
 	r.mu.Lock()
 	r.haveLast = false
 	r.mu.Unlock()

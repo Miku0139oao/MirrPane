@@ -377,10 +377,16 @@ func (d *Decoder) Status() string {
 		return "closed"
 	case d.hardwareFormat == pixelNone:
 		return "software (" + d.reason + ")"
+	case d.decoded && !d.Hardware():
+		// FFmpeg chose a software format for this stream; prefer that over a
+		// transient degraded counter, which only describes hardware failures.
+		reason := d.reason
+		if reason == "" {
+			reason = "FFmpeg declined D3D11VA for this stream"
+		}
+		return "software (" + reason + ")"
 	case d.health.state == hwDegraded:
 		return fmt.Sprintf("D3D11VA (degraded: %d consecutive failures)", d.health.consecutive)
-	case d.decoded && !d.Hardware():
-		return "software (FFmpeg declined D3D11VA for this stream)"
 	}
 	return "D3D11VA"
 }
