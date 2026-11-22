@@ -5,7 +5,6 @@ package config
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -84,10 +83,17 @@ func (c *Config) fill(defaultName string) error {
 		c.DeviceID = protocol.HardwareAddress()
 	}
 	if c.PairingID == "" {
-		c.PairingID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("airplay-go/"+c.DeviceID)).String()
+		// PairingID is the advertised identity; it must be unique per install so
+		// two copies of the product on one machine cannot advertise the same
+		// identity with different keys.
+		id, err := uuid.NewRandom()
+		if err != nil {
+			return fmt.Errorf("config: generate pairing id: %w", err)
+		}
+		c.PairingID = id.String()
 	}
 	if c.KeySeed == "" {
-		seed, err := deriveKeySeed(c.DeviceID)
+		seed, err := generateKeySeed()
 		if err != nil {
 			return err
 		}
@@ -133,22 +139,8 @@ func (c *Config) fill(defaultName string) error {
 	return nil
 }
 
-// deriveKeySeed produces the pairing seed for a fresh installation.
-//
-// The device identifier and the pairing UUID are both derived from the machine,
-// so two copies of the product on one PC present the same `pi` over mDNS. If the
-// seed were random, the two copies would advertise the same identity with
-// different keys, and an iPhone that had paired with one would refuse the other
-// with no way to tell them apart. Deriving the seed the same way keeps one
-// machine to one AirPlay identity, which is what a user copying the folder
-// expects.
-//
-// A machine without a readable MachineGuid falls back to a random seed.
-func deriveKeySeed(deviceID string) (string, error) {
-	if secret := machineSecret(); secret != "" {
-		sum := sha256.Sum256([]byte("airplay-go/key-seed/v1|" + secret + "|" + deviceID))
-		return base64.StdEncoding.EncodeToString(sum[:]), nil
-	}
+// generateKeySeed creates a fresh 32-byte random pairing seed.
+func generateKeySeed() (string, error) {
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return "", fmt.Errorf("config: generate key seed: %w", err)
@@ -156,8 +148,7 @@ func deriveKeySeed(deviceID string) (string, error) {
 	return base64.StdEncoding.EncodeToString(seed), nil
 }
 
-// Save writes the config atomically enough for our purposes: a crash mid-write
-// leaves a truncated file, which Load reports rather than silently replacing.
+// Save writes the config atomically with mode 0600 via temp file + rename.
 func (c *Config) Save(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("config: create %s: %w", dir, err)
@@ -167,11 +158,34 @@ func (c *Config) Save(dir string) error {
 		return err
 	}
 	path := filepath.Join(dir, FileName)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("config: write %s: %w", tmp, err)
+	tmp, err := os.CreateTemp(dir, FileName+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: create temp in %s: %w", dir, err)
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("config: chmod %s: %w", tmpName, err)
+	}
+	_, writeErr := tmp.Write(append(data, '\n'))
+	closeErr := tmp.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return fmt.Errorf("config: write %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("config: rename %s: %w", path, err)
+	}
+	cleanup = false
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("config: chmod %s: %w", path, err)
+	}
+	return nil
 }
 
 // Seed decodes the stored Ed25519 seed.

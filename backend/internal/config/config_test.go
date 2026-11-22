@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -68,5 +70,69 @@ func TestConfigDefaultsAndNormalization(t *testing.T) {
 		cfg3.DecoderMode != "software" || cfg3.ColorRange != "full" ||
 		cfg3.ScaleFilter != "bicubic" || cfg3.AudioBuffer != "low" {
 		t.Fatalf("round-trip mismatch: %+v", cfg3)
+	}
+}
+
+func TestRandomKeySeedAndPreservedExistingSeed(t *testing.T) {
+	cfg1, err := Load(t.TempDir(), "鏡屏")
+	if err != nil {
+		t.Fatalf("Load 1: %v", err)
+	}
+	cfg2, err := Load(t.TempDir(), "鏡屏")
+	if err != nil {
+		t.Fatalf("Load 2: %v", err)
+	}
+	seed1, err := cfg1.Seed()
+	if err != nil || len(seed1) != 32 {
+		t.Fatalf("seed1 = %d bytes, err=%v", len(seed1), err)
+	}
+	seed2, err := cfg2.Seed()
+	if err != nil || len(seed2) != 32 {
+		t.Fatalf("seed2 = %d bytes, err=%v", len(seed2), err)
+	}
+	if cfg1.KeySeed == cfg2.KeySeed {
+		t.Fatal("fresh configs generated identical key seeds; expected random CSPRNG seeds")
+	}
+
+	// Existing valid keySeed must be preserved without forced rotation.
+	dir := t.TempDir()
+	legacySeed := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(`{"name":"Legacy","keySeed":"`+legacySeed+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(dir, "鏡屏")
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if loaded.KeySeed != legacySeed {
+		t.Fatalf("existing keySeed rotated: got %q, want %q", loaded.KeySeed, legacySeed)
+	}
+}
+
+func TestConfigSaveAtomicAndMode0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	if err := os.WriteFile(path, []byte(`{"name":"Existing"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(dir, "鏡屏"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != FileName {
+		t.Fatalf("unexpected files after atomic Save: %v", entries)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("config.json mode = %#o, want 0600", info.Mode().Perm())
 	}
 }
