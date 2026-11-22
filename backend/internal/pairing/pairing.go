@@ -116,6 +116,10 @@ func NewSession(keys *Keys) *Session {
 	return &Session{keys: keys, status: statusInitial}
 }
 
+// Verified reports whether the sender completed both pair-verify steps.
+// As with the other session methods, the caller serializes access.
+func (s *Session) Verified() bool { return s.status == statusFinished }
+
 // Setup answers /pair-setup. The request is ignored, exactly as in the
 // reference: it only tells the sender who we are.
 func (s *Session) Setup(req []byte) ([]byte, error) {

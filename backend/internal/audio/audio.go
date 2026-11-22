@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/miku0139/airplay-go/backend/internal/decode"
 )
@@ -75,6 +76,9 @@ type Receiver struct {
 	packets uint64
 	decoded uint64
 	dropped uint64
+	// Only decoded frames refresh liveness; arbitrary UDP packets do not.
+	configuredAt time.Time
+	lastFrame    time.Time
 
 	lastSeq  uint16
 	haveLast bool
@@ -146,6 +150,7 @@ func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
 	r.iv = append([]byte(nil), iv...)
 	r.chosen = -1
 	r.haveLast = false
+	r.configuredAt, r.lastFrame = time.Now(), time.Time{}
 	r.mu.Unlock()
 	var asc []byte
 	if len(config) > 0 {
@@ -176,6 +181,15 @@ func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
 // example after TEARDOWN + SETUP without new keys) so a fresh RTP sequence
 // base is not mistaken for old duplicate packets.
 func (r *Receiver) ResetStream() {
+	r.resetStream(false)
+}
+
+// ResetKey releases the sender's audio keys as well as its decoder buffers.
+func (r *Receiver) ResetKey() {
+	r.resetStream(true)
+}
+
+func (r *Receiver) resetStream(clearKeys bool) {
 	r.decMu.Lock()
 	defer r.decMu.Unlock()
 	if r.closed {
@@ -183,10 +197,27 @@ func (r *Receiver) ResetStream() {
 	}
 	r.mu.Lock()
 	r.haveLast = false
+	r.configuredAt, r.lastFrame = time.Time{}, time.Time{}
+	if clearKeys {
+		r.keys, r.iv = nil, nil
+		r.chosen = -1
+	}
 	r.mu.Unlock()
 	if r.dec != nil {
 		r.dec.Flush()
 	}
+}
+
+// Busy protects a live audio-only sender too. A setup gets a short start-up
+// window, after which only successfully decoded audio keeps the reservation.
+func (r *Receiver) Busy() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	last := r.lastFrame
+	if last.IsZero() {
+		last = r.configuredAt
+	}
+	return len(r.keys) > 0 && len(r.iv) == aes.BlockSize && time.Since(last) < 4*time.Second
 }
 
 // Stats reports packet and frame counts.
@@ -334,6 +365,7 @@ func (r *Receiver) decodePacket(seq uint16, payload []byte) (*decode.AudioFrame,
 	owned.Samples = append([]int16(nil), frame.Samples...)
 	r.mu.Lock()
 	r.decoded++
+	r.lastFrame = time.Now()
 	r.mu.Unlock()
 	return &owned, nil
 }

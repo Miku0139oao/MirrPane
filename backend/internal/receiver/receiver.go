@@ -41,6 +41,26 @@ type Events struct {
 	OnClient   func(deviceID, name, model string)
 }
 
+type mirrorServer interface {
+	Port() int
+	Prepare(string, uint64, ...mirror.KeyCandidate) bool
+	Busy() bool
+	DropClient()
+	ResetKey()
+	Stats() (uint64, uint64)
+	Close() error
+}
+
+type audioReceiver interface {
+	Ports() (int, int)
+	Configure([]audio.Key, []byte, ...[]byte)
+	Busy() bool
+	ResetStream()
+	ResetKey()
+	Stats() (uint64, uint64, uint64)
+	Close()
+}
+
 // Receiver serves one sender at a time, keyed by client address.
 type Receiver struct {
 	info   protocol.DeviceInfo
@@ -48,14 +68,16 @@ type Receiver struct {
 	events Events
 	keys   *pairing.Keys
 
-	mirror  *mirror.Server
+	mirror  mirrorServer
 	timing  *udpStub
-	audioRx *audio.Receiver
+	audioRx audioReceiver
 	display struct{ width, height int }
 
-	mu        sync.Mutex
-	sessions  map[string]*clientSession
-	cleanStop atomic.Bool
+	// mu serializes control requests, session state and shared-media ownership.
+	mu           sync.Mutex
+	sessions     map[string]*clientSession
+	activeRemote string
+	cleanStop    atomic.Bool
 }
 
 // clientSession is the state of one sender, keyed by its IP address.
@@ -180,6 +202,7 @@ func (r *Receiver) MirrorPort() int { return r.mirror.Port() }
 // audio stream (type 96) resets audio without interrupting video; a video or
 // whole-session teardown returns the receiver cleanly to StatusIdle.
 func (r *Receiver) Teardown(remote string, body []byte) {
+	audioOnly := false
 	if len(body) > 0 {
 		var req map[string]any
 		if _, err := plist.Unmarshal(body, &req); err == nil {
@@ -197,32 +220,52 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 					}
 				}
 				if hasAudio && !hasVideo {
-					r.audioRx.ResetStream()
-					return
+					audioOnly = true
 				}
 			}
 		}
 	}
-	r.cleanStop.Store(true)
-	r.audioRx.ResetStream()
-	// Audio-only teardown returned above and must retain its pairing/key state.
-	// No receiver lock is held here; a later control-connection close may safely
-	// drop the same session again.
-	r.DropSession(remote)
-	r.setState(StatusIdle, "sender stopped mirroring")
+	r.mu.Lock()
+	owner := r.activeRemote == "" || r.activeRemote == remote
+	if audioOnly {
+		if owner && r.audioRx != nil {
+			r.audioRx.ResetStream()
+		}
+		r.mu.Unlock()
+		return
+	}
+	delete(r.sessions, remote)
+	if owner {
+		r.cleanStop.Store(true)
+		r.dropMediaLocked()
+	}
+	r.mu.Unlock()
+	if owner {
+		r.setState(StatusIdle, "sender stopped mirroring")
+	}
 }
 
 // Disconnect drops the current mirroring session from the receiver side and
 // returns cleanly to StatusIdle.
 func (r *Receiver) Disconnect() {
+	r.mu.Lock()
 	r.cleanStop.Store(true)
-	if r.audioRx != nil {
-		r.audioRx.ResetStream()
-	}
+	clear(r.sessions)
+	r.dropMediaLocked()
+	r.mu.Unlock()
+	r.setState(StatusIdle, "disconnected by user")
+}
+
+// dropMediaLocked releases both the active client and any unused setup keys.
+func (r *Receiver) dropMediaLocked() {
 	if r.mirror != nil {
 		r.mirror.DropClient()
+		r.mirror.ResetKey()
 	}
-	r.setState(StatusIdle, "disconnected by user")
+	if r.audioRx != nil {
+		r.audioRx.ResetKey()
+	}
+	r.activeRemote = ""
 }
 
 func (r *Receiver) setState(s Status, reason string) {
@@ -235,6 +278,10 @@ func (r *Receiver) setState(s Status, reason string) {
 func (r *Receiver) session(remote string) *clientSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.sessionLocked(remote)
+}
+
+func (r *Receiver) sessionLocked(remote string) *clientSession {
 	cs, ok := r.sessions[remote]
 	if !ok {
 		cs = &clientSession{
@@ -250,7 +297,15 @@ func (r *Receiver) session(remote string) *clientSession {
 func (r *Receiver) DropSession(remote string) {
 	r.mu.Lock()
 	delete(r.sessions, remote)
+	owner := r.activeRemote == remote && remote != ""
+	if owner {
+		r.cleanStop.Store(true)
+		r.dropMediaLocked()
+	}
 	r.mu.Unlock()
+	if owner {
+		r.setState(StatusIdle, "control connection closed")
+	}
 }
 
 // DropAllSessions forgets every sender, including their FairPlay and pairing
@@ -258,33 +313,39 @@ func (r *Receiver) DropSession(remote string) {
 func (r *Receiver) DropAllSessions() {
 	r.mu.Lock()
 	clear(r.sessions)
+	r.cleanStop.Store(true)
+	r.dropMediaLocked()
 	r.mu.Unlock()
 }
 
 // FPSetup answers /fp-setup. A 16-byte body is the first exchange, a 164-byte
 // body the second; the reply lengths follow from that.
 func (r *Receiver) FPSetup(remote string, body []byte) ([]byte, error) {
-	cs := r.session(remote)
+	r.mu.Lock()
+	cs := r.sessionLocked(remote)
+	var reply []byte
+	var err error
 	switch len(body) {
 	case fairplay.SetupRequestLen:
-		reply, err := cs.fp.Setup(body)
-		if err != nil {
-			return nil, wrapProtocol(err)
-		}
-		r.setState(StatusConnecting, "fairplay setup")
-		return reply, nil
+		reply, err = cs.fp.Setup(body)
 	case fairplay.HandshakeRequestLen:
-		reply, err := cs.fp.Handshake(body)
-		return reply, wrapProtocol(err)
+		reply, err = cs.fp.Handshake(body)
 	default:
-		return nil, &protocolError{status: 400, err: fairplay.ErrMalformed}
+		err = fairplay.ErrMalformed
 	}
+	r.mu.Unlock()
+	if err == nil && len(body) == fairplay.SetupRequestLen {
+		r.setState(StatusConnecting, "fairplay setup")
+	}
+	return reply, wrapProtocol(err)
 }
 
 // PairSetup answers /pair-setup with this receiver's Ed25519 public key.
 func (r *Receiver) PairSetup(remote string, body []byte) ([]byte, error) {
-	cs := r.session(remote)
+	r.mu.Lock()
+	cs := r.sessionLocked(remote)
 	reply, err := cs.pair.Setup(body)
+	r.mu.Unlock()
 	if err != nil {
 		return nil, &protocolError{status: 400, err: err}
 	}
@@ -300,7 +361,9 @@ func (r *Receiver) PairSetup(remote string, body []byte) ([]byte, error) {
 // as UxPlay does. Senders treat a 4xx here as "this receiver cannot pair" and
 // abandon the session; an empty reply lets them pick a different path.
 func (r *Receiver) PairVerify(remote string, body []byte) ([]byte, error) {
-	cs := r.session(remote)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs := r.sessionLocked(remote)
 	reply, err := cs.pair.Verify(body)
 	if err != nil {
 		r.log.Printf("pair: verify from %s: %v", remote, err)
@@ -314,6 +377,12 @@ func (r *Receiver) PairVerify(remote string, body []byte) ([]byte, error) {
 
 // ErrNoKey reports that /setup asked for a stream before FairPlay produced a key.
 var ErrNoKey = errors.New("receiver: no stream key yet")
+
+// ErrNotPaired reports a stream setup before pair-verify finished.
+var ErrNotPaired = errors.New("receiver: complete pair-verify before stream setup")
+
+// ErrBusy reports that another sender owns a live stream or pending setup.
+var ErrBusy = errors.New("receiver: another sender is streaming")
 
 // protocolError carries the HTTP status the control endpoint should answer with.
 type protocolError struct {
@@ -343,17 +412,31 @@ func wrapProtocol(err error) error {
 // Setup answers /setup. The first call carries ekey/eiv and is followed by calls
 // that create the mirror and audio streams.
 func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, error) {
-	cs := r.session(remote)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs := r.sessionLocked(remote)
+	streams, _ := req["streams"].([]any)
+	_, hasEKey := req["ekey"]
+	_, hasEIV := req["eiv"]
+	if (hasEKey || hasEIV || len(streams) > 0) && !cs.pair.Verified() {
+		return nil, &protocolError{status: 403, err: ErrNotPaired}
+	}
+	// Stage all per-sender changes until the complete request is accepted.
+	next := *cs
 	res := map[string]any{}
 
-	if ekey, eiv, ok := keyMaterial(req); ok {
-		cs.iv = eiv
+	if hasEKey || hasEIV {
+		ekey, eiv, ok := keyMaterial(req)
+		if !ok {
+			return nil, &protocolError{status: 400, err: errors.New("receiver: malformed stream key material")}
+		}
 		key, err := cs.fp.DecryptKey(ekey)
 		if err != nil {
 			return nil, &protocolError{status: 400, err: fmt.Errorf("decrypt ekey: %w", err)}
 		}
-		cs.aes = key
-		cs.aesCandidates = []mirror.KeyCandidate{{Name: "fairplay", Key: key}}
+		next.iv = append([]byte(nil), eiv...)
+		next.aes = key
+		next.aesCandidates = []mirror.KeyCandidate{{Name: "fairplay", Key: key}}
 		if len(cs.ecdh) > 0 {
 			// With pairing, UxPlay hashes the FairPlay key together with the
 			// shared ECDH secret using its SHA-512 helper, truncated to 16 bytes.
@@ -364,31 +447,19 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 			h.Write(key)
 			h.Write(cs.ecdh)
 			hashed := h.Sum(nil)[:fairplay.AESKeyLen]
-			cs.aesCandidates = []mirror.KeyCandidate{
+			next.aesCandidates = []mirror.KeyCandidate{
 				{Name: "fairplay+ecdh", Key: hashed},
 				{Name: "fairplay", Key: key},
 			}
 		}
-		cs.haveEKey = true
-		// The audio stream uses the same key candidates, but AES-128-CBC with
-		// eiv as the IV rather than a derived CTR stream.
-		audioKeys := make([]audio.Key, len(cs.aesCandidates))
-		for i, c := range cs.aesCandidates {
-			audioKeys[i] = audio.Key{Name: c.Name, Key: c.Key}
-		}
-		r.audioRx.Configure(audioKeys, eiv)
-		r.log.Printf("setup: stream key derived for %s (%d candidate(s))", remote, len(cs.aesCandidates))
-		for _, c := range cs.aesCandidates {
-			// SEC-002: never write stream key material to the log.
-			r.log.Printf("setup:   candidate %q", c.Name)
-		}
+		next.haveEKey = true
 	}
 
 	res["timingPort"] = uint64(r.timing.port)
 	res["eventPort"] = uint64(0)
 
-	streams, _ := req["streams"].([]any)
 	if len(streams) == 0 {
+		*cs = next
 		return res, nil
 	}
 
@@ -404,6 +475,7 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 	r.log.Printf("setup: streams requested %v", requested)
 
 	out := make([]any, 0, len(streams))
+	hasVideo, hasAudio := false, false
 	for _, raw := range streams {
 		stream, ok := raw.(map[string]any)
 		if !ok {
@@ -411,25 +483,31 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 		}
 		switch streamType(stream) {
 		case 110:
-			if !cs.haveEKey {
+			if !next.haveEKey {
 				return nil, &protocolError{status: 400, err: ErrNoKey}
 			}
 			id := uint64Value(stream["streamConnectionID"])
-			cs.lastStreamID = id
-			r.mirror.Prepare(id, cs.aesCandidates...)
-			r.log.Printf("setup: mirror stream %d on port %d", id, r.mirror.Port())
+			next.lastStreamID = id
+			hasVideo = true
 			out = append(out, map[string]any{
 				"type":     uint64(110),
 				"dataPort": uint64(r.mirror.Port()),
 			})
 		case 96:
+			if !next.haveEKey {
+				return nil, &protocolError{status: 400, err: ErrNoKey}
+			}
+			hasAudio = true
 			// ct 8 is AAC-ELD, which is the only mirrored-audio codec iOS uses.
 			// controlPort must be non-zero or the sender disables resends, so it
 			// is always advertised.
-			r.audioRx.ResetStream()
 			dataPort, controlPort := r.audioRx.Ports()
-			r.log.Printf("setup: audio stream ct=%v spf=%v on data %d / control %d",
-				stream["ct"], stream["spf"], dataPort, controlPort)
+			// SEC-005: quote untrusted plist values so CR/LF or terminal escapes
+			// cannot forge log lines.
+			ct := fmt.Sprint(stream["ct"])
+			spf := fmt.Sprint(stream["spf"])
+			r.log.Printf("setup: audio stream ct=%q spf=%q on data %d / control %d",
+				ct, spf, dataPort, controlPort)
 			out = append(out, map[string]any{
 				"type":        uint64(96),
 				"dataPort":    uint64(dataPort),
@@ -439,6 +517,29 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 			r.log.Printf("setup: unknown stream type %d", streamType(stream))
 		}
 	}
+	if hasVideo || hasAudio {
+		// Check ownership before either mirror keys or audio buffers can change.
+		// Audio liveness also protects senders using only the audio stream.
+		if r.activeRemote != "" && r.activeRemote != remote && (r.mirror.Busy() || r.audioRx.Busy()) {
+			return nil, &protocolError{status: 453, err: ErrBusy}
+		}
+		if hasVideo && !r.mirror.Prepare(remote, next.lastStreamID, next.aesCandidates...) {
+			return nil, &protocolError{status: 453, err: ErrBusy}
+		}
+		if !hasVideo && r.activeRemote != "" && r.activeRemote != remote {
+			r.mirror.DropClient()
+			r.mirror.ResetKey()
+		}
+		r.activeRemote = remote
+		// Audio uses the same per-sender candidates, with CBC and the setup IV.
+		// Key-only setup never reconfigures this shared receiver.
+		audioKeys := make([]audio.Key, len(next.aesCandidates))
+		for i, c := range next.aesCandidates {
+			audioKeys[i] = audio.Key{Name: c.Name, Key: c.Key}
+		}
+		r.audioRx.Configure(audioKeys, next.iv)
+	}
+	*cs = next
 	res["streams"] = out
 	return res, nil
 }
@@ -446,7 +547,9 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 // PairVerifySecret records the ECDH shared secret produced by pair-verify. The
 // key derivation in /setup changes once it exists.
 func (r *Receiver) PairVerifySecret(remote string, secret []byte) {
-	cs := r.session(remote)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cs := r.sessionLocked(remote)
 	cs.ecdh = append([]byte(nil), secret...)
 }
 

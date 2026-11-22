@@ -52,6 +52,9 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	}
 	session := NewSession(keys)
 	client := newTestClient(t)
+	if session.Verified() {
+		t.Fatal("new session is verified")
+	}
 
 	if _, err := session.Verify(make([]byte, VerifyStep1Len)); err == ErrMissingKey {
 		// Expected: pair-setup must come first.
@@ -66,6 +69,9 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	if !bytes.Equal(reply, keys.PublicKey()) {
 		t.Fatal("setup reply is not the receiver public key")
 	}
+	if session.Verified() {
+		t.Fatal("pair-setup alone verified the sender")
+	}
 
 	// Step 1.
 	req := make([]byte, 0, VerifyStep1Len)
@@ -79,6 +85,9 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	}
 	if len(resp) != X25519KeyLen+SignatureLen {
 		t.Fatalf("step 1 reply length = %d, want %d", len(resp), X25519KeyLen+SignatureLen)
+	}
+	if session.Verified() {
+		t.Fatal("first pair-verify step verified the sender")
 	}
 	serverX := resp[:X25519KeyLen]
 	encServerSig := resp[X25519KeyLen:]
@@ -115,6 +124,15 @@ func TestPairVerifyRoundTrip(t *testing.T) {
 	if !bytes.Equal(session.Secret(), client.secret) {
 		t.Fatal("shared secrets differ")
 	}
+	if !session.Verified() {
+		t.Fatal("completed pair-verify did not verify the sender")
+	}
+	if _, err := session.Setup(make([]byte, SetupRequestLen)); err != nil {
+		t.Fatal(err)
+	}
+	if session.Verified() {
+		t.Fatal("new pair-setup retained the previous verification")
+	}
 }
 
 func TestPairVerifyRejectsBadSignature(t *testing.T) {
@@ -134,6 +152,9 @@ func TestPairVerifyRejectsBadSignature(t *testing.T) {
 	bad := append([]byte{0, 0, 0, 0}, make([]byte, SignatureLen)...)
 	if _, err := session.Verify(bad); err == nil {
 		t.Fatal("expected a signature failure")
+	}
+	if session.Verified() {
+		t.Fatal("bad signature verified the sender")
 	}
 }
 

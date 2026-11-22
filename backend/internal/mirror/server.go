@@ -26,6 +26,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -36,6 +37,11 @@ const HeaderLen = 128
 // maxPayload bounds one packet. A 4K IDR frame is well under this; anything
 // larger is a desynchronised stream, not a frame.
 const maxPayload = 8 << 20
+
+const (
+	pendingLifetime = 8 * time.Second
+	streamIdleTime  = 4 * time.Second
+)
 
 // reportTrailer is the size of the opaque trailer some streaming reports carry
 // when the sender's screen is locked. The plist occupies the front of the body.
@@ -128,6 +134,15 @@ type resolvedKey struct {
 	IV   []byte
 }
 
+// pendingStream binds the keys and stream ID to one authenticated /setup.
+// A TCP peer cannot supply its own stream ID; it must use these derived keys.
+type pendingStream struct {
+	sender     netip.Addr
+	streamID   uint64
+	expires    time.Time
+	candidates []resolvedKey
+}
+
 // Server listens for the mirror stream.
 type Server struct {
 	log      *log.Logger
@@ -136,9 +151,13 @@ type Server struct {
 	ln   net.Listener
 	port int
 
-	mu         sync.Mutex
-	candidates []resolvedKey
-	conn       net.Conn
+	mu          sync.Mutex
+	pending     *pendingStream
+	conn        net.Conn
+	sender      netip.Addr
+	streamID    uint64
+	connectedAt time.Time
+	lastFrame   time.Time
 
 	received uint64
 	frames   uint64
@@ -190,6 +209,11 @@ func (s *Server) logf(format string, args ...any) {
 func (s *Server) DropClient() {
 	s.mu.Lock()
 	c := s.conn
+	s.conn = nil
+	s.pending = nil
+	s.sender = netip.Addr{}
+	s.streamID = 0
+	s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
 	s.mu.Unlock()
 	if c != nil {
 		_ = c.Close()
@@ -204,11 +228,7 @@ func (s *Server) Close() error {
 		if s.ln != nil {
 			err = s.ln.Close()
 		}
-		s.mu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.mu.Unlock()
+		s.DropClient()
 	})
 	return err
 }
@@ -243,25 +263,103 @@ func DeriveStreamKey(streamConnectionID uint64, audioKey []byte) (key, iv [16]by
 //
 // The first candidate is the one the protocol calls for; the rest are fallbacks
 // the stream tests against the first encrypted packet.
-func (s *Server) Prepare(streamConnectionID uint64, audioKeys ...KeyCandidate) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.candidates = s.candidates[:0]
+// It refuses a different sender while a live stream or fresh setup owns the
+// receiver. The same sender can always prepare a legitimate reconnect.
+func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...KeyCandidate) bool {
+	sender, err := netip.ParseAddr(remote)
+	if err != nil || len(audioKeys) == 0 {
+		return false
+	}
+	pending := &pendingStream{sender: sender.Unmap(), streamID: streamConnectionID}
 	for _, c := range audioKeys {
 		key, iv := DeriveStreamKey(streamConnectionID, c.Key)
 		name := c.Name
 		if name == "" {
 			name = "stream"
 		}
-		s.candidates = append(s.candidates, resolvedKey{Name: name, Key: key[:], IV: iv[:]})
+		pending.candidates = append(pending.candidates, resolvedKey{Name: name, Key: key[:], IV: iv[:]})
 	}
+	s.mu.Lock()
+	now := time.Now()
+	if (s.conn != nil && s.sender != pending.sender && !s.staleLocked(now)) ||
+		(s.pending != nil && s.pending.sender != pending.sender && now.Before(s.pending.expires)) {
+		s.mu.Unlock()
+		return false
+	}
+	var old net.Conn
+	if s.conn != nil && s.sender != pending.sender {
+		old, s.conn = s.conn, nil
+	}
+	pending.expires = now.Add(pendingLifetime)
+	s.pending = pending
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return true
 }
 
 // ResetKey forgets the key so a stale stream cannot be decrypted with it.
 func (s *Server) ResetKey() {
 	s.mu.Lock()
-	s.candidates = nil
+	s.pending = nil
 	s.mu.Unlock()
+}
+
+// Busy reports a live stream or a fresh pending setup. A raw TCP connection
+// never refreshes liveness: only a successfully decrypted video frame does.
+func (s *Server) Busy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	return (s.conn != nil && !s.staleLocked(now)) ||
+		(s.pending != nil && now.Before(s.pending.expires))
+}
+
+func (s *Server) staleLocked(now time.Time) bool {
+	last := s.lastFrame
+	if last.IsZero() {
+		last = s.connectedAt
+	}
+	return now.Sub(last) >= streamIdleTime
+}
+
+// admit consumes no authorization until a valid frame arrives, so a half-open
+// connection from the expected IP cannot lock out the real sender.
+func (s *Server) admit(conn net.Conn) *pendingStream {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return nil
+	}
+	sender, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	sender = sender.Unmap()
+	s.mu.Lock()
+	now := time.Now()
+	pending := s.pending
+	if pending != nil && !now.Before(pending.expires) {
+		s.pending = nil
+		pending = nil
+	}
+	if pending == nil || pending.sender != sender ||
+		(s.conn != nil && s.sender != sender && !s.staleLocked(now)) {
+		s.mu.Unlock()
+		return nil
+	}
+	old := s.conn
+	s.conn, s.sender, s.streamID = conn, sender, pending.streamID
+	s.connectedAt, s.lastFrame = now, time.Time{}
+	s.received, s.frames = 0, 0
+	// Bound half-open/keyless peers without timing out an established stream
+	// when an iPhone suspends video after locking its screen.
+	_ = conn.SetReadDeadline(now.Add(streamIdleTime))
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return pending
 }
 
 // Stats reports bytes and access units seen since the stream opened.
@@ -291,35 +389,37 @@ func (s *Server) serve(conn net.Conn) {
 	}
 
 	remote := conn.RemoteAddr().String()
-	s.logf("mirror: sender connected from %s", remote)
-
-	s.mu.Lock()
-	// Only one mirror stream is served at a time; a new sender replaces the old.
-	if s.conn != nil {
-		_ = s.conn.Close()
+	pending := s.admit(conn)
+	if pending == nil {
+		s.logf("mirror: rejected connection from %s: no matching fresh setup", remote)
+		return
 	}
-	s.conn = conn
-	candidates := append([]resolvedKey(nil), s.candidates...)
-	s.received, s.frames = 0, 0
-	s.mu.Unlock()
+	s.logf("mirror: sender connected from %s", remote)
 
 	if s.handlers.OnConnected != nil {
 		s.handlers.OnConnected(remote)
 	}
 	defer func() {
 		s.mu.Lock()
-		if s.conn == conn {
+		current := s.conn == conn
+		if current {
 			s.conn = nil
+			s.sender = netip.Addr{}
+			s.streamID = 0
+			s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
+			if s.pending == pending {
+				s.pending = nil
+			}
 		}
 		s.mu.Unlock()
 		s.logf("mirror: sender disconnected (%s)", remote)
-		if s.handlers.OnDisconnected != nil {
+		if current && s.handlers.OnDisconnected != nil {
 			s.handlers.OnDisconnected()
 		}
 	}()
 
-	st := &streamState{srv: s, active: -1}
-	for _, c := range candidates {
+	st := &streamState{srv: s, conn: conn, pending: pending, active: -1}
+	for _, c := range pending.candidates {
 		block, err := aes.NewCipher(c.Key)
 		if err != nil {
 			s.logf("mirror: candidate %q: %v", c.Name, err)
@@ -337,7 +437,9 @@ func (s *Server) serve(conn net.Conn) {
 
 // streamState is the per-connection decode state.
 type streamState struct {
-	srv *Server
+	srv     *Server
+	conn    net.Conn
+	pending *pendingStream
 
 	// cands are the key candidates in preference order. active is the index of
 	// the one that produced a well-formed first frame, or -1 until one is known.
@@ -381,6 +483,10 @@ func (st *streamState) read(r io.Reader) {
 			}
 		}
 		st.srv.mu.Lock()
+		if st.conn != nil && st.srv.conn != st.conn {
+			st.srv.mu.Unlock()
+			return
+		}
 		st.srv.received += uint64(HeaderLen + int(n))
 		st.srv.mu.Unlock()
 
@@ -460,6 +566,19 @@ func (st *streamState) handleVideo(payload []byte, ntp, duration uint64) {
 		st.haveSPS = false
 	}
 	st.srv.mu.Lock()
+	if st.conn != nil && st.srv.conn != st.conn {
+		st.srv.mu.Unlock()
+		return
+	}
+	if valid {
+		st.srv.lastFrame = time.Now()
+		if st.srv.pending == st.pending {
+			st.srv.pending = nil
+		}
+		if st.conn != nil {
+			_ = st.conn.SetReadDeadline(time.Time{})
+		}
+	}
 	st.srv.frames++
 	st.srv.mu.Unlock()
 	if st.srv.handlers.OnFrame != nil {
@@ -499,6 +618,9 @@ func (st *streamState) chooseKey(payload []byte) (body []byte, valid bool) {
 // The prefix is big endian (byteutils_get_int_be); the sender's own encoder
 // writes it as a little-endian length, which the reference reads through ntohl.
 func (st *streamState) toAnnexB(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
 	off := 0
 	for off < len(b) {
 		if off+4 > len(b) {
