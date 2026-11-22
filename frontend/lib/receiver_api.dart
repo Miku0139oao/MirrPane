@@ -47,6 +47,7 @@ class ReceiverState {
     required this.audioOccupancyMs,
     required this.audioUnderruns,
     required this.audioHighWaterMs,
+    required this.pendingSender,
   });
 
   final String status; // idle | connecting | live | interrupted
@@ -93,6 +94,9 @@ class ReceiverState {
   final double audioOccupancyMs;
   final int audioUnderruns;
   final double audioHighWaterMs;
+
+  /// A verified sender waiting for the local user's approval, or null.
+  final PendingSender? pendingSender;
 
   static ReceiverState fromJson(Map<String, dynamic> json) {
     int asInt(Object? v, [int fallback = 0]) => v is num ? v.toInt() : fallback;
@@ -141,6 +145,33 @@ class ReceiverState {
       audioOccupancyMs: asDouble(json['audioOccupancyMs']),
       audioUnderruns: asInt(json['audioUnderruns']),
       audioHighWaterMs: asDouble(json['audioHighWaterMs']),
+      pendingSender: PendingSender.fromJson(json['pendingSender']),
+    );
+  }
+}
+
+/// One verified sender awaiting owner approval before it may stream.
+class PendingSender {
+  const PendingSender({
+    required this.fingerprint,
+    required this.remote,
+    required this.ageSeconds,
+  });
+
+  final String fingerprint;
+  final String remote;
+  final int ageSeconds;
+
+  static PendingSender? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final fingerprint = value['fingerprint'];
+    if (fingerprint is! String || fingerprint.isEmpty) return null;
+    final remote = value['remote'];
+    final age = value['ageSeconds'];
+    return PendingSender(
+      fingerprint: fingerprint,
+      remote: remote is String && remote.isNotEmpty ? remote : '未知裝置',
+      ageSeconds: age is num ? age.toInt() : 0,
     );
   }
 }
@@ -331,6 +362,32 @@ class ReceiverHost {
   Future<void> disconnect() async {
     await _postJson('/api/disconnect');
     unawaited(_tick());
+  }
+
+  /// Clears every trusted sender so the next verified device must be approved
+  /// again through the local UI.
+  Future<bool> resetTrustedSenders() async {
+    final res = await _postJson('/api/pairing/trust/reset');
+    unawaited(_tick());
+    return res?['ok'] == true;
+  }
+
+  /// Approves a pending sender so its next setup may stream.
+  Future<bool> approveSender(String fingerprint) async {
+    final res = await _postJson('/api/pairing/trust/approve', {
+      'fingerprint': fingerprint,
+    });
+    unawaited(_tick());
+    return res?['ok'] == true;
+  }
+
+  /// Rejects a pending sender.
+  Future<bool> rejectSender(String fingerprint) async {
+    final res = await _postJson('/api/pairing/trust/reject', {
+      'fingerprint': fingerprint,
+    });
+    unawaited(_tick());
+    return res?['ok'] == true;
   }
 
   /// Updates audio mute and/or linear volume [0.0, 1.0].

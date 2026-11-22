@@ -25,8 +25,9 @@ class FrameBridge {
       final data = flag == null ? ByteData(1) : ByteData(2);
       data.setUint8(0, cmd);
       if (flag != null) data.setUint8(1, flag ? 1 : 0);
-      final reply =
-          await _channel.send(data).timeout(const Duration(milliseconds: 500));
+      final reply = await _channel
+          .send(data)
+          .timeout(const Duration(milliseconds: 500));
       if (reply != null && reply.lengthInBytes >= 8) {
         return reply.getInt64(0, Endian.host);
       }
@@ -270,6 +271,16 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     _showToast('已中斷連線，等待重新連接');
   }
 
+  Future<void> _approveSender(String fingerprint) async {
+    final ok = await _host.approveSender(fingerprint);
+    _showToast(ok ? '已允許裝置連線，請在該裝置上重新選擇鏡像' : '允許裝置失敗');
+  }
+
+  Future<void> _rejectSender(String fingerprint) async {
+    final ok = await _host.rejectSender(fingerprint);
+    _showToast(ok ? '已拒絕此裝置' : '拒絕裝置失敗');
+  }
+
   Future<void> _openFolder(String path) async {
     final dir = Directory(path);
     if (!await dir.exists()) {
@@ -349,8 +360,11 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
                 unawaited(_toggleAlwaysOnTop()),
             const SingleActivator(LogicalKeyboardKey.keyL, control: true):
                 _openLogs,
-            const SingleActivator(LogicalKeyboardKey.comma, control: true):
-                () => _openSettings(state),
+            const SingleActivator(
+              LogicalKeyboardKey.comma,
+              control: true,
+            ): () =>
+                _openSettings(state),
             const SingleActivator(LogicalKeyboardKey.keyS, control: true): () {
               if (isStreaming) unawaited(_takeSnapshot());
             },
@@ -429,12 +443,15 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
           onToggleAlwaysOnTop: () => unawaited(_toggleAlwaysOnTop()),
           onOpenLogs: _openLogs,
           onOpenSettings: () => _openSettings(snapshot.state),
+          onApproveSender: _approveSender,
+          onRejectSender: _rejectSender,
         );
       case Phase.live:
       case Phase.interrupted:
         return _LiveView(
           key: ValueKey(
-              snapshot.phase == Phase.interrupted ? 'interrupted' : 'live'),
+            snapshot.phase == Phase.interrupted ? 'interrupted' : 'live',
+          ),
           textureId: _textureId,
           state: snapshot.state,
           fps: _fps,
@@ -541,6 +558,8 @@ class _WaitingView extends StatelessWidget {
     required this.onToggleAlwaysOnTop,
     required this.onOpenLogs,
     required this.onOpenSettings,
+    required this.onApproveSender,
+    required this.onRejectSender,
   });
 
   final ReceiverState? state;
@@ -554,6 +573,8 @@ class _WaitingView extends StatelessWidget {
   final VoidCallback onToggleAlwaysOnTop;
   final VoidCallback onOpenLogs;
   final VoidCallback onOpenSettings;
+  final ValueChanged<String> onApproveSender;
+  final ValueChanged<String> onRejectSender;
 
   @override
   Widget build(BuildContext context) {
@@ -640,7 +661,9 @@ class _WaitingView extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                     child: Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: line),
@@ -665,14 +688,58 @@ class _WaitingView extends StatelessWidget {
                 if (state?.decoderMode == 'software')
                   const _Badge('CPU 軟解', accentColor: accent)
                 else if (state?.decoder.isNotEmpty == true)
-                  _Badge(state!.decoder,
-                      accentColor:
-                          state!.decoder == 'D3D11VA' ? okGreen : muted),
+                  _Badge(
+                    state!.decoder,
+                    accentColor: state!.decoder == 'D3D11VA' ? okGreen : muted,
+                  ),
                 if (state?.version.isNotEmpty == true)
                   _Badge('AirPlay ${state!.version}'),
               ],
             ),
             const Spacer(flex: 3),
+            if (state?.pendingSender case final pending?) ...[
+              Container(
+                constraints: const BoxConstraints(maxWidth: 620),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: accent.withValues(alpha: 0.5)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.verified_user_outlined,
+                      color: accent,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '有裝置要求連線：${pending.remote}\n允許後請在該裝置上重新選擇「鏡屏」。',
+                        style: const TextStyle(
+                          fontSize: 13.5,
+                          height: 1.5,
+                          color: ink,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: () => onRejectSender(pending.fingerprint),
+                      style: TextButton.styleFrom(foregroundColor: danger),
+                      child: const Text('拒絕'),
+                    ),
+                    const SizedBox(width: 4),
+                    FilledButton(
+                      onPressed: () => onApproveSender(pending.fingerprint),
+                      child: const Text('允許'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
             Container(
               constraints: const BoxConstraints(maxWidth: 620),
               padding: const EdgeInsets.all(20),
@@ -687,8 +754,9 @@ class _WaitingView extends StatelessWidget {
                     width: 42,
                     height: 42,
                     decoration: BoxDecoration(
-                      color: (connecting ? okGreen : accent)
-                          .withValues(alpha: 0.14),
+                      color: (connecting ? okGreen : accent).withValues(
+                        alpha: 0.14,
+                      ),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
@@ -704,7 +772,10 @@ class _WaitingView extends StatelessWidget {
                           ? '正在與裝置完成 AirPlay 配對與串流交握…'
                           : '在 iPhone 或 iPad 開啟「控制中心」→「螢幕鏡像輸出」，選擇「$name」。',
                       style: const TextStyle(
-                          fontSize: 14, height: 1.55, color: ink),
+                        fontSize: 14,
+                        height: 1.55,
+                        color: ink,
+                      ),
                     ),
                   ),
                 ],
@@ -792,9 +863,10 @@ class _StatusDotState extends State<_StatusDot>
   @override
   Widget build(BuildContext context) {
     return FadeTransition(
-      opacity: Tween(begin: 0.35, end: 1.0).animate(
-        CurvedAnimation(parent: _c, curve: Curves.easeInOut),
-      ),
+      opacity: Tween(
+        begin: 0.35,
+        end: 1.0,
+      ).animate(CurvedAnimation(parent: _c, curve: Curves.easeInOut)),
       child: Container(
         width: 8,
         height: 8,
@@ -1061,17 +1133,24 @@ class _StatsHud extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('$fps fps',
-                style: mono.copyWith(
-                    fontSize: 12, color: okGreen, fontWeight: FontWeight.w600)),
+            Text(
+              '$fps fps',
+              style: mono.copyWith(
+                fontSize: 12,
+                color: okGreen,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
             const SizedBox(width: 10),
             Text(res, style: mono.copyWith(fontSize: 12, color: ink)),
             const SizedBox(width: 10),
             Text(dec, style: mono.copyWith(fontSize: 11.5, color: muted)),
             if (dropped > 0) ...[
               const SizedBox(width: 10),
-              Text('略過 $dropped',
-                  style: mono.copyWith(fontSize: 11.5, color: accent)),
+              Text(
+                '略過 $dropped',
+                style: mono.copyWith(fontSize: 11.5, color: accent),
+              ),
             ],
           ],
         ),
@@ -1114,9 +1193,10 @@ class _InterruptedCard extends StatelessWidget {
               children: [
                 Icon(Icons.wifi_off_rounded, color: accent, size: 22),
                 SizedBox(width: 10),
-                Text('連線已中斷',
-                    style:
-                        TextStyle(fontSize: 22, fontWeight: FontWeight.w500)),
+                Text(
+                  '連線已中斷',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -1265,16 +1345,18 @@ class _TopBar extends StatelessWidget {
           ],
           if (dropped > 0) ...[
             const SizedBox(width: 10),
-            Text('略過 $dropped',
-                style: mono.copyWith(fontSize: 11.5, color: accent)),
+            Text(
+              '略過 $dropped',
+              style: mono.copyWith(fontSize: 11.5, color: accent),
+            ),
           ],
           const Spacer(),
           _IconToolButton(
             icon: isMuted || volume <= 0.01
                 ? Icons.volume_off_outlined
                 : (volume < 0.5
-                    ? Icons.volume_down_outlined
-                    : Icons.volume_up_outlined),
+                      ? Icons.volume_down_outlined
+                      : Icons.volume_up_outlined),
             tooltip: isMuted ? '取消靜音 (M)' : '靜音 (M)',
             active: isMuted,
             onPressed: onToggleMute,
@@ -1450,8 +1532,9 @@ class _IconToolButton extends StatelessWidget {
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-              color:
-                  active ? accent.withValues(alpha: 0.18) : Colors.transparent,
+              color: active
+                  ? accent.withValues(alpha: 0.18)
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
               border: active
                   ? Border.all(color: accent.withValues(alpha: 0.45))
@@ -1515,9 +1598,10 @@ class _LogDialogState extends State<_LogDialog> {
             children: [
               Row(
                 children: [
-                  const Text('執行日誌',
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.w500)),
+                  const Text(
+                    '執行日誌',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
@@ -1559,7 +1643,10 @@ class _LogDialogState extends State<_LogDialog> {
                     child: SelectableText(
                       _lines.isEmpty ? '（目前沒有日誌）' : _lines.join('\n'),
                       style: mono.copyWith(
-                          fontSize: 12, height: 1.5, color: muted),
+                        fontSize: 12,
+                        height: 1.5,
+                        color: muted,
+                      ),
                     ),
                   ),
                 ),
@@ -1665,6 +1752,16 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  Future<void> _clearTrust() async {
+    setState(() => _busy = true);
+    final ok = await widget.host.resetTrustedSenders();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? '已清除信任的裝置，下一台完成配對的裝置將重新登記' : '清除信任裝置失敗')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Dialog(
@@ -1688,18 +1785,24 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     const Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('鏡屏 MirrPane 設定',
-                            style: TextStyle(
-                                fontSize: 17, fontWeight: FontWeight.w500)),
                         Text(
-                            'v${String.fromEnvironment('MIRRPANE_VERSION', defaultValue: 'dev')} · AirPlay Screen Receiver',
-                            style: TextStyle(fontSize: 11.5, color: muted)),
+                          '鏡屏 MirrPane 設定',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        Text(
+                          'v${String.fromEnvironment('MIRRPANE_VERSION', defaultValue: 'dev')} · AirPlay Screen Receiver',
+                          style: TextStyle(fontSize: 11.5, color: muted),
+                        ),
                       ],
                     ),
                     const Spacer(),
                     IconButton(
-                      onPressed:
-                          _busy ? null : () => Navigator.of(context).pop(),
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).pop(),
                       icon: const Icon(Icons.close, size: 18),
                     ),
                   ],
@@ -1730,8 +1833,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 ),
               ),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 14,
+                ),
                 decoration: const BoxDecoration(
                   border: Border(top: BorderSide(color: line)),
                 ),
@@ -1742,20 +1847,24 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         children: [
                           Icon(Icons.info_outline, size: 14, color: accent),
                           SizedBox(width: 6),
-                          Text('部分變更需「儲存並重啟」生效',
-                              style: TextStyle(fontSize: 12, color: accent)),
+                          Text(
+                            '部分變更需「儲存並重啟」生效',
+                            style: TextStyle(fontSize: 12, color: accent),
+                          ),
                         ],
                       ),
                     const Spacer(),
                     TextButton(
-                      onPressed:
-                          _busy ? null : () => Navigator.of(context).pop(),
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).pop(),
                       child: const Text('關閉'),
                     ),
                     const SizedBox(width: 8),
                     FilledButton(
-                      onPressed:
-                          _busy ? null : () => unawaited(_saveAndRestart()),
+                      onPressed: _busy
+                          ? null
+                          : () => unawaited(_saveAndRestart()),
                       style: FilledButton.styleFrom(
                         backgroundColor: _backendDirty ? accent : surfaceHi,
                         foregroundColor: _backendDirty ? ground : ink,
@@ -1777,8 +1886,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     return ListView(
       padding: const EdgeInsets.all(22),
       children: [
-        const Text('顯示名稱（廣播於 AirPlay 清單）',
-            style: TextStyle(fontSize: 12.5, color: muted)),
+        const Text(
+          '顯示名稱（廣播於 AirPlay 清單）',
+          style: TextStyle(fontSize: 12.5, color: muted),
+        ),
         const SizedBox(height: 8),
         TextField(
           controller: _name,
@@ -1791,8 +1902,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               borderRadius: BorderRadius.circular(8),
               borderSide: const BorderSide(color: line),
             ),
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 10,
+            ),
           ),
         ),
         const SizedBox(height: 18),
@@ -1811,7 +1924,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             OutlinedButton.icon(
               onPressed: widget.onOpenScreenshots,
               style: OutlinedButton.styleFrom(
-                  foregroundColor: ink, side: const BorderSide(color: line)),
+                foregroundColor: ink,
+                side: const BorderSide(color: line),
+              ),
               icon: const Icon(Icons.photo_library_outlined, size: 16),
               label: const Text('開啟截圖資料夾'),
             ),
@@ -1820,9 +1935,17 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 Process.run('explorer.exe', [widget.host.installDir.path]),
               ),
               style: OutlinedButton.styleFrom(
-                  foregroundColor: ink, side: const BorderSide(color: line)),
+                foregroundColor: ink,
+                side: const BorderSide(color: line),
+              ),
               icon: const Icon(Icons.folder_open, size: 16),
               label: const Text('開啟程式資料夾'),
+            ),
+            TextButton.icon(
+              onPressed: _busy ? null : () => unawaited(_clearTrust()),
+              style: TextButton.styleFrom(foregroundColor: ink),
+              icon: const Icon(Icons.shield_outlined, size: 16),
+              label: const Text('清除信任裝置'),
             ),
             TextButton.icon(
               onPressed: _busy ? null : () => unawaited(_resetIdentity()),
@@ -1847,7 +1970,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           subtitle: '向 iPhone / iPad 宣告的建議畫質上限',
           value: _resKey,
           items: _resolutions.entries
-              .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value.$3)))
+              .map(
+                (e) => DropdownMenuItem(value: e.key, child: Text(e.value.$3)),
+              )
               .toList(),
           onChanged: (v) {
             if (v != null) {
@@ -1902,7 +2027,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           items: const [
             DropdownMenuItem(value: 'auto', child: Text('自動偵測（推薦）')),
             DropdownMenuItem(value: 'full', child: Text('Full Range (0–255)')),
-            DropdownMenuItem(value: 'limited', child: Text('Limited / TV (16–235)')),
+            DropdownMenuItem(
+              value: 'limited',
+              child: Text('Limited / TV (16–235)'),
+            ),
           ],
           onChanged: (v) {
             if (v != null) {
@@ -1919,7 +2047,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           subtitle: '控制 FFmpeg swscale 的色彩內插品質',
           value: _scaleFilter,
           items: const [
-            DropdownMenuItem(value: 'fast', child: Text('速度優先 (Fast Bilinear · 預設)')),
+            DropdownMenuItem(
+              value: 'fast',
+              child: Text('速度優先 (Fast Bilinear · 預設)'),
+            ),
             DropdownMenuItem(value: 'bilinear', child: Text('平衡 (Bilinear)')),
             DropdownMenuItem(value: 'bicubic', child: Text('銳利 (Bicubic)')),
           ],
@@ -1959,20 +2090,28 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         const SizedBox(height: 8),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('水平鏡像翻轉 (H)',
-              style: TextStyle(fontSize: 13.5, color: ink)),
-          subtitle: const Text('適合前置鏡頭或自拍直播展示',
-              style: TextStyle(fontSize: 12, color: muted)),
+          title: const Text(
+            '水平鏡像翻轉 (H)',
+            style: TextStyle(fontSize: 13.5, color: ink),
+          ),
+          subtitle: const Text(
+            '適合前置鏡頭或自拍直播展示',
+            style: TextStyle(fontSize: 12, color: muted),
+          ),
           value: _prefs.flipHorizontal,
           activeThumbColor: accent,
           onChanged: (v) => _setPrefs(_prefs.copyWith(flipHorizontal: v)),
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('填滿視窗裁切顯示 (Z)',
-              style: TextStyle(fontSize: 13.5, color: ink)),
-          subtitle: const Text('關閉時維持原始長寬比（含黑邊）',
-              style: TextStyle(fontSize: 12, color: muted)),
+          title: const Text(
+            '填滿視窗裁切顯示 (Z)',
+            style: TextStyle(fontSize: 13.5, color: ink),
+          ),
+          subtitle: const Text(
+            '關閉時維持原始長寬比（含黑邊）',
+            style: TextStyle(fontSize: 12, color: muted),
+          ),
           value: _prefs.fillViewport,
           activeThumbColor: accent,
           onChanged: (v) => _setPrefs(_prefs.copyWith(fillViewport: v)),
@@ -1980,17 +2119,21 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         const Divider(color: line, height: 22),
         Row(
           children: [
-            const Text('即時色彩微調',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+            const Text(
+              '即時色彩微調',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+            ),
             const Spacer(),
             TextButton(
               onPressed: _prefs.isDefaultColor
                   ? null
-                  : () => _setPrefs(_prefs.copyWith(
+                  : () => _setPrefs(
+                      _prefs.copyWith(
                         brightness: 0.0,
                         contrast: 1.0,
                         saturation: 1.0,
-                      )),
+                      ),
+                    ),
               child: const Text('還原預設'),
             ),
           ],
@@ -2023,8 +2166,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         const Divider(color: line, height: 22),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('常駐效能監控 HUD (Tab)',
-              style: TextStyle(fontSize: 13.5, color: ink)),
+          title: const Text(
+            '常駐效能監控 HUD (Tab)',
+            style: TextStyle(fontSize: 13.5, color: ink),
+          ),
           value: _prefs.showHud,
           activeThumbColor: accent,
           onChanged: (v) => _setPrefs(_prefs.copyWith(showHud: v)),
@@ -2063,8 +2208,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     return ListView(
       padding: const EdgeInsets.all(22),
       children: [
-        const Text('即時輸出控制（立即生效並記憶）',
-            style: TextStyle(fontSize: 12.5, color: muted)),
+        const Text(
+          '即時輸出控制（立即生效並記憶）',
+          style: TextStyle(fontSize: 12.5, color: muted),
+        ),
         const SizedBox(height: 10),
         _SliderRow(
           label: '音量',
@@ -2079,8 +2226,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('靜音輸出 (M)',
-              style: TextStyle(fontSize: 13.5, color: ink)),
+          title: const Text(
+            '靜音輸出 (M)',
+            style: TextStyle(fontSize: 13.5, color: ink),
+          ),
           value: _prefs.muted,
           activeThumbColor: accent,
           onChanged: (v) {
@@ -2096,9 +2245,18 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           subtitle: 'Wi-Fi 環境良好可選「超低延遲」；若偶有爆音或斷續請選「弱網穩定」',
           value: _audioBuffer,
           items: const [
-            DropdownMenuItem(value: 'low', child: Text('超低延遲（3 × 10 ms / 上限 80 ms）')),
-            DropdownMenuItem(value: 'balanced', child: Text('標準平衡（4 × 10 ms / 上限 100 ms · 預設）')),
-            DropdownMenuItem(value: 'stable', child: Text('弱網穩定（6 × 10 ms / 上限 150 ms）')),
+            DropdownMenuItem(
+              value: 'low',
+              child: Text('超低延遲（3 × 10 ms / 上限 80 ms）'),
+            ),
+            DropdownMenuItem(
+              value: 'balanced',
+              child: Text('標準平衡（4 × 10 ms / 上限 100 ms · 預設）'),
+            ),
+            DropdownMenuItem(
+              value: 'stable',
+              child: Text('弱網穩定（6 × 10 ms / 上限 150 ms）'),
+            ),
           ],
           onChanged: (v) {
             if (v != null) {
@@ -2133,7 +2291,10 @@ class _SectionNote extends StatelessWidget {
           const Icon(Icons.tune, size: 15, color: accent),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(text, style: const TextStyle(fontSize: 12, color: muted)),
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 12, color: muted),
+            ),
           ),
         ],
       ),
@@ -2177,8 +2338,10 @@ class _DropdownRow<T> extends StatelessWidget {
             filled: true,
             fillColor: ground,
             isDense: true,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 10,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
               borderSide: const BorderSide(color: line),
@@ -2217,7 +2380,10 @@ class _SliderRow extends StatelessWidget {
       children: [
         SizedBox(
           width: 56,
-          child: Text(label, style: const TextStyle(fontSize: 12.5, color: muted)),
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 12.5, color: muted),
+          ),
         ),
         Expanded(
           child: Slider(
@@ -2314,14 +2480,17 @@ class _ErrorViewState extends State<_ErrorView> {
                 children: [
                   Icon(Icons.error_outline, color: danger, size: 20),
                   SizedBox(width: 10),
-                  Text('接收器無法啟動',
-                      style:
-                          TextStyle(fontSize: 28, fontWeight: FontWeight.w500)),
+                  Text(
+                    '接收器無法啟動',
+                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.w500),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
-              Text(widget.message,
-                  style: const TextStyle(fontSize: 16, color: ink)),
+              Text(
+                widget.message,
+                style: const TextStyle(fontSize: 16, color: ink),
+              ),
               if (_tail.isNotEmpty) ...[
                 const SizedBox(height: 20),
                 Container(
@@ -2334,8 +2503,11 @@ class _ErrorViewState extends State<_ErrorView> {
                   ),
                   child: Text(
                     _tail.join('\n'),
-                    style:
-                        mono.copyWith(fontSize: 12, height: 1.5, color: muted),
+                    style: mono.copyWith(
+                      fontSize: 12,
+                      height: 1.5,
+                      color: muted,
+                    ),
                   ),
                 ),
               ],
