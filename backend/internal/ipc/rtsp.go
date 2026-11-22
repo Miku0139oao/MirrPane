@@ -335,7 +335,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		if err := resp.write(w, req); err != nil {
 			return
 		}
-		log.Printf("ipc: %s %s from %s -> %d (%d ms, %d in, %d out)",
+		log.Printf("ipc: %q %q from %s -> %d (%d ms, %d in, %d out)",
 			req.Method, req.Target, conn.RemoteAddr(), resp.Status,
 			time.Since(start).Milliseconds(), len(req.Body), len(resp.Body))
 		if resp.Disconnect || req.Close {

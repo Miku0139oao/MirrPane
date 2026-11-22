@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bytes"
+	"log"
 	"strings"
 	"testing"
 
@@ -204,5 +205,85 @@ func TestFirstQualifier(t *testing.T) {
 		if got := firstQualifier(c.in); got != c.want {
 			t.Fatalf("firstQualifier(%v) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestLogSanitisesControlSequences(t *testing.T) {
+	var logs bytes.Buffer
+	prevOut := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+
+	s := newTestServer()
+
+	// Exercise both wire serveConn logging (rtsp.go) and unhandled/tolerated
+	// dispatch logging (server.go) with CR, LF, ANSI CSI, and C1 escapes.
+	cases := []struct {
+		name string
+		req  *Request
+	}{
+		{
+			name: "newline and ansi in target",
+			req:  &Request{Method: "GET", Target: "/unknown\nFAKE_LOG\r\x1b[31mred", Protocol: "RTSP/1.0"},
+		},
+		{
+			name: "control in method and target",
+			req:  &Request{Method: "BOGUS\r\x1b[2J", Target: "/x\x9b31m", Protocol: "RTSP/1.0"},
+		},
+		{
+			name: "http unhandled with escapes",
+			req:  &Request{Method: "POST", Target: "/unknown\r\n\x1b[31m", Protocol: "HTTP/1.1"},
+		},
+	}
+
+	for _, tc := range cases {
+		logs.Reset()
+		_ = s.dispatch(tc.req, "192.168.1.20")
+		out := logs.String()
+		if out == "" {
+			t.Fatalf("%s: expected log output", tc.name)
+		}
+		trimmed := strings.TrimSuffix(out, "\n")
+		if strings.ContainsAny(trimmed, "\r\n\x1b\x9b") {
+			t.Fatalf("%s: log output contained unescaped control bytes: %q", tc.name, out)
+		}
+	}
+
+	logs.Reset()
+	wire := "GET /bad\rpath\x1b[31m RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+	conn := &memoryControlConn{
+		input:  strings.NewReader(wire),
+		remote: testConnAddr("192.168.1.20:43210"),
+	}
+	s.serveConn(conn)
+	out := logs.String()
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 {
+		// One tolerated log from dispatchRTSP + one request summary from serveConn.
+		t.Fatalf("expected 2 log lines (no forged lines), got %d: %q", len(lines), out)
+	}
+	if strings.ContainsAny(strings.Join(lines, ""), "\r\x1b") {
+		t.Fatalf("serveConn log contained unescaped CR or ESC: %q", out)
+	}
+
+	logs.Reset()
+	wireMethod := "BOGUS\r\x1b[2J /target\x1b[0m RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+	conn2 := &memoryControlConn{
+		input:  strings.NewReader(wireMethod),
+		remote: testConnAddr("192.168.1.20:43210"),
+	}
+	s.serveConn(conn2)
+	out2 := logs.String()
+	lines2 := strings.Split(strings.TrimSuffix(out2, "\n"), "\n")
+	if len(lines2) != 2 {
+		t.Fatalf("expected 2 log lines for bogus method, got %d: %q", len(lines2), out2)
+	}
+	if strings.ContainsAny(strings.Join(lines2, ""), "\r\x1b") {
+		t.Fatalf("serveConn bogus-method log contained unescaped CR or ESC: %q", out2)
 	}
 }

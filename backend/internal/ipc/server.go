@@ -13,6 +13,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,7 +175,7 @@ func (s *Server) dispatch(req *Request, remote string) *Response {
 		return s.dispatchRTSP(req, remote, path)
 
 	case req.Protocol == "HTTP/1.1":
-		return s.dispatchHTTP(req, path)
+		return s.dispatchHTTP(req, remote, path)
 	}
 
 	return &Response{Status: 200}
@@ -219,14 +220,14 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		// A known method on an unknown URL is not an error: UxPlay leaves its
 		// pre-initialised 200 in place. Endpoints such as /event, /volume and
 		// /pair-remove land here.
-		log.Printf("ipc: tolerated %s %s", req.Method, req.Target)
+		log.Printf("ipc: tolerated %q %q", req.Method, req.Target)
 		return &Response{}
 
 	case "GET":
 		if strings.HasPrefix(req.Target, "/info") {
 			return s.handleInfo(req)
 		}
-		log.Printf("ipc: tolerated %s %s", req.Method, req.Target)
+		log.Printf("ipc: tolerated %q %q", req.Method, req.Target)
 		return &Response{}
 
 	case "OPTIONS":
@@ -262,11 +263,16 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		return &Response{Status: 453}
 	}
 
-	log.Printf("ipc: unhandled %s %s %s", req.Method, req.Target, req.Protocol)
+	log.Printf("ipc: unhandled %q %q %q", req.Method, req.Target, req.Protocol)
 	return &Response{Status: 501}
 }
 
-func (s *Server) dispatchHTTP(req *Request, path string) *Response {
+func isLoopbackRemote(remote string) bool {
+	addr, err := netip.ParseAddr(remote)
+	return err == nil && addr.Unmap().IsLoopback()
+}
+
+func (s *Server) dispatchHTTP(req *Request, remote, path string) *Response {
 	switch req.Method {
 	case "POST":
 		switch {
@@ -276,6 +282,9 @@ func (s *Server) dispatchHTTP(req *Request, path string) *Response {
 			// is needed.
 			return &Response{}
 		case path == "/stop":
+			if !isLoopbackRemote(remote) {
+				return &Response{Status: 403}
+			}
 			if s.OnStop != nil {
 				s.OnStop()
 			}
@@ -296,7 +305,7 @@ func (s *Server) dispatchHTTP(req *Request, path string) *Response {
 			return &Response{Status: 404}
 		}
 	}
-	log.Printf("ipc: unhandled %s %s %s", req.Method, req.Target, req.Protocol)
+	log.Printf("ipc: unhandled %q %q %q", req.Method, req.Target, req.Protocol)
 	return &Response{Status: 200}
 }
 

@@ -53,7 +53,7 @@ func TestHTTPStopReleasesAllSessions(t *testing.T) {
 		t.Errorf("HTTP /stop used a per-sender disconnect for %q", remote)
 	}
 	for range 2 {
-		resp := s.dispatch(&Request{Method: "POST", Target: "/stop", Protocol: "HTTP/1.1"}, "")
+		resp := s.dispatch(&Request{Method: "POST", Target: "/stop", Protocol: "HTTP/1.1"}, "127.0.0.1")
 		if resp.status() != 200 || resp.ContentType != "" || len(resp.Body) != 0 {
 			t.Fatalf("HTTP /stop changed its empty 200 response: %+v", resp)
 		}
@@ -66,8 +66,75 @@ func TestHTTPStopReleasesAllSessions(t *testing.T) {
 	}
 	// The endpoint remains optional for users of Server without a receiver.
 	s.OnStop = nil
-	if resp := s.dispatch(&Request{Method: "POST", Target: "/stop", Protocol: "HTTP/1.1"}, ""); resp.status() != 200 {
+	if resp := s.dispatch(&Request{Method: "POST", Target: "/stop", Protocol: "HTTP/1.1"}, "127.0.0.1"); resp.status() != 200 {
 		t.Fatalf("HTTP /stop without a hook returned %d", resp.status())
+	}
+}
+
+func TestHTTPStopRestrictsToLoopback(t *testing.T) {
+	cases := []struct {
+		remote   string
+		wantCode int
+		wantStop bool
+	}{
+		{"127.0.0.1", 200, true},
+		{"::1", 200, true},
+		{"::ffff:127.0.0.1", 200, true},
+		{"192.168.1.20", 403, false},
+		{"10.0.0.2", 403, false},
+		{"2001:db8::20", 403, false},
+		{"::ffff:192.168.1.20", 403, false},
+		{"0.0.0.0", 403, false},
+		{"", 403, false},
+	}
+
+	for _, tc := range cases {
+		t.Run("dispatch/"+tc.remote, func(t *testing.T) {
+			s := newTestServer()
+			called := false
+			s.OnStop = func() { called = true }
+
+			resp := s.dispatch(&Request{Method: "POST", Target: "/stop", Protocol: "HTTP/1.1"}, tc.remote)
+			if resp.status() != tc.wantCode {
+				t.Fatalf("POST /stop from %q -> %d, want %d", tc.remote, resp.status(), tc.wantCode)
+			}
+			if called != tc.wantStop {
+				t.Fatalf("POST /stop from %q OnStop called=%v, want %v", tc.remote, called, tc.wantStop)
+			}
+		})
+	}
+
+	// Verify serveConn wire behavior for LAN vs loopback /stop, and that /info
+	// remains LAN-accessible.
+	for _, tc := range []struct {
+		name       string
+		remoteAddr string
+		req        string
+		wantPrefix string
+		wantStop   bool
+	}{
+		{"lan stop rejected", "192.168.1.20:43210", "POST /stop HTTP/1.1\r\n\r\n", "HTTP/1.1 403 Forbidden\r\n", false},
+		{"loopback stop accepted", "127.0.0.1:43210", "POST /stop HTTP/1.1\r\n\r\n", "HTTP/1.1 200 OK\r\n", true},
+		{"ipv6 loopback stop accepted", "[::1]:43210", "POST /stop HTTP/1.1\r\n\r\n", "HTTP/1.1 200 OK\r\n", true},
+		{"lan info accepted", "192.168.1.20:43210", "GET /info RTSP/1.0\r\nCSeq: 1\r\n\r\n", "RTSP/1.0 200 OK\r\n", false},
+	} {
+		t.Run("wire/"+tc.name, func(t *testing.T) {
+			conn := &memoryControlConn{
+				input:  strings.NewReader(tc.req),
+				remote: testConnAddr(tc.remoteAddr),
+			}
+			s := newTestServer()
+			called := false
+			s.OnStop = func() { called = true }
+			s.serveConn(conn)
+			got := conn.output.String()
+			if !strings.HasPrefix(got, tc.wantPrefix) {
+				t.Fatalf("wire reply = %q, want prefix %q", got, tc.wantPrefix)
+			}
+			if called != tc.wantStop {
+				t.Fatalf("OnStop called=%v, want %v", called, tc.wantStop)
+			}
+		})
 	}
 }
 
