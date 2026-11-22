@@ -109,6 +109,7 @@ type apiState struct {
 	AudioOccupancy  float64 `json:"audioOccupancyMs"`
 	AudioUnderruns  uint64  `json:"audioUnderruns"`
 	AudioHighWater  float64 `json:"audioHighWaterMs"`
+	AudioTrims      uint64  `json:"audioTrims"`
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -215,6 +216,7 @@ func apiHandler(
 			AudioOccupancy:  audioStats.OccupancyMs,
 			AudioUnderruns:  audioStats.UnderrunCount,
 			AudioHighWater:  audioStats.HighWaterMs,
+			AudioTrims:      audioStats.TrimCount,
 		}
 		if recv != nil {
 			if pending := recv.PendingSenders(); len(pending) > 0 {

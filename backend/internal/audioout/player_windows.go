@@ -30,18 +30,21 @@ const (
 	// bufFrames is one device buffer: 10 ms, matching Windows's shared-mode
 	// audio engine period.
 	bufFrames = SampleRate / 100
-	// bufCount is how many buffers stay queued: 40 ms max in flight.
-	bufCount = 4
-	// ringFrames caps the producer-side queue at 100 ms: large enough to absorb
-	// normal 30-60 ms Wi-Fi bursts without slicing the waveform, small enough
-	// that audio can never drift hundreds of milliseconds behind video.
-	ringFrames = SampleRate / 10
-	// trimTargetFrames is the backlog kept when an overflow triggers a catch-up
-	// jump (30 ms), avoiding repeated per-packet cuts.
+	// bufCount is how many buffers stay queued: 50 ms max in flight. waveOut
+	// header-return latency needs more headroom than the playback duration alone.
+	bufCount = 5
+	// ringFrames is the balanced profile's burst capacity, separate from its
+	// normal backlog target. Larger bursts may temporarily add this much delay.
+	ringFrames = SampleRate * 250 / 1000
+	// trimTargetFrames is the normal backlog target after gentle catch-up.
 	trimTargetFrames = bufFrames * 3
 	// crossfadeFrames is the 2 ms splice window used when trimming overflow
 	// so the waveform never suffers a hard step discontinuity.
 	crossfadeFrames = SampleRate * 2 / 1000
+	// Burst peaks alone do not prove clock drift. The queue must remain above
+	// high-water for a full jitter window before correction can start.
+	backlogWindow  = 100 * time.Millisecond
+	startupCushion = 20 * time.Millisecond
 )
 
 // Windows waveOut constants.
@@ -106,7 +109,10 @@ type Stats struct {
 	TargetMs        float64
 	CapacityMs      float64
 	UnderrunCount   uint64
-	TrimCount       uint64
+	// TrimCount counts overflow splices that discard audio. Gentle rate
+	// correction is counted separately, since it does not discard a queue.
+	TrimCount  uint64
+	DriftCount uint64
 }
 
 // Player is a waveOut device fed from a ring buffer.
@@ -130,14 +136,21 @@ type Player struct {
 	trimActive  bool
 	trimCounted bool
 	playing     bool
+	// driftPhase is the fractional read position carried across buffers while
+	// backlog drift is active, so resampling stays continuous at boundaries.
+	driftPhase          float64
+	aboveHighWaterSince time.Time
+	primingUntil        time.Time // pump-owned; a time cushion even for whole bursts
 
 	muted      atomic.Bool
 	attenMilli atomic.Int32 // 0 = 100% volume, 1000 = 0% volume (zero-value is full volume)
 
 	underrunCount atomic.Uint64
 	trimCount     atomic.Uint64
+	driftCount    atomic.Uint64
 
 	submitBuf func(b *buffer, frames int) // nil in production; overridden in tests
+	now       func() time.Time            // nil uses the monotonic wall clock
 
 	wake     chan struct{}
 	done     chan struct{}
@@ -153,19 +166,28 @@ func Available() bool {
 func profileParams(profile string) (count, ring, trim int) {
 	switch profile {
 	case "low":
-		return 3, SampleRate * 80 / 1000, bufFrames * 2
+		// Capacity is jitter headroom, not steady-state latency: Wi-Fi delivers
+		// audio in bursts. Keep burst capacity separate from the normal target;
+		// only sustained backlog warrants gentle catch-up.
+		// waveOut returns headers after the audio engine has consumed them.
+		// Three 10 ms buffers delivered only ~36 kframes/s on the test device;
+		// even four occasionally stalled. Five cover return/scheduling jitter.
+		return 5, SampleRate * 200 / 1000, bufFrames * 2
 	case "stable":
-		return 6, SampleRate * 150 / 1000, bufFrames * 4
+		return 6, SampleRate * 350 / 1000, bufFrames * 4
 	default:
 		return bufCount, ringFrames, trimTargetFrames
 	}
 }
 
 func highWaterFramesFor(ringCap, trimTarget int) int {
-	if ringCap <= trimTarget {
-		return ringCap
+	// Correct backlog gently once the queue is more than ~40 ms above target;
+	// the rest of the capacity is burst headroom.
+	water := trimTarget + SampleRate*40/1000
+	if half := ringCap / 2; water > half {
+		water = half
 	}
-	return trimTarget + (ringCap-trimTarget)/2
+	return water
 }
 
 func (p *Player) ringFramesCap() int {
@@ -289,6 +311,7 @@ func (p *Player) Stats() Stats {
 		CapacityMs:      toMs(capFrames),
 		UnderrunCount:   p.underrunCount.Load(),
 		TrimCount:       p.trimCount.Load(),
+		DriftCount:      p.driftCount.Load(),
 	}
 }
 
@@ -334,9 +357,10 @@ func (p *Player) Write(frames []int16) {
 	}
 	room := len(p.ring) - p.queued
 	if len(frames) > room {
-		// Overflow: crossfade-jump cleanly down to trimTarget rather than
-		// nibbling off a few milliseconds on every subsequent packet.
-		target := p.effectiveTrimTarget()
+		// Overflow: trim down to the high-water mark rather than all the way to
+		// the trim target, so one burst costs one moderate jump instead of
+		// discarding the whole queue. Drift continues from there.
+		target := p.effectiveHighWater()
 		keep := target * Channels
 		if keep > len(p.ring)-len(frames) {
 			keep = len(p.ring) - len(frames)
@@ -355,14 +379,16 @@ func (p *Player) Write(frames []int16) {
 			p.crossfadeDrop(drop)
 			p.r = (p.r + drop) % len(p.ring)
 			p.queued -= drop
-			p.trimCount.Add(1)
-			p.trimActive = false
-			p.trimCounted = false
 		}
 		if len(frames) > len(p.ring) {
 			// Single write larger than the whole ring: keep only the newest tail.
 			frames = frames[len(frames)-len(p.ring):]
 		}
+		p.trimCount.Add(1)
+		p.trimActive = false
+		p.trimCounted = false
+		p.driftPhase = 0
+		p.aboveHighWaterSince = time.Time{}
 	}
 	muted := p.muted.Load()
 	gain := int32(1000) - p.attenMilli.Load()
@@ -385,9 +411,6 @@ func (p *Player) Write(frames []int16) {
 	p.queued += len(frames)
 	if p.queued > p.peakQueued {
 		p.peakQueued = p.queued
-	}
-	if hw := p.effectiveHighWater(); hw > 0 && p.queued/Channels > hw {
-		p.trimActive = true
 	}
 	p.mu.Unlock()
 
@@ -461,14 +484,26 @@ func (p *Player) pumpStep() {
 	}
 
 	// When playback is idle (at startup or after a pause), wait for a
-	// 20 ms cushion before submitting the first buffers so Wi-Fi jitter on
-	// packet #2 does not cause an immediate underrun click.
+	// 20 ms of data AND a 20 ms time cushion before submitting the first
+	// buffers. A whole burst may arrive at once: starting it immediately would
+	// exhaust the last full device buffer before the next burst arrives.
 	if inFlight == 0 && !p.hasAtLeast(bufFrames*2) {
+		p.primingUntil = time.Time{}
 		if p.playing {
 			p.playing = false
 			p.underrunCount.Add(1)
 		}
 		return
+	}
+	if inFlight == 0 && !p.playing {
+		now := p.clockNow()
+		if p.primingUntil.IsZero() {
+			p.primingUntil = now.Add(startupCushion)
+		}
+		if now.Before(p.primingUntil) {
+			return
+		}
+		p.primingUntil = time.Time{}
 	}
 
 	for i := range p.bufs {
@@ -501,8 +536,8 @@ func (p *Player) pumpStep() {
 // them with zero silence) keeps the waveform continuous across AAC packet
 // boundaries (~522 frames vs 480-frame device buffers).
 //
-// When backlog correction is active (after occupancy exceeded highWater), it
-// gently consumes up to ~0.42% extra frames via linear interpolation until
+// When backlog correction is active (after sustained highWater occupancy), it
+// gently consumes up to 0.5% extra frames via linear interpolation until
 // post-take occupancy returns to trimTarget.
 func (p *Player) take(dst []byte) int {
 	want := len(dst) / BytesPerFr
@@ -518,58 +553,76 @@ func (p *Player) take(dst []byte) int {
 
 	queuedFrames := p.queued / Channels
 	target := p.effectiveTrimTarget()
-	consumeFrames := want
+	if queuedFrames-want > p.effectiveHighWater() {
+		now := p.clockNow()
+		if p.aboveHighWaterSince.IsZero() {
+			p.aboveHighWaterSince = now
+		} else if now.Sub(p.aboveHighWaterSince) >= backlogWindow {
+			p.trimActive = true
+		}
+	} else {
+		p.aboveHighWaterSince = time.Time{}
+	}
+	rate := 1.0
 	if p.trimActive {
 		postTake := queuedFrames - want
 		if postTake <= target {
 			p.trimActive = false
 			p.trimCounted = false
 		} else {
-			extra := want * 5 / 1000 // ~0.42% drift for 480-frame (10 ms) buffers
-			if extra == 0 && want >= 200 {
-				extra = 1
-			}
-			excess := postTake - target
+			extra := float64(want) * 0.005
+			excess := float64(postTake-target) - p.driftPhase
 			if extra > excess {
 				extra = excess
 			}
-			if extra > 0 && queuedFrames >= want+extra {
-				consumeFrames = want + extra
-				if !p.trimCounted {
-					p.trimCount.Add(1)
-					p.trimCounted = true
-				}
-				if postTake-extra <= target {
-					p.trimActive = false
-					p.trimCounted = false
-				}
+			if extra > 0 {
+				rate += extra / float64(want)
 			}
 		}
 	}
 
 	out := unsafe.Slice((*int16)(unsafe.Pointer(&dst[0])), want*Channels)
-	if consumeFrames == want {
+	total := p.driftPhase + float64(want)*rate
+	consumed := int(total)
+	interpolate := rate > 1 || p.driftPhase > 0
+	last := p.driftPhase + float64(want-1)*rate
+	if interpolate && int(last)+1 >= queuedFrames {
+		// Without the interpolation neighbour, preserve all available full
+		// frames by copying straight. Never read an unwritten ring slot.
+		interpolate = false
+	}
+	if !interpolate {
 		samples := want * Channels
 		for i := 0; i < samples; i++ {
 			out[i] = p.ring[p.r]
 			p.r = (p.r + 1) % len(p.ring)
 		}
 		p.queued -= samples
+		p.driftPhase = 0
 	} else {
 		ringLen := len(p.ring)
 		for i := 0; i < want; i++ {
-			num := i * consumeFrames
-			idx := num / want
-			rem := num % want
+			pos := p.driftPhase + float64(i)*rate
+			j := int(pos)
+			f := pos - float64(j)
 			for c := 0; c < Channels; c++ {
-				s0 := int64(p.ring[(p.r+idx*Channels+c)%ringLen])
-				s1 := int64(p.ring[(p.r+(idx+1)*Channels+c)%ringLen])
-				out[i*Channels+c] = int16(s0 + ((s1-s0)*int64(rem))/int64(want))
+				s0 := float64(p.ring[(p.r+j*Channels+c)%ringLen])
+				s1 := float64(p.ring[(p.r+(j+1)*Channels+c)%ringLen])
+				out[i*Channels+c] = int16(s0 + (s1-s0)*f)
 			}
 		}
-		samples := consumeFrames * Channels
+		samples := consumed * Channels
 		p.r = (p.r + samples) % ringLen
 		p.queued -= samples
+		p.driftPhase = total - float64(consumed)
+		if rate > 1 && !p.trimCounted {
+			p.driftCount.Add(1)
+			p.trimCounted = true
+		}
+	}
+	if p.queued/Channels <= target {
+		p.trimActive = false
+		p.trimCounted = false
 	}
 	p.mu.Unlock()
 	return want
@@ -580,4 +633,11 @@ func (p *Player) hasAtLeast(n int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.queued >= n*Channels
+}
+
+func (p *Player) clockNow() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
 }

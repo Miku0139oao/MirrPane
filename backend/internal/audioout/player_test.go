@@ -15,9 +15,9 @@ func TestPlayerRingCapsBacklog(t *testing.T) {
 		done: make(chan struct{}),
 	}
 
-	// Simulate a 200 ms burst of audio arriving at once.
+	// Simulate a burst larger than the balanced ring arriving at once.
 	chunk := make([]int16, 522*Channels)
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 40; i++ {
 		p.Write(chunk)
 	}
 
@@ -78,7 +78,7 @@ func TestAudioProfileParams(t *testing.T) {
 	cLow, rLow, tLow := profileParams("low")
 	cBal, rBal, tBal := profileParams("balanced")
 	cStb, rStb, tStb := profileParams("stable")
-	if !(cLow < cBal && cBal < cStb) {
+	if !(cLow <= cBal && cBal < cStb) || cLow < 5 {
 		t.Fatalf("bufCount order invalid: low=%d bal=%d stable=%d", cLow, cBal, cStb)
 	}
 	if !(rLow < rBal && rBal < rStb) {
@@ -86,5 +86,18 @@ func TestAudioProfileParams(t *testing.T) {
 	}
 	if !(tLow < tBal && tBal < tStb) {
 		t.Fatalf("trimTarget order invalid: low=%d bal=%d stable=%d", tLow, tBal, tStb)
+	}
+	for _, tc := range []struct {
+		profile               string
+		count, capacity, trim int
+	}{
+		{"low", 5, 200, 20},
+		{"balanced", 5, 250, 30},
+		{"stable", 6, 350, 40},
+	} {
+		count, capacity, trim := profileParams(tc.profile)
+		if count != tc.count || capacity != SampleRate*tc.capacity/1000 || trim != SampleRate*tc.trim/1000 {
+			t.Errorf("%s profile = (%d, %d, %d), want (%d, %d ms, %d ms)", tc.profile, count, capacity, trim, tc.count, tc.capacity, tc.trim)
+		}
 	}
 }

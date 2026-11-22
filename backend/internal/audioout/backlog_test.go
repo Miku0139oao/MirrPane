@@ -11,8 +11,13 @@ import (
 
 // fakeDevice models the Windows waveOut buffer queue on a deterministic clock.
 type fakeDevice struct {
-	now   time.Duration
-	queue []queuedBuf
+	now             time.Duration
+	queue           []queuedBuf
+	completionDelay time.Duration // driver may return a header after it played
+	playbackEnd     time.Duration
+	gaps            int
+	gapDuration     time.Duration
+	submittedFrames int
 }
 
 type queuedBuf struct {
@@ -28,6 +33,12 @@ func (d *fakeDevice) submit(b *buffer, frames int) {
 			start = tail
 		}
 	}
+	if d.submittedFrames > 0 && start > d.playbackEnd {
+		d.gaps++
+		d.gapDuration += start - d.playbackEnd
+	}
+	d.submittedFrames += frames
+	d.playbackEnd = start + dur
 	d.queue = append(d.queue, queuedBuf{
 		buf:     b,
 		endTime: start + dur,
@@ -37,7 +48,7 @@ func (d *fakeDevice) submit(b *buffer, frames int) {
 func (d *fakeDevice) advanceTo(t time.Duration) {
 	d.now = t
 	doneCount := 0
-	for doneCount < len(d.queue) && d.queue[doneCount].endTime <= t {
+	for doneCount < len(d.queue) && d.queue[doneCount].endTime+d.completionDelay <= t {
 		d.queue[doneCount].buf.hdr.Flags |= whdrDone
 		doneCount++
 	}
@@ -57,6 +68,7 @@ func newTestPlayer(profile string, dev *fakeDevice) *Player {
 		done:       make(chan struct{}),
 		pumpDone:   make(chan struct{}),
 		submitBuf:  dev.submit,
+		now:        func() time.Time { return time.Unix(0, int64(dev.now)) },
 	}
 	for i := range p.bufs {
 		p.bufs[i].data = make([]byte, bufFrames*BytesPerFr)
@@ -86,9 +98,9 @@ func TestSubCapacityBurstRecoversToTargetWithoutUnderrun(t *testing.T) {
 		burstMs int
 		maxWait time.Duration
 	}{
-		{name: "low_65ms_burst", profile: "low", burstMs: 65, maxWait: 20 * time.Second},
-		{name: "balanced_85ms_burst", profile: "balanced", burstMs: 85, maxWait: 20 * time.Second},
-		{name: "stable_140ms_burst", profile: "stable", burstMs: 140, maxWait: 30 * time.Second},
+		{name: "low_105ms_burst", profile: "low", burstMs: 105, maxWait: 25 * time.Second},
+		{name: "balanced_135ms_burst", profile: "balanced", burstMs: 135, maxWait: 25 * time.Second},
+		{name: "stable_200ms_burst", profile: "stable", burstMs: 200, maxWait: 35 * time.Second},
 	}
 
 	for _, tc := range cases {
@@ -130,7 +142,7 @@ func TestSubCapacityBurstRecoversToTargetWithoutUnderrun(t *testing.T) {
 				if st.UnderrunCount != 0 {
 					t.Fatalf("t=%v: correction caused underrun (count=%d, occ=%.2fms)", now, st.UnderrunCount, st.OccupancyMs)
 				}
-				if !settled && st.OccupancyMs <= st.TargetMs+10.5 && st.TrimCount > 0 {
+				if !settled && st.OccupancyMs <= st.TargetMs+10.5 && st.DriftCount > 0 {
 					// Confirm post-take occupancy (when ring just fed a buffer) reached target.
 					if st.OccupancyMs <= st.TargetMs+0.5 {
 						settled = true
@@ -146,7 +158,7 @@ func TestSubCapacityBurstRecoversToTargetWithoutUnderrun(t *testing.T) {
 			}
 
 			// Run 2 more seconds at steady state and ensure occupancy remains near target without extra trims/underruns.
-			trimsAtSettle := p.Stats().TrimCount
+			driftsAtSettle := p.Stats().DriftCount
 			for now := tc.maxWait + tick; now <= tc.maxWait+2*time.Second; now += tick {
 				dev.advanceTo(now)
 				for nextPkt <= now {
@@ -160,8 +172,11 @@ func TestSubCapacityBurstRecoversToTargetWithoutUnderrun(t *testing.T) {
 			if final.UnderrunCount != 0 {
 				t.Fatalf("post-recovery UnderrunCount = %d, want 0", final.UnderrunCount)
 			}
-			if final.TrimCount != trimsAtSettle {
-				t.Fatalf("unexpected extra trims after settling at %v: got %d, want %d", settledAt, final.TrimCount, trimsAtSettle)
+			if final.TrimCount != 0 {
+				t.Fatalf("sub-capacity burst discarded audio: %+v", final)
+			}
+			if final.DriftCount != driftsAtSettle {
+				t.Fatalf("unexpected extra correction after settling at %v: got %d, want %d", settledAt, final.DriftCount, driftsAtSettle)
 			}
 			if final.OccupancyMs > final.TargetMs+11.0 {
 				t.Fatalf("post-recovery occupancy drifted up to %.2fms (target %.2fms)", final.OccupancyMs, final.TargetMs)
@@ -196,6 +211,9 @@ func TestSteadyStatePreservesOccupancy(t *testing.T) {
 		p.pumpStep()
 
 		st := p.Stats()
+		if !p.playing {
+			continue // measure steady occupancy after the initial time cushion
+		}
 		if st.OccupancyMs < minOcc {
 			minOcc = st.OccupancyMs
 		}
@@ -234,12 +252,14 @@ func TestUnderrunTelemetryCountsStarvationOncePerGap(t *testing.T) {
 	// Cross 20 ms cushion so playback starts.
 	p.Write(makeToneFrames(bufFrames, &phase))
 	p.pumpStep()
+	dev.advanceTo(startupCushion)
+	p.pumpStep()
 	if !p.playing {
 		t.Fatal("expected player to enter playing state")
 	}
 
 	// Advance 100 ms with no further writes so all in-flight buffers drain.
-	for now := 3 * time.Millisecond; now <= 100*time.Millisecond; now += 3 * time.Millisecond {
+	for now := startupCushion + 3*time.Millisecond; now <= 100*time.Millisecond; now += 3 * time.Millisecond {
 		dev.advanceTo(now)
 		p.pumpStep()
 	}
@@ -268,13 +288,13 @@ func TestOverflowCrossfadeAvoidsHardJump(t *testing.T) {
 	// discarded head (+10000) splices into the kept tail (-10000).
 	// A hard jump from +10000 to -10000 would have a delta of 20000 in one sample;
 	// a 2 ms (96-frame) crossfade keeps every adjacent sample delta small.
-	posChunk := make([]int16, 2400*Channels)
+	posChunk := make([]int16, p.ringFramesCap()/2*Channels)
 	for i := range posChunk {
 		posChunk[i] = 10000
 	}
 	p.Write(posChunk)
 
-	negChunk := make([]int16, 2200*Channels)
+	negChunk := make([]int16, (p.ringFramesCap()-len(posChunk)/Channels)*Channels)
 	for i := range negChunk {
 		negChunk[i] = -10000
 	}
@@ -325,8 +345,9 @@ func TestDriftInterpolationIsContinuous(t *testing.T) {
 	p := newTestPlayer("balanced", dev)
 	var phase float64
 
-	// Fill 80 ms (> 65 ms highWater) of a smooth 440 Hz tone.
+	// Fill 80 ms (> 70 ms highWater) of a smooth 440 Hz tone.
 	p.Write(makeToneFrames(SampleRate*80/1000, &phase))
+	p.trimActive = true // exercise the resampler independently of the time gate
 
 	dst := make([]byte, bufFrames*BytesPerFr)
 	var prev int16
@@ -356,8 +377,9 @@ func TestDriftInterpolationIsContinuous(t *testing.T) {
 		}
 	}
 
-	// 440 Hz at amplitude 12000 steps by at most ~692 per frame; allow small margin for 0.42% drift.
-	if maxStep > 800 {
-		t.Fatalf("max sample step across drifted buffers = %d, want <= 800", maxStep)
+	// 440 Hz at amplitude 12000 steps by at most ~692 per frame; the fractional
+	// phase carries across buffers, so drifted buffers may add at most ~1%.
+	if maxStep > 750 {
+		t.Fatalf("max sample step across drifted buffers = %d, want <= 750", maxStep)
 	}
 }
