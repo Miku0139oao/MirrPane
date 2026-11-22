@@ -1,0 +1,58 @@
+# SEC-002: stop logging per-session AES stream keys
+--- a/backend/internal/receiver/receiver.go	2026-11-22 08:05:03.213190400 +0800
++++ b/backend/internal/receiver/receiver.go	2026-11-22 09:35:36.835166700 +0800
+@@ -379,7 +379,8 @@
+ 		r.audioRx.Configure(audioKeys, eiv)
+ 		r.log.Printf("setup: stream key derived for %s (%d candidate(s))", remote, len(cs.aesCandidates))
+ 		for _, c := range cs.aesCandidates {
+-			r.log.Printf("setup:   candidate %q key % x", c.Name, c.Key)
++			// SEC-002: never write stream key material to the log.
++			r.log.Printf("setup:   candidate %q", c.Name)
+ 		}
+ 	}
+ 
+# SEC-004: reject short hvc1 payloads before slicing at 0x75
+--- a/backend/internal/mirror/server.go	2026-11-22 03:52:19.025840200 +0800
++++ b/backend/internal/mirror/server.go	2026-11-22 09:35:40.622142200 +0800
+@@ -616,6 +616,11 @@
+ // splitHEVC extracts VPS, SPS and PPS. Each unit is introduced by a four-byte
+ // tag followed by a big-endian length at offset 3.
+ func splitHEVC(payload []byte) (vps, sps, pps []byte, ok bool) {
++	// SEC-004: the parameter-set block starts at offset 0x75. Slicing below
++	// that must not panic on a short, attacker-supplied payload.
++	if len(payload) < 0x75+5 {
++		return nil, nil, nil, false
++	}
+ 	read := func(ptr []byte, tag []byte) ([]byte, int, bool) {
+ 		if len(ptr) < 5 || !bytes.Equal(ptr[:4], tag) {
+ 			return nil, 0, false
+# SEC-004: regression test for the short-payload panic
+--- a/backend/internal/mirror/server_test.go	2026-11-22 00:11:50.129320700 +0800
++++ b/backend/internal/mirror/server_test.go	2026-11-22 09:25:14.471245200 +0800
+@@ -132,6 +132,15 @@
+ 	}
+ }
+ 
++// SEC-004: a short payload routed here by the hvc1 tag must be rejected, not
++// panic on payload[0x75:].
++func TestSplitHEVCShortPayloadDoesNotPanic(t *testing.T) {
++	payload := []byte{0, 0, 0, 0, 'h', 'v', 'c', '1'}
++	if _, _, _, ok := splitHEVC(payload); ok {
++		t.Fatal("splitHEVC accepted a payload shorter than 0x75")
++	}
++}
++
+ func TestGeometryParsing(t *testing.T) {
+ 	header := make([]byte, HeaderLen)
+ 	putF32 := func(off int, v float32) {
+# SEC-003: build with the patched Go 1.26.11 toolchain
+--- a/backend/go.mod	2026-11-22 06:08:19.851133400 +0800
++++ b/backend/go.mod	2026-11-22 09:27:18.962156400 +0800
+@@ -1,6 +1,6 @@
+ module github.com/miku0139/airplay-go/backend
+ 
+-go 1.26.0
++go 1.26.11
+ 
+ require (
+ 	github.com/ebitengine/purego v0.11.3
