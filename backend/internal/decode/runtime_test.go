@@ -3,9 +3,56 @@ package decode
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/miku0139/airplay-go/backend/internal/ffmpeg"
 )
+
+func TestMain(m *testing.M) {
+	// Tests run from backend/internal/decode where production ffmpeg.Find() no
+	// longer searches CWD. Point MIRRPANE_FFMPEG_DIR at the repo's fetched
+	// test runtime when the caller has not overridden it.
+	if os.Getenv("MIRRPANE_FFMPEG_DIR") == "" && os.Getenv("MIRRPANE_TEST_MISSING_RUNTIME") != "1" {
+		if dir := findRepoTestFFmpeg(); dir != "" {
+			_ = os.Setenv("MIRRPANE_FFMPEG_DIR", dir)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+func findRepoTestFFmpeg() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for range 6 {
+		root := filepath.Join(cwd, "third_party", "ffmpeg")
+		candidates := []string{filepath.Join(root, "bin")}
+		if data, err := os.ReadFile(filepath.Join(root, "current")); err == nil {
+			name := strings.TrimSpace(string(data))
+			if name != "" && name != "." && filepath.Base(name) == name {
+				candidates = append(candidates, filepath.Join(root, name))
+			}
+		}
+		for _, dir := range candidates {
+			ok := true
+			for _, dll := range ffmpeg.DLLs {
+				info, err := os.Stat(filepath.Join(dir, dll))
+				if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				return dir
+			}
+		}
+		cwd = filepath.Dir(cwd)
+	}
+	return ""
+}
 
 func TestFFmpegRejectsIncompatibleABI(t *testing.T) {
 	for _, minimum := range []uint32{minCodecVersion, minUtilVersion, minScaleVersion, minResampleVersion} {

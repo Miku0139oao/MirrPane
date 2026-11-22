@@ -61,6 +61,10 @@ jobs:
       - name: Run tests and analyze
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $ffmpegDir = @(.\scripts\fetch-ffmpeg.ps1 -Pinned -PassThru)[-1]
+          if (-not $ffmpegDir) { throw 'FFmpeg runtime path was not reported' }
+          $env:MIRRPANE_FFMPEG_DIR = [string]$ffmpegDir
           Push-Location backend
           go test ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

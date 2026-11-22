@@ -346,3 +346,41 @@ func TestMetadataRetriesAndBackoffCancellation(t *testing.T) {
 		t.Fatalf("cancellation ignored: %v", err)
 	}
 }
+
+func TestFindIgnoresPATHAndCWD(t *testing.T) {
+	writeDummyDLLs := func(dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, dll := range DLLs {
+			if err := os.WriteFile(filepath.Join(dir, dll), []byte("planted"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	root := t.TempDir()
+	pathDir := filepath.Join(root, "path-bin")
+	writeDummyDLLs(pathDir)
+	if err := os.WriteFile(filepath.Join(pathDir, "ffmpeg.exe"), []byte("exe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cwdDir := filepath.Join(root, "work")
+	cwdBin := filepath.Join(cwdDir, "third_party", "ffmpeg", "bin")
+	writeDummyDLLs(cwdBin)
+	cwdCache := filepath.Join(cwdDir, "third_party", "ffmpeg", "runtime-deadbeef")
+	writeDummyDLLs(cwdCache)
+	if err := os.WriteFile(filepath.Join(cwdDir, "third_party", "ffmpeg", "current"), []byte("runtime-deadbeef\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("MIRRPANE_FFMPEG_DIR", "")
+	t.Setenv("PATH", pathDir)
+	t.Chdir(cwdDir)
+
+	if dir, err := Find(); err == nil {
+		t.Fatalf("Find() selected untrusted PATH/CWD directory %q", dir)
+	}
+}

@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -59,9 +58,10 @@ func cached(root string) string {
 	return ""
 }
 
-// Find prefers an explicit override, then the portable application, the local
-// development tree and finally PATH. An override is authoritative: a typo must
-// not silently load a different installation.
+// Find prefers an explicit MIRRPANE_FFMPEG_DIR override, then the directory
+// next to the executable and the app's own cache directory beside it. An
+// override is authoritative: a typo must not silently load a different
+// installation. PATH and the current working directory are never consulted.
 func Find() (string, error) {
 	if dir := os.Getenv("MIRRPANE_FFMPEG_DIR"); dir != "" {
 		dir, err := filepath.Abs(dir)
@@ -75,17 +75,6 @@ func Find() (string, error) {
 		dir := filepath.Dir(exe)
 		dirs = append(dirs, dir, filepath.Join(dir, "ffmpeg"), cached(filepath.Join(dir, "ffmpeg")))
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		for range 6 {
-			root := filepath.Join(cwd, "third_party", "ffmpeg")
-			dirs = append(dirs, filepath.Join(root, "bin"), cached(root))
-			cwd = filepath.Dir(cwd)
-		}
-	}
-	if exe, err := exec.LookPath("ffmpeg.exe"); err == nil {
-		dirs = append(dirs, filepath.Dir(exe))
-	}
-	dirs = append(dirs, filepath.SplitList(os.Getenv("PATH"))...)
 	for _, dir := range dirs {
 		if dir != "" && complete(dir) {
 			return filepath.Abs(dir)
@@ -121,6 +110,10 @@ func Ensure(ctx context.Context, root string, progress func(string), validate fu
 		}
 	} else if os.Getenv("MIRRPANE_FFMPEG_DIR") != "" {
 		return "", err
+	} else if cache := cached(root); cache != "" {
+		if err := check(cache); err == nil {
+			return cache, nil
+		}
 	}
 	dir, err := pinnedInstaller().install(ctx, root, progress)
 	if err == nil {
