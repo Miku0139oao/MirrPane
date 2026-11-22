@@ -71,10 +71,14 @@ Patches are written for every Critical and High finding except SEC-001 (see belo
 | SEC-002 | Stop logging candidate key bytes; log only the candidate name | `security_remediation.patch` (receiver.go) |
 | SEC-003 | Raise `backend/go.mod` to `go 1.26.11`; CI resolves this via `go-version-file` | `security_remediation.patch` (backend/go.mod) |
 | SEC-004 | Bound-check the `0x75` parameter-set offset before slicing; add a short-payload regression test | `security_remediation.patch` (mirror/server.go, mirror/server_test.go) |
-| SEC-005–SEC-013 | Not drafted (severity below the Critical/High threshold); recommendations are in the Findings table | — |
+| SEC-005–SEC-013 | Implemented in the source tree in the second hardening round (below); see the round-2 verdicts | tree changes, no separate patch file |
 | SEC-014 | Rotate the receiver identity (delete `config.json` and staging copies, re-pair senders) and restrict ACLs to the current user; no code diff drafted | `SECRETS.local.md` |
 
 SEC-001 residual risk (what a proper fix needs, per review): authenticate `/setup` (pair-verify/PIN or allowlist) before `Prepare` or `audioRx.Configure`; bind the mirror data connection to the pending `/setup` (expected source IP + stream ID, short window); track stream liveness (last valid frame) and reap idle/half-open connections instead of first-connect-wins; make audio key state per-sender; drop the mirror client and reset keys on full TEARDOWN and on control-connection close.
+
+SEC-001 progress (2026-11-22, source-tree implementation): stream/key setup now requires completed pair-verify (403). Key-only setup stores per-sender keys; accepted stream setup alone configures shared audio, refusing another live sender (453). Mirror admission binds normalized source IP and stream-ID-derived keys to an 8-second setup window, consumed by the first non-empty, successfully decrypted frame. Same-sender reconnects remain possible; keyless/half-open sockets have a 4-second initial read deadline, and only valid video/decoded audio refreshes liveness. Stale senders can be replaced without disconnecting established streams merely because an iPhone suspends video. Full teardown, user disconnect, control-connection close and stop drop the mirror client, pending keys and audio keys; audio-only teardown retains pairing/video state. Socket-free regression tests cover these paths.
+
+SEC-001 remains **needs manual remediation**: legacy pair-verify proves possession of a self-selected sender key, not an owner-approved identity. Any LAN peer can still pair and start an idle session or replace a stale sender. IP binding does not distinguish peers sharing an IP, and legacy CTR/CBC media framing is not cryptographic authentication; UDP packet injection/replay remains outside this setup-binding fix. A PIN/allowlist needs an explicit trust/enrollment policy and persistence/UI changes, so it was deliberately not added to this bounded, backwards-compatible change. The SEC-001 finding/remediation rows remain unchanged pending that policy and live-device validation.
 
 Verification performed before review: the patch applies with `patch -p1` and the patched tree builds (`CGO_ENABLED=0 go build ./...`) and passes `go test ./internal/mirror ./internal/receiver` on a clean `git archive` copy.
 
@@ -97,3 +101,28 @@ Independent security-auditor review on a clean `git archive HEAD` copy.
 **Round 2** (revised patch after removing the rejected SEC-001 hunks): all remaining hunks RESOLVES; SEC-001 recorded as needs manual remediation above. The reviewer confirmed no raw credential appears in the shareable patch and that the patched tree builds and passes `go test ./internal/mirror ./internal/receiver`. The finding comments were then moved above each file header so both `patch -p1` and `git apply --check` accept the patch (both verified).
 
 **Round 2 operational note (SEC-003)**: `go.mod` declares a minimum (`go 1.26.11`), not a pinned download. Under the default `GOTOOLCHAIN=auto` and in CI (`go-version-file: backend/go.mod`, both workflows) the patched toolchain is selected automatically; a host with `GOTOOLCHAIN=local` and an older Go fails closed with a clear version error rather than silently building the vulnerable stdlib.
+
+## Round 2 — remaining findings implemented in the tree (2026-11-22)
+
+An independent security-auditor re-reviewed the full working-tree diff (55 KB, 20 files) after the round-1 patch was applied. Verdicts:
+
+| ID | Verdict | Change |
+|---|---|---|
+| SEC-001 | **PARTIAL — remains needs-manual** | Pair-verify gate (403), sender-IP + stream-ID binding (8 s window), 4 s half-open reap, stale-only replacement, per-sender audio ownership, cleanup on teardown/disconnect. Residual: pair-verify proves possession of a self-selected key, not owner approval; a LAN peer can still pair, refresh a pending window, or replace a sender idle ≥4 s. A PIN/allowlist is still required for full remediation. Live-iPhone validation of reconnect/screen-lock is still owed. |
+| SEC-005 | **RESOLVES** | `ct`/`spf` logged with `%q`. |
+| SEC-006 | **RESOLVES** | `Find()` no longer consults PATH/CWD; only override, exe-adjacent dir, verified cache. Dependent DLL lookup already restricted by `LoadLibraryEx`. CI exports `MIRRPANE_FFMPEG_DIR` for tests. |
+| SEC-007 | **RESOLVES** | Host + Origin validation; `Origin: null` rejected after review (it is the sandboxed/data: CSRF vector); `Vary: Origin` added. |
+| SEC-008 | **RESOLVES** | New identities use `crypto/rand`; `PairingID` is now a random per-install UUID so two copies on one machine cannot share an identity with different keys. |
+| SEC-009 | **PARTIAL (Windows ACL)** | Atomic temp+rename and 0600 mode; on Windows `os.Chmod` does not restrict other local users — a DPAPI/DACL follow-up remains. |
+| SEC-012 | **RESOLVES** | RTSP method/target/protocol logged with `%q`. |
+| SEC-013 | **RESOLVES** | `/stop` requires a loopback peer; LAN gets 403, `/info` stays LAN-accessible. |
+
+Verification: full `CGO_ENABLED=0` build/vet/test and `-race` on receiver, mirror, pairing, audio, ipc, config, ffmpeg pass under Go 1.26.11.
+
+### Tracked follow-ups (non-blocking, from the review)
+
+- **Live-device validation of SEC-001**: reconnect after network change, screen lock/unlock, audio-only and video-only setups, dual-stack address families.
+- **Windows ACL for `config.json`** (SEC-009 / MP-04): DPAPI or an explicit current-user DACL; Windows tests assert effective ACL, not `Mode().Perm()`.
+- **Per-session locking** (MP-05): move crypto work off the receiver-wide mutex and rate-limit pairing per source to reduce a LAN CPU/DoS vector.
+- **Address-family tolerance** (MP-06): a sender whose mirror TCP source differs from its RTSP peer (IPv6 privacy rotation, dual-stack) is rejected; consider admitting any peer while a pending setup exists and committing ownership on the first valid frame.
+- **Control-close grace** (MP-07): avoid dropping a healthy mirror stream when a control connection closes during an IP-changing reconnect.

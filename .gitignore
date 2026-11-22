@@ -25,3 +25,4 @@ frontend/packages/**/windows/flutter/ephemeral/
 # OS / Editor
 .DS_Store
 Thumbs.db
+legacy/
