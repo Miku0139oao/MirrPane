@@ -1,6 +1,6 @@
 module github.com/miku0139/airplay-go/backend
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/ebitengine/purego v0.11.3
