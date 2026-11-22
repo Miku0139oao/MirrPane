@@ -6,7 +6,7 @@
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **最新版本**：`v0.3.1`
+- **最新版本**：`v0.3.4`
 
 ---
 
@@ -15,8 +15,11 @@
 - **硬體加速低延遲解碼**：透過 FFmpeg **D3D11VA** 進行 H.264 硬體加速解碼，採用直通式 Annex-B access unit 管線；不支援硬解的環境可退回 CPU 軟體解碼，也可在設定中指定軟解。
 - **零 CGO Go 後端**：以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 MinGW 或 C 開發標頭檔。
 - **共享記憶體影格渲染**：後端將 RGBA 影格發布至 Windows 共享記憶體（`Local\YingpingFrames`），透過 3-slot mailbox 與事件喚醒機制，由原生 C++ 橋接（`yingping_frames`）提供 Flutter 紋理，省去跨程序影像序列化。
-- **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔抗抖動緩衝（超低延遲 `30 ms` / 標準平衡 `40 ms` / 弱網穩定 `60 ms`）。
-- **自動化 FFmpeg 管理**：支援環境自動偵測與 SHA256 驗證下載，開箱即用。
+- **直寫共享記憶體與閒置節流**：色彩轉換（swscale）直接寫入已取得的共享記憶體 slot，免去每幀一次整幀複製；當 UI 最小化或停止取幀超過一秒時，暫停下載、轉換與發佈（仍持續解碼參考幀），並以每秒一次的探測幀保留喚醒能力。
+- **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔抗抖動緩衝（超低延遲 `30 ms` / 標準平衡 `40 ms` / 弱網穩定 `60 ms`）；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
+- **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
+- **自動化 FFmpeg 管理**：固定上游建置版本（含 SHA256 驗證與 ABI 檢查），首次啟動可自動偵測、續傳下載並安裝；DLL 只從明確的信任位置載入，不搜尋 `PATH` 或工作目錄。
+- **安全強化**：串流 setup 需先完成 pair-verify、鏡像連線綁定來源 IP 與串流識別碼、AES 金鑰不再寫入日誌、HEVC 參數解析具邊界檢查、Go 1.26.11、本機 API 具 Host/Origin 檢查且 `/stop` 僅限 loopback。細節與殘留風險見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md)。
 - **綠色免安裝**：設定檔（`config.json`）與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔。
 
 ---
@@ -79,9 +82,10 @@ MirrPane/
 │   ├── windows/                # Flutter Windows 平台原生工程與 CMake 設定
 │   └── pubspec.yaml
 ├── scripts/
-│   ├── fetch-ffmpeg.ps1        # 偵測或下載最新版 Windows x64 FFmpeg shared build (SHA256)
+│   ├── fetch-ffmpeg.ps1        # 偵測或下載固定版本 Windows x64 FFmpeg shared build (SHA256)
 │   └── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
 ├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
+├── analysis/                   # 安全掃描報告與修補 patch（MirrPane/）
 ├── LICENSE                     # GPL-3.0 授權文件
 ├── README.md                   # 專案說明文件
 ├── README.en.md                # 英文版專案說明
@@ -92,7 +96,7 @@ MirrPane/
 
 ## 快速使用
 
-1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.3.1`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
+1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.3.4`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
 2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
 4. 雙擊視窗或按下 `F11` 可切換全螢幕；介面內建進階設定分頁（一般設定、連線資訊、即時統計、配對重設等）與快捷鍵操作。
@@ -103,8 +107,8 @@ MirrPane/
 
 ### 環境需求
 
-- **Go**：`1.26+`
-- **Flutter**：`3.47+`（Dart SDK `^3.13.5`）
+- **Go**：`1.26.11+`（需包含已修補的標準庫；`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
+- **Flutter**：`3.47+`（Dart SDK `^3.13.5`；CI 固定 3.47.7）
 - **建置工具**：Visual Studio C++ Build Tools、CMake、PowerShell
 
 ### 建置步驟
@@ -112,15 +116,18 @@ MirrPane/
 1. **下載 FFmpeg 共享函式庫**（於專案根目錄執行，自動驗證 SHA256）：
 
    ```powershell
-   .\scripts\fetch-ffmpeg.ps1
+   .\scripts\fetch-ffmpeg.ps1 -Pinned
    ```
 
 2. **建置與測試 Go 後端**（從專案根目錄切換至 `backend/`，完成後返回）：
 
    ```powershell
    $env:CGO_ENABLED = '0'
+   # 讓測試找到 repo 內的固定版 FFmpeg（Find 不再搜尋工作目錄/PATH）
+   $env:MIRRPANE_FFMPEG_DIR = (Resolve-Path third_party\ffmpeg\bin).Path
    cd backend
    go build ./...
+   go vet ./...
    go test ./...
    cd ..
    ```
@@ -163,12 +170,11 @@ MirrPane/
 
 ### FFmpeg 搜尋順序
 
-後端會依序從以下位置尋找 FFmpeg 共享函式庫（`.dll`），若未找到會在首次啟動時自動下載，也可透過 `backend/cmd/ffmpeg-setup` 或 `scripts/fetch-ffmpeg.ps1` 取得：
+後端只從明確的信任位置尋找固定版 FFmpeg 共享函式庫（`.dll`），**不會**搜尋 `PATH` 或目前工作目錄（避免 DLL 劫持）。若未找到，首次啟動會自動下載並驗證；也可透過 `backend/cmd/ffmpeg-setup` 或 `scripts/fetch-ffmpeg.ps1 -Pinned` 預先取得：
 
-1. 環境變數 `MIRRPANE_FFMPEG_DIR` 指定路徑
-2. 執行檔所在目錄及底下的 `ffmpeg/` 資料夾與快取
-3. 專案目錄下的 `third_party/ffmpeg/`
-4. 系統 `ffmpeg.exe` 所在目錄與環境變數 `PATH`
+1. 環境變數 `MIRRPANE_FFMPEG_DIR` 指定路徑（權威來源；路徑錯誤會直接報錯，不會退回其他安裝）
+2. 執行檔所在目錄、其下的 `ffmpeg/` 資料夾，以及該 `ffmpeg/` 內的已驗證快取
+3. （開發用）以 `MIRRPANE_FFMPEG_DIR` 明確指向 repo 的 `third_party/ffmpeg/`；測試與 CI 皆採此方式
 
 需使用相容的 Windows x64 shared build；僅有靜態連結的 `ffmpeg.exe` 無法提供所需 DLL。可攜版已附帶共享函式庫，可離線啟動。支援的 DLL 版本與 ABI 維護方式，請見 [第三方函式庫說明](third_party/README.md)。
 
@@ -178,6 +184,16 @@ MirrPane/
 
 - MirrPane 會優先選擇具備 IPv4 Gateway 的 Ethernet / Wi-Fi 區網介面（包含 Hyper-V 外部交換器），並主動避開 TUN 介面、`198.18.0.0/15` 保留網段與 CGNAT 網段。
 - 若仍無法發現裝置，請確認電腦與手機位於同一區網、Windows 防火牆允許 `airplayd` 與區域網路 mDNS（UDP 5353）通訊；亦可暫時停用 VPN 的 TUN 模式協助排錯。
+
+---
+
+## 安全性
+
+2026-11-22 完成一輪獨立安全掃描與修補（5 類 finder、逐項對抗式驗證，誤報率 44%）。本版包含：
+
+- **已修補**：串流金鑰不再寫入日誌；HEVC 參數集短封包不再能觸發 panic；Go 1.26.11（消除 20 個可達標準庫 CVE）；FFmpeg DLL 僅從信任位置載入；本機 API 驗證 `Host`/`Origin`（含拒絕 `Origin: null`）；`POST /stop` 僅限 loopback；RTSP 日誌欄位轉義；新安裝使用 CSPRNG 金鑰與隨機 `PairingID`，`config.json` 以 0600 寫入。
+- **已強化但仍有殘留**：`/setup` 需完成 pair-verify，鏡像連線綁定來源 IP 與串流識別碼，半開連線 4 秒回收，音訊金鑰僅供擁有者；但 legacy pair-verify 只證明對方持有自選金鑰，並非使用者授權，完整的 PIN／allowlist 信任政策仍待實作。詳見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md) 的 SEC-001 與後續追蹤清單。
+- **回報**：若發現安全性問題，請透過 GitHub 的 *Security → Report a vulnerability* 私下回報，避免公開 issue。
 
 ---
 
