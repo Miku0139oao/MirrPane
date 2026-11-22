@@ -16,7 +16,7 @@
 - **零 CGO Go 後端**：以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 MinGW 或 C 開發標頭檔。
 - **共享記憶體影格渲染**：後端將 RGBA 影格發布至 Windows 共享記憶體（`Local\YingpingFrames`），透過 3-slot mailbox 與事件喚醒機制，由原生 C++ 橋接（`yingping_frames`）提供 Flutter 紋理，省去跨程序影像序列化。
 - **直寫共享記憶體與閒置節流**：色彩轉換（swscale）直接寫入已取得的共享記憶體 slot，免去每幀一次整幀複製；當 UI 最小化或停止取幀超過一秒時，暫停下載、轉換與發佈（仍持續解碼參考幀），並以每秒一次的探測幀保留喚醒能力。
-- **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔抗抖動緩衝（超低延遲 `30 ms` / 標準平衡 `40 ms` / 弱網穩定 `60 ms`）；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
+- **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔延遲／抗抖動設定（低延遲、平衡、穩定），並以較大的環形緩衝吸收 Wi-Fi 爆量；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
 - **自動化 FFmpeg 管理**：固定上游建置版本（含 SHA256 驗證與 ABI 檢查），首次啟動可自動偵測、續傳下載並安裝；DLL 只從明確的信任位置載入，不搜尋 `PATH` 或工作目錄。
 - **安全強化**：串流 setup 需先完成 pair-verify、鏡像連線綁定來源 IP 與串流識別碼、AES 金鑰不再寫入日誌、HEVC 參數解析具邊界檢查、Go 1.26.11、本機 API 具 Host/Origin 檢查且 `/stop` 僅限 loopback。細節與殘留風險見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md)。
