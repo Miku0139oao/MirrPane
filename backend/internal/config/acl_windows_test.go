@@ -52,12 +52,22 @@ func assertProtectedUserAndSystemDACL(t *testing.T, path string) {
 		t.Fatalf("unexpected DACL state: defaulted=%v dacl=%v", defaulted, dacl)
 	}
 
+	// Windows renders some SIDs as SDDL aliases (for example the built-in
+	// Administrator as "LA"), so compare against the rendering Windows itself
+	// produces for the expected SID rather than the numeric string.
+	renderACE := func(ace string) string {
+		sd, err := windows.SecurityDescriptorFromString("D:P" + ace)
+		if err != nil {
+			t.Fatalf("render ACE %s: %v", ace, err)
+		}
+		return strings.TrimPrefix(sd.String(), "D:P")
+	}
 	wantACEs := []string{
-		"(A;;FA;;;" + userSID + ")",
-		"(A;;FA;;;SY)",
+		renderACE("(A;;FA;;;" + userSID + ")"),
+		renderACE("(A;;FA;;;SY)"),
 	}
 	if userSID == localSystemSID {
-		wantACEs = []string{"(A;;FA;;;SY)"}
+		wantACEs = []string{renderACE("(A;;FA;;;SY)")}
 	}
 	if int(dacl.AceCount) != len(wantACEs) {
 		t.Fatalf("AceCount = %d, want %d (sddl=%s)", dacl.AceCount, len(wantACEs), sd.String())
