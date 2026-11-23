@@ -80,8 +80,12 @@ type Receiver struct {
 	configuredAt time.Time
 	lastFrame    time.Time
 
-	lastSeq  uint16
-	haveLast bool
+	lastSeq     uint16
+	haveLast    bool
+	syncClock   rtpSync
+	lateDropped uint64 // cumulative subset of dropped, logged at a sampled rate
+	lastLateLog time.Time
+	now         func() time.Time // nil uses the monotonic local clock; test seam
 
 	// decMu serializes packet processing and all decoder calls/replacement.
 	// Lock order is decMu before mu; never hold mu while calling the decoder.
@@ -150,6 +154,7 @@ func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
 	r.iv = append([]byte(nil), iv...)
 	r.chosen = -1
 	r.haveLast = false
+	r.syncClock = rtpSync{}
 	r.configuredAt, r.lastFrame = time.Now(), time.Time{}
 	r.mu.Unlock()
 	var asc []byte
@@ -197,6 +202,7 @@ func (r *Receiver) resetStream(clearKeys bool) {
 	}
 	r.mu.Lock()
 	r.haveLast = false
+	r.syncClock = rtpSync{}
 	r.configuredAt, r.lastFrame = time.Time{}, time.Time{}
 	if clearKeys {
 		r.keys, r.iv = nil, nil
@@ -220,11 +226,20 @@ func (r *Receiver) Busy() bool {
 	return len(r.keys) > 0 && len(r.iv) == aes.BlockSize && time.Since(last) < 4*time.Second
 }
 
-// Stats reports packet and frame counts.
+// Stats reports packet and frame counts. Dropped includes duplicates,
+// out-of-order packets and packets past their RTP playout deadline.
 func (r *Receiver) Stats() (received, dropped, decoded uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.packets, r.dropped, r.decoded
+}
+
+// LateDropped reports how many of the dropped packets arrived after their RTP
+// playout deadline, which is what a sender's catch-up burst looks like.
+func (r *Receiver) LateDropped() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lateDropped
 }
 
 // Close releases the sockets and the decoder.
@@ -283,6 +298,10 @@ func (r *Receiver) handleSync(pkt []byte) {
 	rtp := binary.BigEndian.Uint32(pkt[4:8])
 	ntp := binary.BigEndian.Uint64(pkt[8:16])
 	next := binary.BigEndian.Uint32(pkt[16:20])
+	receivedAt := r.clockNow()
+	r.mu.Lock()
+	r.syncClock = rtpSync{rtp: rtp, ntp: ntp, localTime: receivedAt, valid: true}
+	r.mu.Unlock()
 	if r.handlers.OnSync != nil {
 		r.handlers.OnSync(rtp, ntp, next)
 	}
@@ -314,7 +333,8 @@ func (r *Receiver) handlePacket(pkt []byte) {
 	}
 
 	seq := binary.BigEndian.Uint16(pkt[2:4])
-	frame, err := r.decodePacket(seq, payload)
+	rtp := binary.BigEndian.Uint32(pkt[4:8])
+	frame, err := r.decodePacket(seq, rtp, payload)
 	if err != nil {
 		if err != decode.ErrNoFrame {
 			r.log.Printf("audio: decode: %v", err)
@@ -328,7 +348,7 @@ func (r *Receiver) handlePacket(pkt []byte) {
 
 // decodePacket keeps stream state, decryption and decoding together so a reset
 // cannot move a packet decrypted with the old keys into the new decoder state.
-func (r *Receiver) decodePacket(seq uint16, payload []byte) (*decode.AudioFrame, error) {
+func (r *Receiver) decodePacket(seq uint16, rtp uint32, payload []byte) (*decode.AudioFrame, error) {
 	r.decMu.Lock()
 	defer r.decMu.Unlock()
 	if r.closed {
@@ -344,6 +364,26 @@ func (r *Receiver) decodePacket(seq uint16, payload []byte) (*decode.AudioFrame,
 	}
 	r.lastSeq = seq
 	r.haveLast = true
+	now := r.clockNow()
+	if expected, fresh := r.syncClock.expected(now); fresh {
+		delta := int32(rtp - expected)
+		if delta < -latePacketMarginTicks {
+			r.dropped++
+			r.lateDropped++
+			count := r.lateDropped
+			logDrop := count == 1 || now.Sub(r.lastLateLog) >= lateDropLogInterval
+			if logDrop {
+				r.lastLateLog = now
+			}
+			syncAge := now.Sub(r.syncClock.localTime)
+			r.mu.Unlock()
+			if logDrop {
+				r.log.Printf("audio: late RTP dropped (lateDropped=%d, behind=%.1f ms, syncAge=%v)",
+					count, float64(-int64(delta))*1000/rtpClockRate, syncAge)
+			}
+			return nil, nil
+		}
+	}
 	r.mu.Unlock()
 
 	plain, ok := r.decrypt(payload)

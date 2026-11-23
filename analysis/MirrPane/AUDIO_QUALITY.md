@@ -156,3 +156,37 @@ is set: [waveOutWrite](https://learn.microsoft.com/en-us/windows/win32/api/mmeap
 Playback-position verification uses the native
 [waveOutGetPosition](https://learn.microsoft.com/en-us/windows/win32/multimedia/retrieving-the-current-playback-position)
 API, independently of ring statistics.
+
+## Late-packet drop at the RTP deadline (2026-11-24)
+
+After the waveOut throughput fix the ring stayed balanced (underruns near zero)
+but `audioTrims` still grew about 1.45/s on a live 1440p session, with
+occupancy oscillating between 100 and 200 ms. The sender stalls briefly and
+then delivers a catch-up burst of already-stale audio in one UDP read; those
+packets were queued even though their playout time had passed, filling the ring
+until a hard trim spliced the stream.
+
+`backend/internal/audio/jitter.go` now keeps the newest RTP/NTP sync as a local
+anchor (`rtp`, `ntp`, receipt time) and extrapolates the sender's playout
+timestamp as `syncRTP + elapsed × 44,100/s` using the monotonic receipt clock.
+The NTP value is retained but never needed: extrapolation uses local elapsed
+time, so host and sender wall clocks need not agree and no NTP epoch conversion
+is performed. Data packets older than that estimate by more than a 40 ms margin
+are counted and dropped before decryption and decoding, which also keeps them
+out of the decoder's timing state. The comparison uses `int32(rtp-expected)`,
+so it wraps with the 32-bit RTP clock. The check fails open: without a sync at
+most 5 s old (such a sync is re-anchored every ~1 s by the sender) everything
+is accepted exactly as before. Sequence dedupe still runs first, and the
+sampled log line reports the count, how far behind the packet was, and the age
+of the sync anchor. `audioLateDropped` in `/api/state` exposes the cumulative
+count; `audioTrims` should stop increasing, occupancy should settle near the
+target, and underruns should not rise because only audio that would otherwise
+be trimmed is discarded.
+
+Residual risk: the 40 ms margin assumes the sender's nominal RTP clock matches
+its arrival timeline within that window. A sender whose sync mapping is
+deliberately offset ahead of its packets (large internal buffering) would have
+its early packets treated as late; the 5 s freshness window and fail-open
+behavior bound the damage, but a device that emits sync at a fixed offset from
+playout could see unnecessary drops. This is not verified against a real
+Apple sender's sync schedule beyond the measured session.

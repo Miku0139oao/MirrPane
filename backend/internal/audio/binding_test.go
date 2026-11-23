@@ -33,14 +33,14 @@ func TestAudioOwnershipRequiresDecodedFrames(t *testing.T) {
 	if r.Busy() {
 		t.Fatal("unused setup kept audio reserved indefinitely")
 	}
-	if _, err := r.decodePacket(1, []byte{0x8c}); err != decode.ErrNoFrame {
+	if _, err := r.decodePacket(1, 0, []byte{0x8c}); err != decode.ErrNoFrame {
 		t.Fatalf("incomplete audio decode = %v", err)
 	}
 	if r.Busy() || !r.lastFrame.IsZero() {
 		t.Fatal("packet without decoded audio refreshed liveness")
 	}
 	decoded = true
-	if frame, err := r.decodePacket(2, []byte{0x8c}); err != nil || frame == nil {
+	if frame, err := r.decodePacket(2, 0, []byte{0x8c}); err != nil || frame == nil {
 		t.Fatalf("decoded audio = %v, %v", frame, err)
 	}
 	if !r.Busy() || r.lastFrame.IsZero() {

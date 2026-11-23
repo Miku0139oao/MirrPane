@@ -53,6 +53,8 @@ func (c *trustResetControl) PendingSenders() []receiver.PendingSender {
 	return append([]receiver.PendingSender(nil), c.pending...)
 }
 
+func (c *trustResetControl) AudioLateDropped() uint64 { return 0 }
+
 func (c *trustResetControl) ApproveSender(fingerprint string) error {
 	if c.approvalErr != nil {
 		return c.approvalErr

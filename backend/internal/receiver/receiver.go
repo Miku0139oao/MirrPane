@@ -61,6 +61,7 @@ type audioReceiver interface {
 	ResetStream()
 	ResetKey()
 	Stats() (uint64, uint64, uint64)
+	LateDropped() uint64
 	Close()
 }
 
@@ -205,6 +206,15 @@ func (r *Receiver) AudioStats() (received, dropped, decoded uint64) {
 		return 0, 0, 0
 	}
 	return r.audioRx.Stats()
+}
+
+// AudioLateDropped reports the part of AudioStats' dropped count that was
+// rejected for missing its playout deadline.
+func (r *Receiver) AudioLateDropped() uint64 {
+	if r.audioRx == nil {
+		return 0
+	}
+	return r.audioRx.LateDropped()
 }
 
 // Close releases every listener.

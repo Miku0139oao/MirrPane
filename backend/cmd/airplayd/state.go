@@ -110,6 +110,7 @@ type apiState struct {
 	AudioUnderruns  uint64  `json:"audioUnderruns"`
 	AudioHighWater  float64 `json:"audioHighWaterMs"`
 	AudioTrims      uint64  `json:"audioTrims"`
+	AudioLateDrop   uint64  `json:"audioLateDropped"`
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -132,6 +133,7 @@ type receiverControl interface {
 	PendingSenders() []receiver.PendingSender
 	ApproveSender(string) error
 	RejectSender(string) error
+	AudioLateDropped() uint64
 }
 
 // apiHandler serves the localhost endpoints the app polls and calls. It is
@@ -219,6 +221,7 @@ func apiHandler(
 			AudioTrims:      audioStats.TrimCount,
 		}
 		if recv != nil {
+			body.AudioLateDrop = recv.AudioLateDropped()
 			if pending := recv.PendingSenders(); len(pending) > 0 {
 				body.PendingSender = &pending[0]
 			}
