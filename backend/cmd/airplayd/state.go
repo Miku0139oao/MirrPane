@@ -106,6 +106,7 @@ type apiState struct {
 	ConsumerAgeMs   float64 `json:"consumerAgeMs"`
 	ConsumerAdopted uint64  `json:"consumerAdopted"`
 	HWMode          string  `json:"hwMode"`
+	GPUZeroCopy     bool    `json:"gpuZeroCopy"`
 	AudioOccupancy  float64 `json:"audioOccupancyMs"`
 	AudioUnderruns  uint64  `json:"audioUnderruns"`
 	AudioHighWater  float64 `json:"audioHighWaterMs"`
@@ -215,6 +216,7 @@ func apiHandler(
 			ConsumerAgeMs:   stats.ConsumerAgeMs,
 			ConsumerAdopted: stats.ConsumerAdopted,
 			HWMode:          decoderMode,
+			GPUZeroCopy:     stats.GPUZeroCopy,
 			AudioOccupancy:  audioStats.OccupancyMs,
 			AudioUnderruns:  audioStats.UnderrunCount,
 			AudioHighWater:  audioStats.HighWaterMs,

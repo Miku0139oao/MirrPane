@@ -44,11 +44,20 @@ const (
 	SlotAlign      = 0x10000
 )
 
-// Pixel formats. The Flutter pixel-buffer path uploads RGBA, so that is what
-// the producer writes.
+// Pixel formats. The Flutter pixel-buffer path uploads RGBA, while the GPU
+// surface path shares a DXGI B8G8R8A8_UNORM texture handle.
 const (
-	FormatRGBA uint32 = 1
-	FormatBGRA uint32 = 2
+	FormatRGBA     uint32 = 1
+	FormatBGRA     uint32 = 2
+	FormatDXGIBGRA uint32 = 3
+)
+
+// Consumer capability flags stamped into control.ConsumerFlags by the UI.
+// Readers opt in to GPU slots and can request CPU RGBA if importing fails.
+const (
+	ConsumerFlagAttached   uint32 = 1 << 0
+	ConsumerFlagNoGPUShare uint32 = 1 << 1
+	ConsumerFlagGPUShare   uint32 = 1 << 2
 )
 
 // Claim states for a slot.
@@ -60,18 +69,18 @@ const (
 
 // slotEntry is the per-slot control block, exactly 64 bytes.
 type slotEntry struct {
-	Seq       uint64 // 0x00
-	Claim     uint32 // 0x08
-	Flags     uint32 // 0x0C
-	FrameSeq  uint64 // 0x10
-	Width     uint32 // 0x18
-	Height    uint32 // 0x1C
-	Stride    uint32 // 0x20
-	Format    uint32 // 0x24
-	WriteQPC  uint64 // 0x28
-	WriterPID uint32 // 0x30
-	Reserved0 uint32 // 0x34
-	Reserved1 uint64 // 0x38
+	Seq          uint64 // 0x00
+	Claim        uint32 // 0x08
+	Flags        uint32 // 0x0C
+	FrameSeq     uint64 // 0x10
+	Width        uint32 // 0x18
+	Height       uint32 // 0x1C
+	Stride       uint32 // 0x20
+	Format       uint32 // 0x24
+	WriteQPC     uint64 // 0x28
+	WriterPID    uint32 // 0x30
+	Reserved0    uint32 // 0x34
+	SharedHandle uint64 // 0x38 (DXGI shared HANDLE when Format == FormatDXGIBGRA)
 }
 
 // control is the 4 KiB control page.
@@ -95,7 +104,7 @@ type control struct {
 	HeartbeatQPC   uint64 // 0x058
 	FramePTS       uint64 // 0x060
 	Dropped        uint64 // 0x068
-	Reserved0      uint64 // 0x070
+	AdapterLUID    uint64 // 0x070 (producer DXGI adapter LUID when GPU sharing is active)
 	Reserved1      uint64 // 0x078
 	ConsumerPID    uint32 // 0x080
 	ConsumerFlags  uint32 // 0x084
@@ -267,12 +276,18 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 		p.seq = prevPublish >> 2
 		if cur := int(prevPublish & 0x3); cur < SlotCount {
 			p.current = cur
+			if prevPublish != 0 && p.ctrl.Slots[cur].Format == FormatDXGIBGRA {
+				// The previous producer owned the handle. Keep the sequence
+				// monotonic, but do not announce the retired GPU texture again.
+				atomic.StoreUint64(&p.ctrl.Publish, 0)
+			}
 		}
 		for i := 0; i < SlotCount; i++ {
 			atomic.CompareAndSwapUint32(&p.ctrl.Slots[i].Claim, claimWriter, claimFree)
 		}
 		atomic.AddUint64(&p.ctrl.Generation, 1)
 		atomic.StoreUint64(&p.ctrl.Dropped, 0)
+		atomic.StoreUint64(&p.ctrl.AdapterLUID, 0)
 		p.ctrl.Width = uint32(width)
 		p.ctrl.Height = uint32(height)
 		p.ctrl.Stride = uint32(width * 4)
@@ -380,6 +395,17 @@ func (p *Publisher) ConsumerStats() ConsumerStats {
 		ConsumerAgeNanos: age,
 		RawDropped:       atomic.LoadUint64(&p.ctrl.Dropped),
 	}
+}
+
+// ConsumerAllowsGPUShare requires an attached reader that understands GPU slots.
+// Older readers of the same mapping format continue to receive CPU pixels.
+func (p *Publisher) ConsumerAllowsGPUShare() bool {
+	if p.ctrl == nil {
+		return false
+	}
+	const required = ConsumerFlagAttached | ConsumerFlagGPUShare
+	const mask = required | ConsumerFlagNoGPUShare
+	return atomic.LoadUint32(&p.ctrl.ConsumerFlags)&mask == required
 }
 
 // ConsumerGate decides whether a decoded picture is worth downloading from the
@@ -693,6 +719,14 @@ func (p *Publisher) Acquire(width, height int) (*Claim, error) {
 	}, nil
 }
 
+// Index reports the claimed slot index (0..SlotCount-1), or -1 if nil.
+func (c *Claim) Index() int {
+	if c == nil {
+		return -1
+	}
+	return c.index
+}
+
 // Pixels is the mapped buffer to render the picture into: height rows of
 // rowStride bytes. Only the first width*4 bytes of each row are visible to the
 // reader.
@@ -702,21 +736,35 @@ func (c *Claim) Pixels() []byte { return c.pixels }
 // width*4, which is the contract the C++ reader expects.
 func (c *Claim) Stride() int { return c.rowStride }
 
-// Commit fills the slot metadata, stores the publish word and wakes the reader.
-// It must be called after the pixels are in place. It is a no-op once the claim
-// has been settled.
+// Commit fills the slot metadata for a CPU RGBA picture, stores the publish
+// word and wakes the reader. It must be called after the pixels are in place.
+// It is a no-op once the claim has been settled.
 //
 // Ordering: the pixel and metadata writes are sequenced before the atomics that
 // release the slot and store Publish. The slot is released first, so a reader
 // that sees the new word can always claim it and a reader still holding the
 // old word can never claim this slot early.
 func (c *Claim) Commit() {
+	c.commit(FormatRGBA, 0, 0)
+}
+
+// CommitGPU publishes a DXGI shared B8G8R8A8_UNORM texture for this slot
+// without writing CPU pixels into shared memory. It must be called only after
+// GPU rendering into the slot's shared texture has completed.
+func (c *Claim) CommitGPU(sharedHandle uintptr, adapterLUID uint64) {
+	c.commit(FormatDXGIBGRA, uint64(sharedHandle), adapterLUID)
+}
+
+func (c *Claim) commit(format uint32, sharedHandle uint64, adapterLUID uint64) {
 	if c == nil || c.done {
 		return
 	}
 	c.done = true
 	p := c.pub
 	start := nowQPC()
+
+	atomic.StoreUint64(&p.ctrl.AdapterLUID, adapterLUID)
+	atomic.StoreUint32(&p.ctrl.PixelFormat, format)
 
 	slot := &p.ctrl.Slots[c.index]
 	p.seq++
@@ -725,7 +773,8 @@ func (c *Claim) Commit() {
 	slot.Width = uint32(c.width)
 	slot.Height = uint32(c.height)
 	slot.Stride = uint32(c.rowStride)
-	slot.Format = FormatRGBA
+	slot.Format = format
+	slot.SharedHandle = sharedHandle
 	slot.WriterPID = p.ctrl.ProducerPID
 	slot.WriteQPC = uint64(nowQPC())
 
@@ -768,20 +817,32 @@ type Picture struct {
 	Seq           uint64
 }
 
-// Latest copies the newest published picture out of its slot. ok is false
-// before the first picture. The caller must serialise this with Publish,
-// Acquire, Commit and Cancel (the frame sink's mutex does that), so the copy
-// cannot race a claim.
-func (p *Publisher) Latest() (Picture, bool) {
+// LatestSlot reports the slot index and pixel format of the newest published
+// picture without copying pixels. ok is false before the first picture.
+// As with Latest, the caller must serialise this with writes to the publisher.
+func (p *Publisher) LatestSlot() (slotIndex int, format uint32, ok bool) {
 	if p.ctrl == nil {
-		return Picture{}, false
+		return 0, 0, false
 	}
 	publish := atomic.LoadUint64(&p.ctrl.Publish)
 	if publish == 0 {
-		return Picture{}, false
+		return 0, 0, false
 	}
 	i := int(publish & 0x3)
 	if i >= SlotCount {
+		return 0, 0, false
+	}
+	return i, p.ctrl.Slots[i].Format, true
+}
+
+// Latest copies the newest published CPU RGBA picture out of its slot. ok is
+// false before the first picture or when the newest picture is a GPU-resident
+// shared texture (FormatDXGIBGRA). The caller must serialise this with Publish,
+// Acquire, Commit and Cancel (the frame sink's mutex does that), so the copy
+// cannot race a claim.
+func (p *Publisher) Latest() (Picture, bool) {
+	i, format, ok := p.LatestSlot()
+	if !ok || format != FormatRGBA {
 		return Picture{}, false
 	}
 	slot := &p.ctrl.Slots[i]
@@ -796,17 +857,18 @@ func (p *Publisher) Latest() (Picture, bool) {
 	src := unsafe.Slice((*byte)(unsafe.Add(p.slots, uintptr(i)*uintptr(p.stride))), need)
 	out := make([]byte, need)
 	copy(out, src)
-	return Picture{Width: width, Height: height, Stride: stride, Pixels: out, Seq: publish >> 2}, true
+	return Picture{Width: width, Height: height, Stride: stride, Pixels: out, Seq: slot.FrameSeq}, true
 }
 
-// claimSlot CASes one of the two slots that are not currently published into the
-// writer state. With three slots and one reader that holds at most one, a free
-// slot always exists; the loop is belt-and-braces.
+// claimSlot leaves the published picture intact while the next one is prepared.
 func (p *Publisher) claimSlot() int {
-	for attempt := 0; attempt < SlotCount; attempt++ {
-		i := (p.current + 1 + attempt) % SlotCount
-		var expected uint32 = claimFree
-		if atomic.CompareAndSwapUint32(&p.ctrl.Slots[i].Claim, expected, claimWriter) {
+	slots := SlotCount
+	if atomic.LoadUint64(&p.ctrl.Publish) != 0 {
+		slots--
+	}
+	for offset := 1; offset <= slots; offset++ {
+		i := (p.current + offset) % SlotCount
+		if atomic.CompareAndSwapUint32(&p.ctrl.Slots[i].Claim, claimFree, claimWriter) {
 			return i
 		}
 	}

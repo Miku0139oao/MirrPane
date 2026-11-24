@@ -45,14 +45,7 @@ class FrameBridge {
   static Future<bool> toggleAlwaysOnTop({bool? enable}) async =>
       (await _sendCommand(0x50, flag: enable)) == 1;
 
-  static Future<int> textureId() async {
-    for (var attempt = 0; attempt < 40; attempt++) {
-      final id = await _sendCommand(0x54);
-      if (id >= 0) return id;
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    }
-    return -1;
-  }
+  static Future<int> textureId() => _sendCommand(0x54);
 }
 
 void main() {
@@ -125,6 +118,7 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   late final String _installPath;
   late ReceiverHost _host;
   int _textureId = -1;
+  bool _refreshingTextureId = false;
   int _fps = 0;
   int _lastPresented = -1;
 
@@ -158,12 +152,15 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
       setState(() => _prefs = loaded);
     }
     unawaited(_host.start());
-    unawaited(_openTexture());
+    unawaited(_refreshTextureId());
   }
 
   void _onHostChanged() {
-    if (_audioSynced) return;
     final p = _host.notifier.value.phase;
+    if (p == Phase.live || p == Phase.interrupted) {
+      unawaited(_refreshTextureId());
+    }
+    if (_audioSynced) return;
     if (p != Phase.booting && p != Phase.failed) {
       _audioSynced = true;
       unawaited(_host.setAudio(isMuted: _prefs.muted, volume: _prefs.volume));
@@ -175,7 +172,21 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     unawaited(next.save(_installPath));
   }
 
+  Future<void> _refreshTextureId() async {
+    if (_refreshingTextureId) return;
+    _refreshingTextureId = true;
+    try {
+      final id = await FrameBridge.textureId();
+      if (mounted && id >= 0 && id != _textureId) {
+        setState(() => _textureId = id);
+      }
+    } finally {
+      _refreshingTextureId = false;
+    }
+  }
+
   Future<void> _sampleFps() async {
+    await _refreshTextureId();
     final n = await FrameBridge.presented();
     if (!mounted || n < 0) return;
     if (_lastPresented >= 0 && n >= _lastPresented) {
@@ -197,11 +208,6 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     });
     await _host.start();
     _showToast('接收器已重新啟動');
-  }
-
-  Future<void> _openTexture() async {
-    final id = await FrameBridge.textureId();
-    if (mounted) setState(() => _textureId = id);
   }
 
   Future<void> _toggleFullscreen({bool? enable}) async {

@@ -117,6 +117,9 @@ type Decoder struct {
 	reason       string // why the decoder is in software mode; "" while D3D11VA is configured
 	params       []byte // last SPS/PPS seen, replayed into a rebuilt decoder
 	replayParams bool
+
+	gpu         *d3d11Pool
+	gpuDisabled bool // set when D3D11 VideoProcessor/shared textures are unsupported on current device
 }
 
 // Hardware failure policy. A run of consecutive failed access units while
@@ -330,7 +333,7 @@ func (d *Decoder) attachHardware(codec uintptr) string {
 	}
 }
 
-// rebuild replaces all native state, keeping the last picture and the cached
+// rebuild replaces the FFmpeg state, keeping the last picture and the cached
 // parameter sets, which are replayed into the next access unit. It runs inside
 // a serialized DecodeAccessUnit call, so nothing else can be using the state.
 func (d *Decoder) rebuild(hardware bool) {
@@ -400,6 +403,10 @@ func (d *Decoder) LastImage() *Image {
 
 func (d *Decoder) Close() {
 	d.release()
+	if d.gpu != nil {
+		d.gpu.close()
+		d.gpu = nil
+	}
 	d.pending = nil
 	d.params = nil
 	d.img = Image{}
@@ -414,6 +421,9 @@ func (d *Decoder) release() {
 	d.decoded = false
 	d.frameReady = false
 	d.replayParams = false
+	d.gpuDisabled = false
+	// A previously published texture can remain current while the FFmpeg
+	// decoder recovers. Keep its pool alive for import and on-demand snapshots.
 	if d.scaler != 0 {
 		d.ff.scaleFree(d.scaler)
 		d.scaler = 0
@@ -565,6 +575,69 @@ func (d *Decoder) FrameSize() (width, height int) {
 	return int(d.frame.Width), int(d.frame.Height)
 }
 
+// CanRenderGPU reports whether the received picture currently waiting in the
+// decoder is a D3D11VA hardware surface eligible for zero-copy GPU conversion.
+func (d *Decoder) CanRenderGPU() bool {
+	return d.ctx != nil &&
+		d.frameReady &&
+		d.frame != nil &&
+		d.hardwareFormat != pixelNone &&
+		d.frame.Format == d.hardwareFormat &&
+		d.options.ScaleFilter != "bilinear" &&
+		d.options.ScaleFilter != "bicubic" &&
+		!d.gpuDisabled
+}
+
+// RenderFrameGPU converts the received D3D11VA NV12 picture on the GPU via
+// ID3D11VideoProcessor into slotIndex's DXGI shared B8G8R8A8_UNORM texture and
+// waits for GPU completion. On failure d.frameReady stays true so the caller
+// can fall back to CopyImageTo without losing the decoded picture.
+func (d *Decoder) RenderFrameGPU(slotIndex int) (GPUSurface, error) {
+	if d.ctx == nil {
+		return GPUSurface{}, errors.New("decode: decoder is closed")
+	}
+	if !d.frameReady || d.frame == nil {
+		return GPUSurface{}, errors.New("decode: no received picture")
+	}
+	if slotIndex < 0 || slotIndex >= gpuSlotCount {
+		return GPUSurface{}, fmt.Errorf("decode: invalid GPU slot index %d", slotIndex)
+	}
+	if !d.CanRenderGPU() {
+		return GPUSurface{}, errors.New("decode: GPU zero-copy unavailable for current picture")
+	}
+	if d.gpu == nil {
+		d.gpu = newD3D11Pool()
+	}
+	matrix, full := d.colorConversion()
+	surf, err := d.gpu.renderFrame(d3d11Picture{
+		texture:    (*comObject)(unsafe.Pointer(d.frame.Data[0])),
+		arraySlice: *(*uintptr)(unsafe.Pointer(&d.frame.Data[1])), // FFmpeg stores an integer, not a pointer.
+		width:      d.frame.Width,
+		height:     d.frame.Height,
+		matrix:     matrix,
+		fullRange:  full,
+	}, slotIndex)
+	if err != nil {
+		if !d.gpu.deviceRemoved() {
+			d.gpuDisabled = true
+		}
+		return GPUSurface{}, err
+	}
+	d.frameReady = false
+	d.health.success()
+	return surf, nil
+}
+
+// ReadbackSlotGPU reads back the specified GPU shared slot texture (or the most
+// recently rendered GPU slot when slotIndex < 0) into a CPU RGBA Image for
+// on-demand screenshots (/api/snapshot).
+func (d *Decoder) ReadbackSlotGPU(slotIndex int) (Image, error) {
+	if d.gpu == nil {
+		return Image{}, errors.New("decode: no active GPU surface pool")
+	}
+	return d.gpu.readbackSlotRGBA(slotIndex)
+}
+
 func (d *Decoder) receiveAccessUnit(data []byte) error {
 	d.frameReady = false
 	if d.replayParams {
@@ -667,19 +740,7 @@ func (d *Decoder) copyImageTo(dst []byte, dstStride int) (DecodeTimings, error) 
 	if d.scaler == 0 {
 		return timings, errors.New("decode: allocate color converter")
 	}
-	full := int32(0)
-	if d.options.ColorRange == "full" || (d.options.ColorRange != "limited" && (f.ColorRange == colorFull || f.Format == pixelYUVJ420P)) {
-		full = 1
-	}
-	matrix := int32(matrixDefault)
-	switch f.ColorSpace {
-	case spaceBT709:
-		matrix = matrixBT709
-	case spaceBT2020NCL, spaceBT2020CL:
-		matrix = matrixBT2020
-	case spaceSMPTE170M, spaceBT470BG:
-		matrix = matrixBT601
-	}
+	matrix, full := d.colorConversion()
 	coeff := d.ff.scaleCoefficients(matrix)
 	if ret := d.ff.scaleColorspace(d.scaler, coeff, full, coeff, 1, 0, 1<<16, 1<<16); ret < 0 {
 		return timings, d.ff.error("set color range", ret)
@@ -693,6 +754,25 @@ func (d *Decoder) copyImageTo(dst []byte, dstStride int) (DecodeTimings, error) 
 		return timings, fmt.Errorf("decode: converted %d rows, want %d", rows, src.Height)
 	}
 	return timings, nil
+}
+
+// colorConversion uses the frame metadata and the same defaults in both
+// conversion paths so a CPU fallback preserves the user's color settings.
+func (d *Decoder) colorConversion() (matrix, full int32) {
+	f := d.frame
+	if d.options.ColorRange == "full" || (d.options.ColorRange != "limited" && (f.ColorRange == colorFull || f.Format == pixelYUVJ420P)) {
+		full = 1
+	}
+	matrix = matrixDefault
+	switch f.ColorSpace {
+	case spaceBT709:
+		matrix = matrixBT709
+	case spaceBT2020NCL, spaceBT2020CL:
+		matrix = matrixBT2020
+	case spaceSMPTE170M, spaceBT470BG:
+		matrix = matrixBT601
+	}
+	return matrix, full
 }
 
 // annexBParameterSets returns copies of the H.264 SPS and PPS NAL units (each

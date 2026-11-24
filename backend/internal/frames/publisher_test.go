@@ -39,7 +39,9 @@ func TestControlLayout(t *testing.T) {
 		{"HeartbeatQPC", unsafe.Offsetof(c.HeartbeatQPC), 0x058},
 		{"FramePTS", unsafe.Offsetof(c.FramePTS), 0x060},
 		{"Dropped", unsafe.Offsetof(c.Dropped), 0x068},
+		{"AdapterLUID", unsafe.Offsetof(c.AdapterLUID), 0x070},
 		{"ConsumerPID", unsafe.Offsetof(c.ConsumerPID), 0x080},
+		{"ConsumerFlags", unsafe.Offsetof(c.ConsumerFlags), 0x084},
 		{"ConsumerQPC", unsafe.Offsetof(c.ConsumerQPC), 0x088},
 		{"ConsumerSlot", unsafe.Offsetof(c.ConsumerSlot), 0x090},
 		{"ConsumerAdopted", unsafe.Offsetof(c.ConsumerAdopted), 0x098},
@@ -49,6 +51,10 @@ func TestControlLayout(t *testing.T) {
 		if f.got != f.want {
 			t.Errorf("%s at 0x%03X, want 0x%03X", f.name, f.got, f.want)
 		}
+	}
+	var s slotEntry
+	if got := unsafe.Offsetof(s.SharedHandle); got != 0x38 {
+		t.Errorf("slotEntry.SharedHandle at 0x%02X, want 0x38", got)
 	}
 	slotBase := unsafe.Offsetof(c.Slots)
 	slotSize := unsafe.Sizeof(c.Slots[0])
@@ -449,5 +455,132 @@ func TestPublishReattachesOnRestart(t *testing.T) {
 	}
 	if newSlot == readerSlot {
 		t.Fatalf("p2 overwrote reader-held slot %d", readerSlot)
+	}
+}
+
+func TestCommitGPURoundTripAndConsumerFallbackFlag(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestGPU`, 1920, 1080)
+	if err != nil {
+		t.Skipf("shared memory unavailable: %v", err)
+	}
+	defer p.Close()
+
+	if p.ConsumerAllowsGPUShare() {
+		t.Fatal("GPU sharing enabled before consumer attached")
+	}
+	atomic.StoreUint32(&p.ctrl.ConsumerFlags, ConsumerFlagAttached)
+	if p.ConsumerAllowsGPUShare() {
+		t.Fatal("GPU sharing enabled for legacy consumer")
+	}
+	atomic.StoreUint32(&p.ctrl.ConsumerFlags, ConsumerFlagAttached|ConsumerFlagGPUShare)
+	if !p.ConsumerAllowsGPUShare() {
+		t.Fatal("GPU sharing disabled for capable consumer")
+	}
+
+	c, err := p.Acquire(1280, 720)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	idx := c.Index()
+	const fakeHandle uintptr = 0x12345678
+	const fakeLUID uint64 = 0x00000001_0000abcd
+	c.CommitGPU(fakeHandle, fakeLUID)
+
+	slotIdx, format, ok := p.LatestSlot()
+	if !ok || slotIdx != idx || format != FormatDXGIBGRA {
+		t.Fatalf("LatestSlot = (%d, %d, %v), want (%d, %d, true)", slotIdx, format, ok, idx, FormatDXGIBGRA)
+	}
+	if _, ok := p.Latest(); ok {
+		t.Fatal("Latest() returned CPU pixels for a GPU-only slot")
+	}
+	if got := p.ctrl.Slots[idx].SharedHandle; got != uint64(fakeHandle) {
+		t.Fatalf("SharedHandle = %#x, want %#x", got, fakeHandle)
+	}
+	if got := atomic.LoadUint64(&p.ctrl.AdapterLUID); got != fakeLUID {
+		t.Fatalf("AdapterLUID = %#x, want %#x", got, fakeLUID)
+	}
+
+	// Simulate UI signaling cross-adapter mismatch via ConsumerFlagNoGPUShare.
+	atomic.StoreUint32(&p.ctrl.ConsumerFlags, ConsumerFlagAttached|ConsumerFlagGPUShare|ConsumerFlagNoGPUShare)
+	if p.ConsumerAllowsGPUShare() {
+		t.Fatal("ConsumerAllowsGPUShare = true after ConsumerFlagNoGPUShare set")
+	}
+
+	// Subsequent CPU frame clears SharedHandle on the newly committed slot and
+	// restores Latest() CPU readback.
+	rgba := make([]byte, 16*8*4)
+	rgba[0] = 0x77
+	if err := p.Publish(16, 8, 16*4, rgba); err != nil {
+		t.Fatalf("Publish CPU fallback: %v", err)
+	}
+	slotIdx, format, ok = p.LatestSlot()
+	if !ok || format != FormatRGBA {
+		t.Fatalf("LatestSlot after CPU publish = (%d, %d, %v)", slotIdx, format, ok)
+	}
+	if got := p.ctrl.Slots[slotIdx].SharedHandle; got != 0 {
+		t.Fatalf("CPU slot retained SharedHandle = %#x", got)
+	}
+	if got := atomic.LoadUint64(&p.ctrl.AdapterLUID); got != 0 {
+		t.Fatalf("CPU publish retained AdapterLUID = %#x", got)
+	}
+	pic, ok := p.Latest()
+	if !ok || pic.Pixels[0] != 0x77 {
+		t.Fatalf("Latest() after CPU fallback ok=%v", ok)
+	}
+}
+
+func TestAcquirePreservesPublishedSlot(t *testing.T) {
+	p, err := NewPublisher(`Local\YingpingFramesTestPreservesPublished`, 64, 64)
+	if err != nil {
+		t.Fatalf("NewPublisher: %v", err)
+	}
+	defer p.Close()
+	frame, err := p.Acquire(16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame.CommitGPU(1, 1)
+	for i := range SlotCount {
+		if i != frame.Index() {
+			atomic.StoreUint32(&p.ctrl.Slots[i].Claim, claimReader)
+		}
+	}
+	if c, err := p.Acquire(16, 16); !errors.Is(err, ErrNoSlot) {
+		c.Cancel()
+		t.Fatalf("Acquire while other slots are held = %v, want ErrNoSlot", err)
+	}
+	if i, format, ok := p.LatestSlot(); !ok || i != frame.Index() || format != FormatDXGIBGRA {
+		t.Fatalf("latest publication changed: index=%d format=%d ok=%v", i, format, ok)
+	}
+}
+
+func TestRestartRetiresGPUPublication(t *testing.T) {
+	const name = `Local\YingpingFramesTestGPURestart`
+	first, err := NewPublisher(name, 64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	frame, err := first.Acquire(16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame.CommitGPU(1, 1)
+	prevSeq := first.ctrl.Slots[frame.Index()].FrameSeq
+
+	// The mapping stays open across producer restarts when the UI is attached.
+	restarted, err := NewPublisher(name, 64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, _, ok := restarted.LatestSlot(); ok {
+		t.Fatal("restarted producer still advertises a retired GPU handle")
+	}
+	if err := restarted.Publish(16, 16, 16*4, make([]byte, 16*16*4)); err != nil {
+		t.Fatal(err)
+	}
+	if pic, ok := restarted.Latest(); !ok || pic.Seq <= prevSeq {
+		t.Fatalf("first publication after restart returned seq=%d ok=%v, previous seq=%d", pic.Seq, ok, prevSeq)
 	}
 }

@@ -30,5 +30,7 @@ void YingpingFramesPluginCApiRegisterWithRegistrar(
   if (!Reader()) {
     Reader() = std::make_unique<FrameReader>();
     Reader()->Start(registrar);
+    FlutterDesktopPluginRegistrarSetDestructionHandler(
+        registrar, [](FlutterDesktopPluginRegistrarRef) { Reader()->Stop(); });
   }
 }

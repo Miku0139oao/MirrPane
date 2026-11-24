@@ -39,6 +39,7 @@ type frameSink struct {
 	hwMode   atomic.Bool
 	haveMode atomic.Bool
 	errRate  rateLimiter
+	zeroCopy bool // most recently published picture, protected by mu
 
 	// metrics is the rolling pipeline telemetry exposed by /api/state. It is
 	// updated by Handle and read by Stats, so both take s.mu.
@@ -75,6 +76,7 @@ func (m *frameMetrics) record(decodeTime time.Duration, timings decode.DecodeTim
 
 // SinkStats is the aggregated pipeline telemetry in one snapshot.
 type SinkStats struct {
+	GPUZeroCopy     bool
 	FPS             float64
 	DecodeAvgMs     float64
 	DecodeP95Ms     float64
@@ -166,6 +168,23 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		s.refreshMode(true)
 		return false
 	}
+	// Prefer GPU-only NV12 -> shared BGRA8888 texture conversion when D3D11VA
+	// is active and the UI consumer accepts DXGI shared handles. If the GPU
+	// video processor fails or the UI reports cross-adapter incompatibility,
+	// fall straight through to CopyImageTo on the same decoded frame.
+	if s.dec.CanRenderGPU() && s.pub.ConsumerAllowsGPUShare() {
+		surf, gpuErr := s.dec.RenderFrameGPU(claim.Index())
+		if gpuErr == nil {
+			claim.CommitGPU(surf.SharedHandle, surf.AdapterLUID)
+			s.zeroCopy = true
+			s.gate.Published(true)
+			s.countPicture(width, height)
+			s.refreshMode(true)
+			s.metrics.record(decodeTime, surf.Timings, s.pub.LastPublishNanos())
+			return true
+		}
+		s.errRate.printf("video: gpu zero-copy unavailable (%v); falling back to CPU readback", gpuErr)
+	}
 	timings, err := s.dec.CopyImageTo(claim.Pixels(), claim.Stride())
 	if err != nil {
 		claim.Cancel()
@@ -175,6 +194,7 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		return false
 	}
 	claim.Commit()
+	s.zeroCopy = false
 	s.gate.Published(true)
 	s.countPicture(width, height)
 	// Conversion may have triggered a hardware fallback, so report the mode
@@ -191,7 +211,11 @@ func (s *frameSink) countPicture(width, height int) {
 	}
 	mode := "software"
 	if s.dec.Hardware() {
-		mode = "D3D11VA"
+		if s.zeroCopy {
+			mode = "D3D11VA (zero-copy)"
+		} else {
+			mode = "D3D11VA"
+		}
 	}
 	log.Printf("decode: first picture %dx%d, %s (%d bytes per frame)",
 		width, height, mode, width*height*4)
@@ -219,26 +243,13 @@ func (s *frameSink) Mode() string {
 }
 
 // SnapshotPNG writes the most recent published picture to path as a PNG image.
-// The picture comes from the shared-memory slot the reader sees, so a snapshot
-// works whether or not the sink is currently publishing (consumer gating keeps
-// the last published picture intact).
+// A GPU picture is read back on demand. The producer lock is released before
+// PNG encoding and disk I/O.
 func (s *frameSink) SnapshotPNG(path string) error {
-	s.mu.Lock()
-	if s.closed || s.pub == nil {
-		s.mu.Unlock()
-		return errors.New("no active decoder")
+	rgba, err := s.snapshotPicture()
+	if err != nil {
+		return err
 	}
-	pic, ok := s.pub.Latest()
-	if !ok {
-		s.mu.Unlock()
-		return errors.New("no picture available yet")
-	}
-	rgba := &image.RGBA{
-		Pix:    pic.Pixels,
-		Stride: pic.Stride,
-		Rect:   image.Rect(0, 0, pic.Width, pic.Height),
-	}
-	s.mu.Unlock()
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -252,6 +263,30 @@ func (s *frameSink) SnapshotPNG(path string) error {
 		return err
 	}
 	return f.Close()
+}
+
+func (s *frameSink) snapshotPicture() (*image.RGBA, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.pub == nil {
+		return nil, errors.New("no active decoder")
+	}
+	slot, format, ok := s.pub.LatestSlot()
+	if !ok {
+		return nil, errors.New("no picture available yet")
+	}
+	if format == frames.FormatDXGIBGRA {
+		pic, err := s.dec.ReadbackSlotGPU(slot)
+		if err != nil {
+			return nil, err
+		}
+		return &image.RGBA{Pix: pic.Pixels, Stride: pic.Stride, Rect: image.Rect(0, 0, pic.Width, pic.Height)}, nil
+	}
+	pic, ok := s.pub.Latest()
+	if !ok {
+		return nil, errors.New("no picture available yet")
+	}
+	return &image.RGBA{Pix: pic.Pixels, Stride: pic.Stride, Rect: image.Rect(0, 0, pic.Width, pic.Height)}, nil
 }
 
 // Size reports the most recent picture size, or zero before the first frame.
@@ -281,6 +316,7 @@ func (s *frameSink) Stats() SinkStats {
 	defer s.mu.RUnlock()
 	m := &s.metrics
 	out := SinkStats{
+		GPUZeroCopy:   s.zeroCopy,
 		FPS:           m.fpsValue(),
 		DecodeAvgMs:   m.decode.Mean(),
 		DecodeP95Ms:   m.decode.P95(),
