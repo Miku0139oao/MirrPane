@@ -143,6 +143,7 @@ class FrameReader {
   std::mutex map_mutex_;
 
   Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device_;
+  Microsoft::WRL::ComPtr<ID3D11DeviceContext> validation_context_;
   ValidatedHandle validated_handles_[3];
 
   std::mutex slot_mutex_;

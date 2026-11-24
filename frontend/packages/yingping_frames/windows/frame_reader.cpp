@@ -165,7 +165,7 @@ void FrameReader::InitD3D11() {
     D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
                       D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
                       D3D11_SDK_VERSION, d3d11_device_.GetAddressOf(), nullptr,
-                      nullptr);
+                      validation_context_.GetAddressOf());
   }
 }
 
@@ -200,9 +200,15 @@ bool FrameReader::ValidateGpuHandle(uint32_t index, uint64_t generation,
     return false;
   }
 
+  const bool replaced_texture = cached.texture != nullptr;
   validated_handles_[index] = ValidatedHandle{
       slot.shared_handle, slot.width, slot.height, generation,
       std::move(texture)};
+  // This device only opens shared textures. Flush its idle context so D3D11
+  // destroys released wrappers and does not keep old frame allocations alive.
+  if (replaced_texture) {
+    validation_context_->Flush();
+  }
   return true;
 }
 
