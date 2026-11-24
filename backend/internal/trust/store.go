@@ -48,6 +48,11 @@ func Open(dir string, receiverPublicKey []byte) (*Store, error) {
 	s := &Store{path: filepath.Join(dir, FileName), data: record{Receiver: Fingerprint(receiverPublicKey)}}
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			if err := config.RestrictDirACL(dir); err != nil {
+				return nil, fmt.Errorf("trust: permissions: %w", err)
+			}
+		}
 		return s, nil
 	}
 	if err != nil {
@@ -70,6 +75,9 @@ func Open(dir string, receiverPublicKey []byte) (*Store, error) {
 			return nil, err
 		}
 	} else {
+		if err := config.RestrictDirACL(filepath.Dir(s.path)); err != nil {
+			return nil, fmt.Errorf("trust: permissions: %w", err)
+		}
 		if err := os.Chmod(s.path, 0o600); err != nil {
 			return nil, fmt.Errorf("trust: permissions: %w", err)
 		}
@@ -145,6 +153,9 @@ func (s *Store) save(next record) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("trust: directory: %w", err)
+	}
+	if err := config.RestrictDirACL(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("trust: permissions: %w", err)
 	}
 	f, err := os.CreateTemp(filepath.Dir(s.path), ".trusted-senders-*")
 	if err != nil {

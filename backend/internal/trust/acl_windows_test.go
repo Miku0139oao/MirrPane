@@ -5,6 +5,8 @@ package trust
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,7 +14,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func assertTrustProtectedDACL(t *testing.T, path string) {
+func assertTrustProtectedDACL(t *testing.T, path, aceFlags string) {
 	t.Helper()
 
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -55,11 +57,11 @@ func assertTrustProtectedDACL(t *testing.T, path string) {
 		return strings.TrimPrefix(sd.String(), "D:P")
 	}
 	wantACEs := []string{
-		renderACE("(A;;FA;;;" + userSID + ")"),
-		renderACE("(A;;FA;;;SY)"),
+		renderACE(fmt.Sprintf("(A;%s;FA;;;%s)", aceFlags, userSID)),
+		renderACE(fmt.Sprintf("(A;%s;FA;;;SY)", aceFlags)),
 	}
 	if userSID == "S-1-5-18" {
-		wantACEs = []string{renderACE("(A;;FA;;;SY)")}
+		wantACEs = []string{renderACE(fmt.Sprintf("(A;%s;FA;;;SY)", aceFlags))}
 	}
 	if int(dacl.AceCount) != len(wantACEs) {
 		t.Fatalf("AceCount = %d, want %d (sddl=%s)", dacl.AceCount, len(wantACEs), sd.String())
@@ -76,22 +78,9 @@ func assertTrustProtectedDACL(t *testing.T, path string) {
 	}
 }
 
-func TestTrustStoreAppliesProtectedWindowsDACL(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(dir, bytes.Repeat([]byte{1}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sender := Fingerprint([]byte("sender-1"))
-	if err := s.TrustSender(sender); err != nil {
-		t.Fatalf("TrustSender = %v", err)
-	}
-
-	path := filepath.Join(dir, FileName)
-	assertTrustProtectedDACL(t, path)
-
-	// Legacy world-accessible trust file is repaired on Open without rotating trust.
-	permissiveSD, err := windows.SecurityDescriptorFromString("D:(A;;FA;;;WD)")
+func seedPermissiveACL(t *testing.T, path, sddl string) {
+	t.Helper()
+	permissiveSD, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +100,73 @@ func TestTrustStoreAppliesProtectedWindowsDACL(t *testing.T) {
 		if errors.Is(err, windows.ERROR_NOT_SUPPORTED) || errors.Is(err, windows.ERROR_CALL_NOT_IMPLEMENTED) {
 			t.Skipf("SetNamedSecurityInfo unavailable: %v", err)
 		}
-		t.Fatalf("seed permissive DACL: %v", err)
+		t.Fatalf("seed permissive DACL on %s: %v", path, err)
 	}
+}
+
+func TestTrustStoreAppliesProtectedWindowsDACL(t *testing.T) {
+	dir := t.TempDir()
+	seedPermissiveACL(t, dir, "D:(A;OICI;FA;;;WD)")
+
+	// Open repairs an existing permissive directory even before trusted_senders.json exists.
+	s, err := Open(dir, bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTrustProtectedDACL(t, dir, "OICI")
+
+	// TrustSender creates trusted_senders.json and protects both a newly permissive dir and the file.
+	subDir := filepath.Join(t.TempDir(), "data")
+	s2, err := Open(subDir, bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := Fingerprint([]byte("sender-1"))
+	if err := s2.TrustSender(sender); err != nil {
+		t.Fatalf("TrustSender = %v", err)
+	}
+	assertTrustProtectedDACL(t, subDir, "OICI")
+	assertTrustProtectedDACL(t, filepath.Join(subDir, FileName), "")
+
+	// Also verify TrustSender repairs a permissive directory when saving.
+	if err := s.TrustSender(sender); err != nil {
+		t.Fatalf("TrustSender = %v", err)
+	}
+	path := filepath.Join(dir, FileName)
+	assertTrustProtectedDACL(t, dir, "OICI")
+	assertTrustProtectedDACL(t, path, "")
+
+	// Newly created temp files in dir inherit only user + SYSTEM ACEs before RestrictFileACL runs.
+	tmp, err := os.CreateTemp(dir, "inherit-check-*.tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	t.Cleanup(func() { _ = os.Remove(tmpName) })
+	sd, err := windows.GetNamedSecurityInfo(tmpName, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatalf("GetNamedSecurityInfo(%s): %v", tmpName, err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Skipf("token user unavailable: %v", err)
+	}
+	wantCount := 2
+	if user.User.Sid.String() == "S-1-5-18" {
+		wantCount = 1
+	}
+	if int(dacl.AceCount) != wantCount {
+		t.Fatalf("inherited AceCount = %d, want %d (sddl=%s)", dacl.AceCount, wantCount, sd.String())
+	}
+
+	// Legacy world-accessible trust file and directory are repaired on Open without rotating trust.
+	seedPermissiveACL(t, dir, "D:(A;OICI;FA;;;WD)")
+	seedPermissiveACL(t, path, "D:(A;;FA;;;WD)")
 
 	reloaded, err := Open(dir, bytes.Repeat([]byte{1}, 32))
 	if err != nil {
@@ -121,5 +175,6 @@ func TestTrustStoreAppliesProtectedWindowsDACL(t *testing.T) {
 	if !reloaded.IsTrustedSender(sender) {
 		t.Fatal("Open lost existing trusted sender")
 	}
-	assertTrustProtectedDACL(t, path)
+	assertTrustProtectedDACL(t, dir, "OICI")
+	assertTrustProtectedDACL(t, path, "")
 }

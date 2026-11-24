@@ -141,8 +141,11 @@ func TestConfigSaveAtomicAndMode0600(t *testing.T) {
 func TestLoadDoesNotRewriteUnchangedConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
-	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	raw := []byte(`{"name":"Stable","deviceId":"AA:BB:CC:DD:EE:FF","pairingId":"11111111-2222-3333-4444-555555555555","keySeed":"` + seed + `","width":1920,"height":1080,"maxFps":60,"decoderMode":"auto","colorRange":"auto","scaleFilter":"fast","audioBuffer":"balanced"}`)
+	keySeed, err := protectKeySeed(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"name":"Stable","deviceId":"AA:BB:CC:DD:EE:FF","pairingId":"11111111-2222-3333-4444-555555555555","keySeed":"` + keySeed + `","width":1920,"height":1080,"maxFps":60,"decoderMode":"auto","colorRange":"auto","scaleFilter":"fast","audioBuffer":"balanced"}`)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +158,40 @@ func TestLoadDoesNotRewriteUnchangedConfig(t *testing.T) {
 	}
 	if !bytes.Equal(raw, after) {
 		t.Fatalf("Load rewrote unchanged config.json:\n got: %s\nwant: %s", after, raw)
+	}
+}
+
+func TestInvalidKeySeedFailsClosed(t *testing.T) {
+	shortSeed := base64.StdEncoding.EncodeToString(make([]byte, 16))
+	longSeed := base64.StdEncoding.EncodeToString(make([]byte, 33))
+	for _, bad := range []string{
+		"not-valid-base64!!!",
+		shortSeed,
+		longSeed,
+		dpapiPrefix,
+		dpapiPrefix + "not-valid-base64!!!",
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, FileName)
+		raw := []byte(`{"name":"Corrupt","keySeed":"` + bad + `"}`)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(dir, "鏡屏"); err == nil {
+			t.Fatalf("Load(%q) succeeded, want error", bad)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(raw, after) {
+			t.Fatalf("Load(%q) overwrote config.json on error", bad)
+		}
+		if _, err := (&Config{KeySeed: bad}).Seed(); err == nil {
+			t.Fatalf("Seed(%q) succeeded, want error", bad)
+		}
+	}
+	if _, err := (&Config{}).Seed(); err == nil {
+		t.Fatal("empty Config.Seed() succeeded, want error")
 	}
 }

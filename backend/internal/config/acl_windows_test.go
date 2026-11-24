@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func assertProtectedUserAndSystemDACL(t *testing.T, path string) {
+func assertProtectedDACLWithFlags(t *testing.T, path, aceFlags string) {
 	t.Helper()
 
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -63,11 +63,11 @@ func assertProtectedUserAndSystemDACL(t *testing.T, path string) {
 		return strings.TrimPrefix(sd.String(), "D:P")
 	}
 	wantACEs := []string{
-		renderACE("(A;;FA;;;" + userSID + ")"),
-		renderACE("(A;;FA;;;SY)"),
+		renderACE(fmt.Sprintf("(A;%s;FA;;;%s)", aceFlags, userSID)),
+		renderACE(fmt.Sprintf("(A;%s;FA;;;SY)", aceFlags)),
 	}
 	if userSID == localSystemSID {
-		wantACEs = []string{renderACE("(A;;FA;;;SY)")}
+		wantACEs = []string{renderACE(fmt.Sprintf("(A;%s;FA;;;SY)", aceFlags))}
 	}
 	if int(dacl.AceCount) != len(wantACEs) {
 		t.Fatalf("AceCount = %d, want %d (sddl=%s)", dacl.AceCount, len(wantACEs), sd.String())
@@ -84,17 +84,89 @@ func assertProtectedUserAndSystemDACL(t *testing.T, path string) {
 	}
 }
 
+func assertProtectedUserAndSystemDACL(t *testing.T, path string) {
+	t.Helper()
+	assertProtectedDACLWithFlags(t, path, "")
+}
+
+func assertProtectedDirDACL(t *testing.T, dir string) {
+	t.Helper()
+	assertProtectedDACLWithFlags(t, dir, "OICI")
+}
+
+func assertInheritedOnlyUserAndSystemDACL(t *testing.T, filePath string) {
+	t.Helper()
+
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Skipf("token user unavailable: %v", err)
+	}
+	userSID := user.User.Sid.String()
+
+	sd, err := windows.GetNamedSecurityInfo(filePath, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_NOT_SUPPORTED) || errors.Is(err, windows.ERROR_CALL_NOT_IMPLEMENTED) {
+			t.Skipf("security descriptor API unavailable on filesystem: %v", err)
+		}
+		t.Fatalf("GetNamedSecurityInfo(%s): %v", filePath, err)
+	}
+
+	dacl, defaulted, err := sd.DACL()
+	if err != nil {
+		t.Fatalf("sd.DACL: %v", err)
+	}
+	if defaulted || dacl == nil {
+		t.Fatalf("unexpected DACL state: defaulted=%v dacl=%v", defaulted, dacl)
+	}
+
+	renderInheritedACE := func(sid string) string {
+		sd, err := windows.SecurityDescriptorFromString("D:(A;ID;FA;;;" + sid + ")")
+		if err != nil {
+			t.Fatalf("render inherited ACE for %s: %v", sid, err)
+		}
+		return strings.TrimPrefix(sd.String(), "D:")
+	}
+	wantACEs := []string{
+		renderInheritedACE(userSID),
+		renderInheritedACE("SY"),
+	}
+	if userSID == localSystemSID {
+		wantACEs = []string{renderInheritedACE("SY")}
+	}
+	if int(dacl.AceCount) != len(wantACEs) {
+		t.Fatalf("AceCount = %d, want %d (sddl=%s)", dacl.AceCount, len(wantACEs), sd.String())
+	}
+	sddl := sd.String()
+	for _, ace := range wantACEs {
+		if !strings.Contains(sddl, ace) {
+			t.Fatalf("inherited SDDL %q missing expected ACE %s", sddl, ace)
+		}
+	}
+}
+
 func TestConfigSaveAndLoadApplyProtectedWindowsDACL(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "data")
 	path := filepath.Join(dir, FileName)
 
-	// Fresh save creates config.json with protected user + SYSTEM DACL.
+	// Fresh save creates dir and config.json with protected user + SYSTEM DACLs.
 	if _, err := Load(dir, "鏡屏"); err != nil {
 		t.Fatalf("Load fresh: %v", err)
 	}
+	assertProtectedDirDACL(t, dir)
 	assertProtectedUserAndSystemDACL(t, path)
 
-	// Legacy file with world-readable ACE is repaired on Load.
+	// Newly created files inside dir inherit only user + SYSTEM ACEs before RestrictFileACL runs.
+	tmp, err := os.CreateTemp(dir, "inherit-check-*.tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	t.Cleanup(func() { _ = os.Remove(tmpName) })
+	assertInheritedOnlyUserAndSystemDACL(t, tmpName)
+
+	// Legacy file and permissive directory with world-readable ACEs are repaired on Load.
+	seedPermissiveDirACL(t, dir)
 	permissiveSD, err := windows.SecurityDescriptorFromString("D:(A;;FA;;;WD)")
 	if err != nil {
 		t.Fatalf("SecurityDescriptorFromString: %v", err)
@@ -124,6 +196,7 @@ func TestConfigSaveAndLoadApplyProtectedWindowsDACL(t *testing.T) {
 	if _, err := Load(dir, "鏡屏"); err != nil {
 		t.Fatalf("Load existing legacy ACL: %v", err)
 	}
+	assertProtectedDirDACL(t, dir)
 	assertProtectedUserAndSystemDACL(t, path)
 }
 

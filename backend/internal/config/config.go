@@ -11,14 +11,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 )
 
-// FileName is the settings file inside the data directory.
-const FileName = "config.json"
+const (
+	// FileName is the settings file inside the data directory.
+	FileName = "config.json"
+
+	dpapiPrefix  = "dpapi:"
+	keySeedBytes = 32
+)
 
 // Config is everything that survives a restart.
 type Config struct {
@@ -28,7 +34,9 @@ type Config struct {
 	DeviceID string `json:"deviceId"`
 	// PairingID is the stable `pi` UUID advertised over mDNS.
 	PairingID string `json:"pairingId"`
-	// KeySeed is the base64 Ed25519 seed for the pairing identity.
+	// KeySeed is the base64 Ed25519 seed for the pairing identity. On Windows,
+	// Save persists this field DPAPI-encrypted with a "dpapi:" prefix while
+	// keeping the decoded raw base64 seed in memory.
 	KeySeed string `json:"keySeed"`
 
 	// Graphics and audio runtime preferences (applied on receiver restart).
@@ -53,15 +61,28 @@ func Load(dir, defaultName string) (*Config, error) {
 		if err := json.Unmarshal(data, &c); err != nil {
 			return nil, fmt.Errorf("config: parse %s: %w", path, err)
 		}
+		wasProtected := false
+		if c.KeySeed != "" {
+			seed, protected, err := decodeKeySeed(c.KeySeed)
+			if err != nil {
+				return nil, err
+			}
+			wasProtected = protected
+			c.KeySeed = base64.StdEncoding.EncodeToString(seed)
+			clear(seed)
+		}
 		before := c
 		if err := c.fill(defaultName); err != nil {
 			return nil, err
 		}
-		if c != before {
+		if c != before || (!wasProtected && dpapiProtectAtRest) {
 			if err := c.Save(dir); err != nil {
 				return nil, err
 			}
 		} else {
+			if err := RestrictDirACL(dir); err != nil {
+				return nil, fmt.Errorf("config: restrict dir %s: %w", dir, err)
+			}
 			if err := os.Chmod(path, 0o600); err != nil {
 				return nil, fmt.Errorf("config: chmod %s: %w", path, err)
 			}
@@ -151,19 +172,35 @@ func (c *Config) fill(defaultName string) error {
 
 // generateKeySeed creates a fresh 32-byte random pairing seed.
 func generateKeySeed() (string, error) {
-	seed := make([]byte, 32)
+	seed := make([]byte, keySeedBytes)
 	if _, err := rand.Read(seed); err != nil {
 		return "", fmt.Errorf("config: generate key seed: %w", err)
 	}
+	defer clear(seed)
 	return base64.StdEncoding.EncodeToString(seed), nil
 }
 
 // Save writes the config atomically with mode 0600 via temp file + rename.
 func (c *Config) Save(dir string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	seed, err := c.Seed()
+	if err != nil {
+		return err
+	}
+	defer clear(seed)
+	diskKeySeed, err := protectKeySeed(seed)
+	if err != nil {
+		return fmt.Errorf("config: protect keySeed: %w", err)
+	}
+	diskCfg := *c
+	diskCfg.KeySeed = diskKeySeed
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("config: create %s: %w", dir, err)
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	if err := RestrictDirACL(dir); err != nil {
+		return fmt.Errorf("config: restrict dir %s: %w", dir, err)
+	}
+	data, err := json.MarshalIndent(&diskCfg, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -205,11 +242,37 @@ func (c *Config) Save(dir string) error {
 	return nil
 }
 
-// Seed decodes the stored Ed25519 seed.
+// Seed decodes the stored 32-byte Ed25519 seed.
 func (c *Config) Seed() ([]byte, error) {
-	seed, err := base64.StdEncoding.DecodeString(c.KeySeed)
+	if c.KeySeed == "" {
+		return nil, errors.New("config: empty keySeed")
+	}
+	seed, _, err := decodeKeySeed(c.KeySeed)
 	if err != nil {
-		return nil, fmt.Errorf("config: decode keySeed: %w", err)
+		return nil, err
 	}
 	return seed, nil
+}
+
+func decodeKeySeed(raw string) ([]byte, bool, error) {
+	if strings.HasPrefix(raw, dpapiPrefix) {
+		seed, err := unprotectKeySeed(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(seed) != keySeedBytes {
+			clear(seed)
+			return nil, false, fmt.Errorf("config: keySeed must decode to %d bytes, got %d", keySeedBytes, len(seed))
+		}
+		return seed, true, nil
+	}
+	seed, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("config: decode keySeed: %w", err)
+	}
+	if len(seed) != keySeedBytes {
+		clear(seed)
+		return nil, false, fmt.Errorf("config: keySeed must decode to %d bytes, got %d", keySeedBytes, len(seed))
+	}
+	return seed, false, nil
 }
