@@ -43,14 +43,15 @@ func (r *Receiver) scheduleDisconnectLocked(remote string, cs *clientSession) {
 		}
 		cs.closeTimer = nil
 		delete(r.sessions, remote)
-		owner := r.activeRemote == remote
+		owner := r.activeConn == remote
 		if owner {
 			r.cleanStop.Store(true)
 			r.dropMediaLocked()
+			r.recordStateLocked(StatusIdle, "control connection closed")
 		}
 		r.mu.Unlock()
 		if owner {
-			r.setState(StatusIdle, "control connection closed")
+			r.flushState()
 		}
 	})
 }

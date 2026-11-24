@@ -35,7 +35,8 @@ type Server struct {
 	mu      sync.RWMutex
 
 	// Handler hooks, set by the protocol layer as it comes online. The remote
-	// argument is the client's IP address, which keys per-device protocol state.
+	// argument is a per-control-connection key (such as "ip:port" or a unique
+	// synthetic key) that isolates pairing and FairPlay proof per TCP socket.
 	OnFPSetup    func(remote string, body []byte) ([]byte, error)
 	OnPairSetup  func(remote string, body []byte) ([]byte, error)
 	OnPairVerify func(remote string, body []byte) ([]byte, error)
@@ -43,17 +44,17 @@ type Server struct {
 	OnTeardown   func(remote string, body []byte)
 	OnFeedback   func(remote string, body []byte)
 	OnEvent      func(remote string, body []byte)
-	// OnDisconnect forgets a sender after its last control connection closes. It
-	// may follow a full OnTeardown, so forgetting the sender must be idempotent.
+	// OnDisconnect forgets a specific control connection when it closes. It
+	// may follow a full OnTeardown, so forgetting the connection must be idempotent.
 	OnDisconnect func(remote string)
 	// OnStop releases all sender sessions for the HTTP /stop endpoint.
 	OnStop func()
 
-	// connCount tracks open control connections per sender IP. A sender may
-	// open short auxiliary connections (for example /info) while its mirror
-	// session is live, so the disconnect hook only fires when the last one closes.
-	connMu    sync.Mutex
-	connCount map[string]int
+	// connMu guards per-connection identity assignment so concurrent sockets
+	// (including portless net.Pipe peers) never collide on a session key.
+	connMu      sync.Mutex
+	connSeq     uint64
+	activeConns map[string]struct{}
 
 	// limMu/limiters bound per-sender request rates so a pairing or handshake
 	// flood cannot hold the receiver-wide control lock for an unbounded time.
@@ -177,8 +178,9 @@ func closeOnce(ch chan struct{}) {
 // lib/raop.c: RTSP/1.0 methods carry the protocol, HTTP/1.1 carries the web API
 // endpoints (reverse, scrub, rate, stop, fp-setup2, server-info).
 func (s *Server) dispatch(req *Request, remote string) *Response {
-	if !s.allowRequest(remote) {
-		s.noteRateLimited(remote)
+	peerIP := ipOf(remote)
+	if !s.allowRequest(peerIP) {
+		s.noteRateLimited(peerIP)
 		return &Response{Status: 429}
 	}
 	path := req.Path()
@@ -281,7 +283,7 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 }
 
 func isLoopbackRemote(remote string) bool {
-	addr, err := netip.ParseAddr(remote)
+	addr, err := netip.ParseAddr(ipOf(remote))
 	return err == nil && addr.Unmap().IsLoopback()
 }
 

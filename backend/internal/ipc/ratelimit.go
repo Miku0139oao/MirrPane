@@ -50,10 +50,12 @@ func rateAddress(remote string) (key, prefix string) {
 	return addr.String(), addr.String()
 }
 
-// allowRequest applies one token from the sender's bucket. An empty remote is
-// the in-process/local caller used by tests and loopback helpers, which is not
-// rate-limited.
+// allowRequest applies one token from the sender's bucket. Rate limiting is
+// always keyed by peer IP (never per ephemeral TCP port) so opening multiple
+// connections cannot bypass the budget. An empty remote is the in-process/local
+// caller used by tests and loopback helpers, which is not rate-limited.
 func (s *Server) allowRequest(remote string) bool {
+	remote = ipOf(remote)
 	if remote == "" {
 		return true
 	}

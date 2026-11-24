@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,7 +74,12 @@ type TrustStore interface {
 	ClearTrustedSenders() error
 }
 
-// Receiver serves one sender at a time, keyed by client address.
+// maxSessions caps concurrent clientSession entries so unowned TCP probes
+// cannot grow the session map unboundedly.
+const maxSessions = 64
+
+// Receiver serves one sender at a time, isolating pairing/FairPlay state per
+// control connection key while tracking IP-level media/approval identity.
 type Receiver struct {
 	info   protocol.DeviceInfo
 	log    *log.Logger
@@ -87,20 +93,31 @@ type Receiver struct {
 	display struct{ width, height int }
 
 	// mu serializes control requests, session state and shared-media ownership.
-	mu              sync.Mutex
-	sessions        map[string]*clientSession
-	activeRemote    string
-	cleanStop       atomic.Bool
-	controlGrace    time.Duration
-	afterFunc       func(time.Duration, func()) disconnectTimer
-	now             func() time.Time
-	pending         map[string]pendingApproval
-	rejected        map[string]time.Time
-	approvalSources map[netip.Prefix][]time.Time
-	pinnedSender    string
+	mu                sync.Mutex
+	sessions          map[string]*clientSession
+	sessionSeq        uint64
+	activeConn        string
+	activeRemote      string
+	activeFingerprint string
+	cleanStop         atomic.Bool
+	controlGrace      time.Duration
+	afterFunc         func(time.Duration, func()) disconnectTimer
+	now               func() time.Time
+	pending           map[string]pendingApproval
+	rejected          map[string]time.Time
+	approvalSources   map[netip.Prefix][]time.Time
+	pinnedSender      string
+
+	// stateMu serializes OnState delivery without holding mu. Lock order is
+	// strictly stateMu -> mu so callbacks can inspect mu safely and stale
+	// connecting transitions cannot overwrite newer live or idle state.
+	stateMu     sync.Mutex
+	status      Status
+	stateReason string
+	pendingEmit bool
 }
 
-// clientSession is the state of one sender, keyed by its IP address.
+// clientSession is the state of one control connection, keyed by connKey.
 type clientSession struct {
 	fp   *fairplay.Session
 	pair *pairing.Session
@@ -114,6 +131,7 @@ type clientSession struct {
 	// lastStreamID is the mirror stream connection ID from /setup.
 	lastStreamID uint64
 	haveEKey     bool
+	lastSeq      uint64
 	closeTimer   disconnectTimer
 	closeVersion uint64
 }
@@ -150,15 +168,21 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logge
 			}
 		},
 		OnConnected: func(remote string) {
+			r.mu.Lock()
 			r.cleanStop.Store(false)
-			r.setState(StatusLive, "mirroring")
+			r.recordStateLocked(StatusLive, "mirroring")
+			r.mu.Unlock()
+			r.flushState()
 		},
 		OnDisconnected: func() {
+			r.mu.Lock()
 			if r.cleanStop.Swap(false) {
-				r.setState(StatusIdle, "disconnected")
+				r.recordStateLocked(StatusIdle, "disconnected")
 			} else {
-				r.setState(StatusInterrupted, "sender closed the stream")
+				r.recordStateLocked(StatusInterrupted, "sender closed the stream")
 			}
+			r.mu.Unlock()
+			r.flushState()
 		},
 		OnPause: func() {
 			r.log.Printf("mirror: sender suspended video")
@@ -265,7 +289,15 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 	}
 	r.mu.Lock()
 	r.cancelDisconnectLocked(remote)
-	owner := r.activeRemote == "" || r.activeRemote == remote
+	cs := r.sessions[remote]
+	sameTrustedActive := false
+	if cs != nil && cs.pair != nil && cs.pair.Verified() && r.activeFingerprint != "" && r.trust != nil {
+		fp := trust.Fingerprint(cs.pair.PeerPublicKey())
+		if fp == r.activeFingerprint && r.trust.IsTrustedSender(fp) {
+			sameTrustedActive = true
+		}
+	}
+	owner := (r.activeConn == "" && r.activeRemote == "") || r.activeConn == remote || sameTrustedActive
 	if audioOnly {
 		if owner && r.audioRx != nil {
 			r.audioRx.ResetStream()
@@ -277,10 +309,11 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 	if owner {
 		r.cleanStop.Store(true)
 		r.dropMediaLocked()
+		r.recordStateLocked(StatusIdle, "sender stopped mirroring")
 	}
 	r.mu.Unlock()
 	if owner {
-		r.setState(StatusIdle, "sender stopped mirroring")
+		r.flushState()
 	}
 }
 
@@ -292,13 +325,17 @@ func (r *Receiver) Disconnect() {
 	r.cancelAllDisconnectsLocked()
 	r.dropMediaLocked()
 	clear(r.sessions)
+	r.recordStateLocked(StatusIdle, "disconnected by user")
 	r.mu.Unlock()
-	r.setState(StatusIdle, "disconnected by user")
+	r.flushState()
 }
 
 // dropMediaLocked releases both the active client and any unused setup keys.
 func (r *Receiver) dropMediaLocked() {
-	r.cancelDisconnectLocked(r.activeRemote)
+	r.cancelDisconnectLocked(r.activeConn)
+	if r.activeConn != "" {
+		delete(r.sessions, r.activeConn)
+	}
 	if r.mirror != nil {
 		r.mirror.DropClient()
 		r.mirror.ResetKey()
@@ -306,13 +343,56 @@ func (r *Receiver) dropMediaLocked() {
 	if r.audioRx != nil {
 		r.audioRx.ResetKey()
 	}
+	r.activeConn = ""
 	r.activeRemote = ""
+	r.activeFingerprint = ""
 }
 
-func (r *Receiver) setState(s Status, reason string) {
-	if r.events.OnState != nil {
-		r.events.OnState(s, reason)
+func (r *Receiver) recordStateLocked(s Status, reason string) {
+	r.status = s
+	r.stateReason = reason
+	r.pendingEmit = true
+}
+
+func (r *Receiver) flushState() {
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	for {
+		r.mu.Lock()
+		if !r.pendingEmit {
+			r.mu.Unlock()
+			return
+		}
+		s := r.status
+		reason := r.stateReason
+		r.pendingEmit = false
+		r.mu.Unlock()
+
+		if r.events.OnState != nil {
+			r.events.OnState(s, reason)
+		}
 	}
+}
+
+// hostIP extracts the IP address from a control connection key ("ip:port",
+// "[ipv6]:port", optional "#N" synthetic suffix, or bare IP in unit tests).
+func hostIP(connKey string) string {
+	if i := strings.LastIndexByte(connKey, '#'); i >= 0 && i < len(connKey)-1 {
+		digits := true
+		for j := i + 1; j < len(connKey); j++ {
+			if connKey[j] < '0' || connKey[j] > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			connKey = connKey[:i]
+		}
+	}
+	if host, _, err := net.SplitHostPort(connKey); err == nil {
+		return host
+	}
+	return connKey
 }
 
 // session returns the per-client state, creating it on first contact.
@@ -330,30 +410,70 @@ func (r *Receiver) sessionLocked(remote string) *clientSession {
 
 // clientSessionLocked looks up state without extending media/control grace.
 func (r *Receiver) clientSessionLocked(remote string) *clientSession {
-	cs, ok := r.sessions[remote]
-	if !ok {
-		cs = &clientSession{
-			fp:   fairplay.NewSession(),
-			pair: pairing.NewSession(r.keys),
-		}
-		r.sessions[remote] = cs
+	if r.sessions == nil {
+		r.sessions = make(map[string]*clientSession)
 	}
+	r.sessionSeq++
+	if cs, ok := r.sessions[remote]; ok {
+		cs.lastSeq = r.sessionSeq
+		return cs
+	}
+	if len(r.sessions) >= maxSessions {
+		r.evictSessionLocked()
+	}
+	cs := &clientSession{
+		fp:      fairplay.NewSession(),
+		pair:    pairing.NewSession(r.keys),
+		lastSeq: r.sessionSeq,
+	}
+	r.sessions[remote] = cs
 	return cs
 }
 
-// DropSession invalidates pairing/stream-key proof on the last control close.
-// The owner's media keeps a short grace period; reconnects must verify afresh.
-// Unowned sessions can be forgotten immediately.
+func (r *Receiver) evictSessionLocked() {
+	var victim string
+	var victimSeq uint64
+	found := false
+	for k, cs := range r.sessions {
+		if k == r.activeConn || cs.closeTimer != nil {
+			continue
+		}
+		if !found || cs.lastSeq < victimSeq {
+			victim, victimSeq, found = k, cs.lastSeq, true
+		}
+	}
+	if !found {
+		for k, cs := range r.sessions {
+			if k == r.activeConn {
+				continue
+			}
+			if !found || cs.lastSeq < victimSeq {
+				victim, victimSeq, found = k, cs.lastSeq, true
+			}
+		}
+	}
+	if found {
+		r.cancelDisconnectLocked(victim)
+		delete(r.sessions, victim)
+	}
+}
+
+// DropSession invalidates pairing/stream-key proof on control connection close.
+// The owning connection's media keeps a short grace period; reconnects must
+// verify afresh on a new connection. Unowned connections are forgotten at once.
 func (r *Receiver) DropSession(remote string) {
 	r.mu.Lock()
-	if r.activeRemote != remote || remote == "" || r.sessions[remote] == nil {
+	if r.activeConn != remote || remote == "" || r.sessions[remote] == nil {
 		_, hadSession := r.sessions[remote]
 		r.cancelDisconnectLocked(remote)
 		delete(r.sessions, remote)
-		idle := hadSession && r.activeRemote == "" && len(r.sessions) == 0
+		idle := hadSession && r.activeConn == "" && len(r.sessions) == 0
+		if idle {
+			r.recordStateLocked(StatusIdle, "control connection closed")
+		}
 		r.mu.Unlock()
 		if idle {
-			r.setState(StatusIdle, "control connection closed")
+			r.flushState()
 		}
 		return
 	}
@@ -378,6 +498,10 @@ func (r *Receiver) DropAllSessions() {
 	r.cancelAllDisconnectsLocked()
 	r.dropMediaLocked()
 	clear(r.sessions)
+	if r.pendingEmit && r.status == StatusConnecting {
+		r.pendingEmit = false
+		r.status = StatusIdle
+	}
 	r.mu.Unlock()
 }
 
@@ -397,9 +521,13 @@ func (r *Receiver) FPSetup(remote string, body []byte) ([]byte, error) {
 	default:
 		err = fairplay.ErrMalformed
 	}
+	emit := err == nil && len(body) == fairplay.SetupRequestLen && connecting
+	if emit {
+		r.recordStateLocked(StatusConnecting, "fairplay setup")
+	}
 	r.mu.Unlock()
-	if err == nil && len(body) == fairplay.SetupRequestLen && connecting {
-		r.setState(StatusConnecting, "fairplay setup")
+	if emit {
+		r.flushState()
 	}
 	return reply, wrapProtocol(err)
 }
@@ -410,12 +538,16 @@ func (r *Receiver) PairSetup(remote string, body []byte) ([]byte, error) {
 	cs := r.sessionLocked(remote)
 	connecting := r.activeRemote == ""
 	reply, err := cs.pair.Setup(body)
+	emit := err == nil && connecting
+	if emit {
+		r.recordStateLocked(StatusConnecting, "pair-setup")
+	}
 	r.mu.Unlock()
 	if err != nil {
 		return nil, &protocolError{status: 400, err: err}
 	}
-	if connecting {
-		r.setState(StatusConnecting, "pair-setup")
+	if emit {
+		r.flushState()
 	}
 	return reply, nil
 }
@@ -474,6 +606,10 @@ func (r *Receiver) ClearTrustedSenders() error {
 	clear(r.rejected)
 	clear(r.approvalSources)
 	r.pinnedSender = ""
+	if r.pendingEmit && r.status == StatusConnecting {
+		r.pendingEmit = false
+		r.status = StatusIdle
+	}
 	return nil
 }
 
@@ -520,15 +656,17 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cs := r.sessionLocked(remote)
+	remoteIP := hostIP(remote)
 	streams, _ := req["streams"].([]any)
 	_, hasEKey := req["ekey"]
 	_, hasEIV := req["eiv"]
 	if (hasEKey || hasEIV || len(streams) > 0) && !cs.pair.Verified() {
 		return nil, &protocolError{status: 403, err: ErrNotPaired}
 	}
+	var fingerprint string
 	if cs.pair.Verified() {
-		fingerprint := trust.Fingerprint(cs.pair.PeerPublicKey())
-		if err := r.authorizeSetupLocked(fingerprint, remote, senderLabel(req)); err != nil {
+		fingerprint = trust.Fingerprint(cs.pair.PeerPublicKey())
+		if err := r.authorizeSetupLocked(fingerprint, remoteIP, senderLabel(req)); err != nil {
 			return nil, err
 		}
 	}
@@ -631,17 +769,27 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 	if hasVideo || hasAudio {
 		// Check ownership before either mirror keys or audio buffers can change.
 		// Audio liveness also protects senders using only the audio stream.
-		if r.activeRemote != "" && r.activeRemote != remote && (r.mirror.Busy() || r.audioRx.Busy()) {
+		// Another connection on the same IP can take over a live/grace session
+		// only after fresh pair-verify proves the same trusted sender identity.
+		sameConn := r.activeConn == remote
+		sameTrustedIdentity := r.activeFingerprint != "" && fingerprint == r.activeFingerprint && r.activeRemote == remoteIP
+		if r.activeConn != "" && !sameConn && !sameTrustedIdentity && (r.mirror.Busy() || r.audioRx.Busy()) {
 			return nil, &protocolError{status: 453, err: ErrBusy}
 		}
-		if hasVideo && !r.mirror.Prepare(remote, next.lastStreamID, next.aesCandidates...) {
+		if hasVideo && !r.mirror.Prepare(remoteIP, next.lastStreamID, next.aesCandidates...) {
 			return nil, &protocolError{status: 453, err: ErrBusy}
 		}
-		if !hasVideo && r.activeRemote != "" && r.activeRemote != remote {
+		if !hasVideo && r.activeConn != "" && !sameConn && !sameTrustedIdentity {
 			r.mirror.DropClient()
 			r.mirror.ResetKey()
 		}
-		r.activeRemote = remote
+		if r.activeConn != "" && r.activeConn != remote {
+			r.cancelDisconnectLocked(r.activeConn)
+			delete(r.sessions, r.activeConn)
+		}
+		r.activeConn = remote
+		r.activeRemote = remoteIP
+		r.activeFingerprint = fingerprint
 		// Audio uses the same per-sender candidates, with CBC and the setup IV.
 		// Key-only setup never reconfigures this shared receiver.
 		audioKeys := make([]audio.Key, len(next.aesCandidates))

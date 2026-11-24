@@ -87,3 +87,23 @@ func TestRateLimitBucketMapIsBounded(t *testing.T) {
 		t.Fatalf("limiter map holds %d entries, cap is %d", n, requestBucketLimit)
 	}
 }
+
+// Ephemeral TCP ports from the same peer IP must share one rate-limit bucket so
+// opening new connections cannot bypass request rate limits.
+func TestRateLimitSharesBucketAcrossPortsFromSameIP(t *testing.T) {
+	s := newTestServer()
+	req := &Request{Method: "OPTIONS", Target: "*", Protocol: "RTSP/1.0"}
+	limited := false
+	for port := 50000; port < 50400; port++ {
+		if s.dispatch(req, fmt.Sprintf("192.168.1.20:%d", port)).status() == 429 {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("requests spread across ephemeral ports bypassed the per-IP rate limit")
+	}
+	if got := s.dispatch(req, "192.168.1.21:50000").status(); got != 200 {
+		t.Fatalf("different IP status = %d, want 200", got)
+	}
+}

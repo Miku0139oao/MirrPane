@@ -202,7 +202,7 @@ func TestServeConnDisconnectsOnceOnEveryReturn(t *testing.T) {
 				events = append(events, "teardown")
 			}
 			s.OnDisconnect = func(remote string) {
-				if remote != "192.168.1.20" || !conn.closed {
+				if remote != "192.168.1.20:43210" || !conn.closed {
 					t.Errorf("disconnect remote %q, connection closed %v", remote, conn.closed)
 				}
 				events = append(events, "disconnect")
@@ -219,21 +219,48 @@ func TestServeConnDisconnectsOnceOnEveryReturn(t *testing.T) {
 	}
 }
 
-// A sender may hold auxiliary control connections (for example a short /info
-// request) while its mirror session is live. Only closing the last connection
-// may forget the session.
-func TestDisconnectOnlyFiresForLastConnection(t *testing.T) {
+// Each TCP connection owns an independent session key and fires OnDisconnect
+// for that connection key alone, even when an auxiliary connection (for example
+// a short /info request or an attacker probe) from the same IP opens or closes.
+func TestDisconnectIsPerConnectionAndIsolatesSameIPPeers(t *testing.T) {
 	s := newTestServer()
-	s.retainConn("192.168.1.20")
-	s.retainConn("192.168.1.20")
-	if s.releaseConn("192.168.1.20") {
-		t.Fatal("first connection close reported the sender disconnected")
+	ownerKey, ownerIP := s.allocConnKey("192.168.1.20:50001")
+	auxKey, auxIP := s.allocConnKey("192.168.1.20:50002")
+	if ownerIP != "192.168.1.20" || auxIP != "192.168.1.20" {
+		t.Fatalf("unexpected stripped IPs: owner=%q aux=%q", ownerIP, auxIP)
 	}
-	if !s.releaseConn("192.168.1.20") {
-		t.Fatal("last connection close did not report a disconnect")
+	if ownerKey == auxKey || ownerKey != "192.168.1.20:50001" || auxKey != "192.168.1.20:50002" {
+		t.Fatalf("unexpected connKeys: owner=%q aux=%q", ownerKey, auxKey)
 	}
-	if s.releaseConn("192.168.1.20") {
-		t.Fatal("an extra release reported a disconnect")
+	// Portless net.Pipe() connections or duplicate addresses must never collide.
+	pipe1, pipeIP1 := s.allocConnKey("pipe")
+	pipe2, pipeIP2 := s.allocConnKey("pipe")
+	dupKey, dupIP := s.allocConnKey("192.168.1.20:50001")
+	if pipeIP1 != "pipe" || pipeIP2 != "pipe" || dupIP != "192.168.1.20" {
+		t.Fatalf("unexpected synthetic IPs: %q %q %q", pipeIP1, pipeIP2, dupIP)
+	}
+	if pipe1 == pipe2 || dupKey == ownerKey {
+		t.Fatalf("connection keys collided: pipe1=%q pipe2=%q dup=%q", pipe1, pipe2, dupKey)
+	}
+	s.releaseConnKey(ownerKey)
+	s.releaseConnKey(auxKey)
+	s.releaseConnKey(pipe1)
+	s.releaseConnKey(pipe2)
+	s.releaseConnKey(dupKey)
+
+	var disconnected []string
+	s.OnDisconnect = func(remote string) {
+		disconnected = append(disconnected, remote)
+	}
+	ownerConn := &memoryControlConn{input: strings.NewReader("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n"), remote: testConnAddr("192.168.1.20:50001")}
+	auxConn := &memoryControlConn{input: strings.NewReader("GET /info RTSP/1.0\r\nCSeq: 1\r\n\r\n"), remote: testConnAddr("192.168.1.20:50002")}
+	s.serveConn(auxConn)
+	if !slices.Equal(disconnected, []string{"192.168.1.20:50002"}) {
+		t.Fatalf("auxiliary close disconnected = %v, want [192.168.1.20:50002]", disconnected)
+	}
+	s.serveConn(ownerConn)
+	if !slices.Equal(disconnected, []string{"192.168.1.20:50002", "192.168.1.20:50001"}) {
+		t.Fatalf("owner close disconnected = %v", disconnected)
 	}
 }
 
@@ -242,10 +269,10 @@ func TestServeConnDisconnectFiltersLocalAddresses(t *testing.T) {
 		remote string
 		want   string
 	}{
-		{"192.168.1.20:43210", "192.168.1.20"},
-		{"[2001:db8::20]:43210", "2001:db8::20"},
-		{"[fe80::20%7]:43210", "fe80::20%7"},
-		{"[::ffff:192.168.1.20]:43210", "::ffff:192.168.1.20"},
+		{"192.168.1.20:43210", "192.168.1.20:43210"},
+		{"[2001:db8::20]:43210", "[2001:db8::20]:43210"},
+		{"[fe80::20%7]:43210", "[fe80::20%7]:43210"},
+		{"[::ffff:192.168.1.20]:43210", "[::ffff:192.168.1.20]:43210"},
 		{"", ""},
 		{"pipe", ""},
 		{"127.0.0.1:43210", ""},

@@ -277,46 +277,64 @@ func (r *Response) write(w *bufio.Writer, req *Request) error {
 	return w.Flush()
 }
 
-// retainConn records one more open control connection for remote.
-func (s *Server) retainConn(remote string) {
-	s.connMu.Lock()
-	if s.connCount == nil {
-		s.connCount = make(map[string]int)
+// allocConnKey assigns a distinct key for one control connection and returns
+// both the connection key and the stripped peer IP. TCP connections retain
+// their "ip:port" / "[ipv6]:port" address unless an identical address is still
+// active; portless transports such as net.Pipe receive a monotonic "#N" suffix.
+func (s *Server) allocConnKey(raw string) (connKey, remoteIP string) {
+	remoteIP = ipOf(raw)
+	if host, port, err := net.SplitHostPort(raw); err == nil && port != "" && port != "0" {
+		remoteIP = host
+		s.connMu.Lock()
+		if s.activeConns == nil {
+			s.activeConns = make(map[string]struct{})
+		}
+		if _, exists := s.activeConns[raw]; !exists {
+			s.activeConns[raw] = struct{}{}
+			s.connMu.Unlock()
+			return raw, remoteIP
+		}
+		s.connMu.Unlock()
 	}
-	s.connCount[remote]++
-	s.connMu.Unlock()
-}
 
-// releaseConn reports whether remote's last control connection closed. It
-// returns false for a release with no retained connection, so a double close
-// cannot fire the disconnect hook twice.
-func (s *Server) releaseConn(remote string) bool {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
-	n := s.connCount[remote]
-	if n > 1 {
-		s.connCount[remote] = n - 1
-		return false
+	if s.activeConns == nil {
+		s.activeConns = make(map[string]struct{})
 	}
-	delete(s.connCount, remote)
-	return n == 1
+	for {
+		s.connSeq++
+		candidate := fmt.Sprintf("%s#%d", raw, s.connSeq)
+		if _, exists := s.activeConns[candidate]; !exists {
+			s.activeConns[candidate] = struct{}{}
+			return candidate, remoteIP
+		}
+	}
+}
+
+func (s *Server) releaseConnKey(connKey string) {
+	s.connMu.Lock()
+	delete(s.activeConns, connKey)
+	s.connMu.Unlock()
 }
 
 // serveConn answers every request on one connection until the sender closes it.
 func (s *Server) serveConn(conn net.Conn) {
-	remote := ipOf(conn.RemoteAddr().String())
-	addr, err := netip.ParseAddr(remote)
+	var rawAddr string
+	if addr := conn.RemoteAddr(); addr != nil {
+		rawAddr = addr.String()
+	}
+	connKey, remoteIP := s.allocConnKey(rawAddr)
+	addr, err := netip.ParseAddr(remoteIP)
 	// LAN and link-local senders are valid; loopback, unspecified and in-memory
 	// local connections do not own a remote receiver session.
 	notifyDisconnect := err == nil && !addr.Unmap().IsLoopback() && !addr.Unmap().IsUnspecified()
-	if notifyDisconnect {
-		s.retainConn(remote)
-	}
 	defer func() {
 		_ = conn.Close()
-		if notifyDisconnect && s.releaseConn(remote) && s.OnDisconnect != nil {
-			s.OnDisconnect(remote)
+		if notifyDisconnect && s.OnDisconnect != nil {
+			s.OnDisconnect(connKey)
 		}
+		s.releaseConnKey(connKey)
 	}()
 
 	if tc, ok := conn.(*net.TCPConn); ok {
@@ -343,7 +361,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		start := time.Now()
 
-		resp := s.dispatch(req, remote)
+		resp := s.dispatch(req, connKey)
 		if err := resp.write(w, req); err != nil {
 			return
 		}
@@ -356,10 +374,24 @@ func (s *Server) serveConn(conn net.Conn) {
 	}
 }
 
-// ipOf strips the port from an address.
+// ipOf strips any synthetic "#N" connection suffix and port from an address.
 func ipOf(addr string) string {
+	addr = stripConnSuffix(addr)
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return host
 	}
 	return addr
+}
+
+func stripConnSuffix(addr string) string {
+	i := strings.LastIndexByte(addr, '#')
+	if i < 0 || i == len(addr)-1 {
+		return addr
+	}
+	for j := i + 1; j < len(addr); j++ {
+		if addr[j] < '0' || addr[j] > '9' {
+			return addr
+		}
+	}
+	return addr[:i]
 }

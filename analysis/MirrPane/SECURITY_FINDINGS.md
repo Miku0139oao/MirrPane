@@ -179,3 +179,10 @@ Independent re-review of the owner-approval build. Addressed:
 | SEC-209 | RESOLVES | This document now matches the shipped tree, including the config ACL and Dart approval UI. |
 
 Remaining, explicitly not fixed (tracked): SEC-213 (same-IP live-session piggyback; needs per-control-connection proof), SEC-214 (narrow `connecting` state race), SEC-205/206 (data-directory ACL and non-ACL volumes), media framing has no cryptographic integrity, and live iPhone validation of the approval flow (approve → reselect → setup; reconnect; screen lock; dual-stack) is still owed. SEC-014: the local staging seed was rotated and key-bearing logs scrubbed during this work.
+
+## Follow-up — Per-connection control binding & state race (SEC-213 / SEC-214)
+
+| Item | Status | Change |
+|---|---|---|
+| SEC-213 | **RESOLVES** | `ipc.Server` now keys each accepted TCP control connection by its distinct connection identity (`ip:port`, or synthetic `#N` suffix when portless/colliding) and fires `OnDisconnect(connKey)` per connection close while keeping `ratelimit.go` keyed by peer IP. `Receiver` isolates `clientSession` proof per `connKey` (bounded at 64 sessions, preserving `activeConn`), strips the IP for `mirror.Prepare` and pending-approval quotas, blocks same-IP unverified/non-owner `SETUP` and `TEARDOWN`, and allows live/grace handoff only after fresh `pair-verify` proves the same trusted `activeFingerprint`. |
+| SEC-214 | **RESOLVES** | Receiver UI state transitions are recorded under `r.mu` and drained serially under `r.stateMu` (never holding `r.mu` during `OnState`), preventing stale `StatusConnecting` emissions from overwriting newer `StatusIdle` or `StatusLive` states. |
