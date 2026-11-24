@@ -115,8 +115,6 @@ void FrameReader::Start(FlutterDesktopPluginRegistrarRef registrar) {
     return;
   }
 
-  InitD3D11();
-
   FlutterDesktopTextureInfo pixel_info = {};
   pixel_info.type = kFlutterDesktopPixelBufferTexture;
   pixel_info.pixel_buffer_config.callback = &FrameReader::OnPixelFrame;
@@ -124,16 +122,26 @@ void FrameReader::Start(FlutterDesktopPluginRegistrarRef registrar) {
   pixel_texture_id_ = FlutterDesktopTextureRegistrarRegisterExternalTexture(
       texture_registrar_, &pixel_info);
 
-  FlutterDesktopTextureInfo gpu_info = {};
-  gpu_info.type = kFlutterDesktopGpuSurfaceTexture;
-  gpu_info.gpu_surface_config.struct_size =
-      sizeof(FlutterDesktopGpuSurfaceTextureConfig);
-  gpu_info.gpu_surface_config.type =
-      kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle;
-  gpu_info.gpu_surface_config.callback = &FrameReader::OnGpuSurface;
-  gpu_info.gpu_surface_config.user_data = this;
-  gpu_texture_id_ = FlutterDesktopTextureRegistrarRegisterExternalTexture(
-      texture_registrar_, &gpu_info);
+  // Live Windows testing found flicker with shared surfaces. Keep the pixel
+  // buffer as the default and enable the DXGI bridge only for testing.
+  wchar_t experimental_dxgi[2] = {};
+  if (GetEnvironmentVariableW(L"MIRRPANE_EXPERIMENTAL_DXGI", experimental_dxgi,
+                             ARRAYSIZE(experimental_dxgi)) == 1 &&
+      experimental_dxgi[0] == L'1') {
+    InitD3D11();
+  }
+  if (d3d11_device_ != nullptr) {
+    FlutterDesktopTextureInfo gpu_info = {};
+    gpu_info.type = kFlutterDesktopGpuSurfaceTexture;
+    gpu_info.gpu_surface_config.struct_size =
+        sizeof(FlutterDesktopGpuSurfaceTextureConfig);
+    gpu_info.gpu_surface_config.type =
+        kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle;
+    gpu_info.gpu_surface_config.callback = &FrameReader::OnGpuSurface;
+    gpu_info.gpu_surface_config.user_data = this;
+    gpu_texture_id_ = FlutterDesktopTextureRegistrarRegisterExternalTexture(
+        texture_registrar_, &gpu_info);
+  }
 
   if (messenger_ != nullptr) {
     FlutterDesktopMessengerSetCallback(messenger_, kChannelName,
