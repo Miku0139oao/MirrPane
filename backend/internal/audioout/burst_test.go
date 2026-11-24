@@ -46,17 +46,28 @@ func TestPeriodicBurstsPreserveDeviceCoverage(t *testing.T) {
 }
 
 func TestDelayedHeaderReturnDoesNotThrottlePlayback(t *testing.T) {
-	for _, count := range []int{3, 4, 5} {
-		t.Run(fmt.Sprintf("%d_buffers", count), func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+		delay time.Duration
+		ok    bool
+	}{
+		{"3_buffers_35ms", 3, 35 * time.Millisecond, false},
+		{"4_buffers_35ms", 4, 35 * time.Millisecond, false},
+		{"5_buffers_35ms_idle", 5, 35 * time.Millisecond, true},
+		{"5_buffers_55ms_2k_load", 5, 55 * time.Millisecond, false},
+		{"7_buffers_55ms_2k_load", 7, 55 * time.Millisecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			// Model the real waveOut path, where WHDR_DONE can trail actual
-			// playback, including return/scheduling jitter, by up to 35 ms. A
-			// large ring alone cannot cover this delay:
-			// the driver owns each header until returning it to the pump.
-			dev := &fakeDevice{completionDelay: 35 * time.Millisecond}
+			// playback by ~35 ms at idle and ~45-55 ms under live 2K 60 fps
+			// D3D11VA/sws_scale load. A large ring alone cannot cover this
+			// delay: the driver owns each header until returning it to the pump.
+			dev := &fakeDevice{completionDelay: tc.delay}
 			p := newTestPlayer("low", dev)
-			p.bufs = p.bufs[:count]
+			p.bufs = p.bufs[:tc.count]
 			var phase float64
-			p.Write(makeToneFrames(bufFrames*6, &phase))
+			p.Write(makeToneFrames(bufFrames*8, &phase))
 			nextPacket := 10 * time.Millisecond
 			for now := time.Duration(0); now <= 10*time.Second; now += 3 * time.Millisecond {
 				dev.advanceTo(now)
@@ -67,11 +78,11 @@ func TestDelayedHeaderReturnDoesNotThrottlePlayback(t *testing.T) {
 				p.pumpStep()
 			}
 			st := p.Stats()
-			if count < 5 {
+			if !tc.ok {
 				// Negative controls: reproduce the bottleneck with undersized
-				// device queues even though the ring already holds 200 ms.
+				// device queues even though the ring already holds >= 200 ms.
 				if dev.gaps == 0 || st.TrimCount == 0 {
-					t.Fatalf("old device queue did not reproduce starvation and overflow: stats=%+v gaps=%d", st, dev.gaps)
+					t.Fatalf("undersized device queue did not reproduce starvation and overflow: stats=%+v gaps=%d", st, dev.gaps)
 				}
 				return
 			}

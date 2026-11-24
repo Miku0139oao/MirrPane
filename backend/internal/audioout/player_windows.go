@@ -10,6 +10,7 @@ package audioout
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,12 +31,14 @@ const (
 	// bufFrames is one device buffer: 10 ms, matching Windows's shared-mode
 	// audio engine period.
 	bufFrames = SampleRate / 100
-	// bufCount is how many buffers stay queued: 50 ms max in flight. waveOut
-	// header-return latency needs more headroom than the playback duration alone.
-	bufCount = 5
+	// bufCount is the balanced profile's max device queue (80 ms). Under live
+	// 2K 60 fps D3D11VA/sws_scale load, five 10 ms headers starved WHDR_DONE
+	// turnaround by ~23 ms/s; extra headers only fill during turnaround spikes
+	// and do not add steady-state latency.
+	bufCount = 8
 	// ringFrames is the balanced profile's burst capacity, separate from its
 	// normal backlog target. Larger bursts may temporarily add this much delay.
-	ringFrames = SampleRate * 250 / 1000
+	ringFrames = SampleRate * 300 / 1000
 	// trimTargetFrames is the normal backlog target after gentle catch-up.
 	trimTargetFrames = bufFrames * 3
 	// crossfadeFrames is the 2 ms splice window used when trimming overflow
@@ -49,14 +52,18 @@ const (
 
 // Windows waveOut constants.
 const (
-	waveMapper    = 0xFFFFFFFF
-	callbackNull  = 0x00000000
-	whdrDone      = 0x00000001
-	waveFormatPCM = 1
+	waveMapper                 = 0xFFFFFFFF
+	callbackNull               = 0x00000000
+	callbackEvent              = 0x00050000
+	whdrDone                   = 0x00000001
+	waveFormatPCM              = 1
+	threadPriorityTimeCritical = 15
 )
 
 var (
-	winmm = windows.NewLazySystemDLL("winmm.dll")
+	winmm    = windows.NewLazySystemDLL("winmm.dll")
+	avrt     = windows.NewLazySystemDLL("avrt.dll")
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
 	procWaveOutOpen       = winmm.NewProc("waveOutOpen")
 	procWaveOutClose      = winmm.NewProc("waveOutClose")
@@ -65,6 +72,12 @@ var (
 	procWaveOutWrite      = winmm.NewProc("waveOutWrite")
 	procWaveOutReset      = winmm.NewProc("waveOutReset")
 	procWaveOutGetNumDevs = winmm.NewProc("waveOutGetNumDevs")
+	procTimeBeginPeriod   = winmm.NewProc("timeBeginPeriod")
+	procTimeEndPeriod     = winmm.NewProc("timeEndPeriod")
+
+	procAvSetMmThreadCharacteristicsW  = avrt.NewProc("AvSetMmThreadCharacteristicsW")
+	procAvRevertMmThreadCharacteristics = avrt.NewProc("AvRevertMmThreadCharacteristics")
+	procSetThreadPriority              = kernel32.NewProc("SetThreadPriority")
 )
 
 // waveformatex mirrors the Win32 structure. Only the plain PCM fields are used.
@@ -152,9 +165,13 @@ type Player struct {
 	submitBuf func(b *buffer, frames int) // nil in production; overridden in tests
 	now       func() time.Time            // nil uses the monotonic wall clock
 
-	wake     chan struct{}
-	done     chan struct{}
-	pumpDone chan struct{}
+	devEvent   windows.Handle // signaled by winmm on WOM_DONE (CALLBACK_EVENT)
+	wakeEvent  windows.Handle // signaled by Write under p.mu
+	doneEvent  windows.Handle // manual-reset event signaled by Close
+	timer1ms   bool
+	wake       chan struct{}
+	done       chan struct{}
+	pumpDone   chan struct{}
 }
 
 // Available reports whether the machine has a wave output device at all.
@@ -169,12 +186,12 @@ func profileParams(profile string) (count, ring, trim int) {
 		// Capacity is jitter headroom, not steady-state latency: Wi-Fi delivers
 		// audio in bursts. Keep burst capacity separate from the normal target;
 		// only sustained backlog warrants gentle catch-up.
-		// waveOut returns headers after the audio engine has consumed them.
-		// Three 10 ms buffers delivered only ~36 kframes/s on the test device;
-		// even four occasionally stalled. Five cover return/scheduling jitter.
-		return 5, SampleRate * 200 / 1000, bufFrames * 2
+		// Under live 2K 60 fps D3D11VA + sws_scale load, five 10 ms waveOut
+		// buffers starved WHDR_DONE turnaround by ~23 ms/s; seven cover 60 ms
+		// of driver/scheduler turnaround without raising steady-state latency.
+		return 7, SampleRate * 250 / 1000, bufFrames * 2
 	case "stable":
-		return 6, SampleRate * 350 / 1000, bufFrames * 4
+		return 10, SampleRate * 400 / 1000, bufFrames * 4
 	default:
 		return bufCount, ringFrames, trimTargetFrames
 	}
@@ -240,16 +257,41 @@ func OpenWithProfile(profile string) (*Player, error) {
 		BitsPerSample:  16,
 	}
 
+	doneEvent, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return nil, fmt.Errorf("audioout: CreateEvent(done): %w", err)
+	}
+	devEvent, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		_ = windows.CloseHandle(doneEvent)
+		return nil, fmt.Errorf("audioout: CreateEvent(dev): %w", err)
+	}
+	wakeEvent, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		_ = windows.CloseHandle(devEvent)
+		_ = windows.CloseHandle(doneEvent)
+		return nil, fmt.Errorf("audioout: CreateEvent(wake): %w", err)
+	}
+	closeEvents := func() {
+		_ = windows.CloseHandle(wakeEvent)
+		_ = windows.CloseHandle(devEvent)
+		_ = windows.CloseHandle(doneEvent)
+	}
+
 	var handle uintptr
 	ret, _, _ := procWaveOutOpen.Call(
 		uintptr(unsafe.Pointer(&handle)),
 		waveMapper,
 		uintptr(unsafe.Pointer(&format)),
-		callbackNull, 0, 0)
+		uintptr(devEvent), 0, callbackEvent)
 	if ret != 0 {
+		closeEvents()
 		return nil, fmt.Errorf("audioout: waveOutOpen: %d", ret)
 	}
 	p.handle = handle
+	p.doneEvent = doneEvent
+	p.devEvent = devEvent
+	p.wakeEvent = wakeEvent
 
 	for i := range p.bufs {
 		p.bufs[i].data = make([]byte, bufFrames*BytesPerFr)
@@ -260,9 +302,16 @@ func OpenWithProfile(profile string) (*Player, error) {
 		if ret != 0 {
 			// The pump has not started yet, so nothing else can touch the handle.
 			procWaveOutClose.Call(handle)
+			closeEvents()
 			return nil, fmt.Errorf("audioout: waveOutPrepareHeader: %d", ret)
 		}
 		p.bufs[i].prepared = true
+	}
+
+	if procTimeBeginPeriod.Find() == nil {
+		if r, _, _ := procTimeBeginPeriod.Call(1); r == 0 {
+			p.timer1ms = true
+		}
 	}
 
 	go p.pump()
@@ -412,6 +461,9 @@ func (p *Player) Write(frames []int16) {
 	if p.queued > p.peakQueued {
 		p.peakQueued = p.queued
 	}
+	if p.wakeEvent != 0 {
+		_ = windows.SetEvent(p.wakeEvent)
+	}
 	p.mu.Unlock()
 
 	select {
@@ -429,8 +481,14 @@ func (p *Player) Close() {
 	}
 	p.closed = true
 	handle := p.handle
+	doneEvent := p.doneEvent
+	timer1ms := p.timer1ms
+	p.timer1ms = false
 	p.mu.Unlock()
 
+	if doneEvent != 0 {
+		_ = windows.SetEvent(doneEvent)
+	}
 	close(p.done)
 	<-p.pumpDone // the pump is the only other writer of the headers
 
@@ -444,9 +502,54 @@ func (p *Player) Close() {
 			}
 		}
 		procWaveOutClose.Call(handle)
-		p.mu.Lock()
-		p.handle = 0
-		p.mu.Unlock()
+	}
+	if timer1ms {
+		procTimeEndPeriod.Call(1)
+	}
+
+	p.mu.Lock()
+	p.handle = 0
+	if p.wakeEvent != 0 {
+		_ = windows.CloseHandle(p.wakeEvent)
+		p.wakeEvent = 0
+	}
+	if p.devEvent != 0 {
+		_ = windows.CloseHandle(p.devEvent)
+		p.devEvent = 0
+	}
+	if p.doneEvent != 0 {
+		_ = windows.CloseHandle(p.doneEvent)
+		p.doneEvent = 0
+	}
+	p.mu.Unlock()
+}
+
+// elevatePumpThread binds the audio pump to one OS thread and joins Windows's
+// MMCSS "Pro Audio" class so 60 fps D3D11VA/sws_scale work cannot preempt
+// waveOut header refills.
+func elevatePumpThread() func() {
+	runtime.LockOSThread()
+	var mmcss uintptr
+	if procAvSetMmThreadCharacteristicsW.Find() == nil {
+		if name, err := windows.UTF16PtrFromString("Pro Audio"); err == nil {
+			var taskIndex uint32
+			h, _, _ := procAvSetMmThreadCharacteristicsW.Call(
+				uintptr(unsafe.Pointer(name)),
+				uintptr(unsafe.Pointer(&taskIndex)))
+			runtime.KeepAlive(name)
+			mmcss = h
+		}
+	}
+	if mmcss == 0 && procSetThreadPriority.Find() == nil {
+		if th, err := windows.GetCurrentThread(); err == nil {
+			procSetThreadPriority.Call(uintptr(th), uintptr(threadPriorityTimeCritical))
+		}
+	}
+	return func() {
+		if mmcss != 0 && procAvRevertMmThreadCharacteristics.Find() == nil {
+			procAvRevertMmThreadCharacteristics.Call(mmcss)
+		}
+		runtime.UnlockOSThread()
 	}
 }
 
@@ -454,6 +557,20 @@ func (p *Player) Close() {
 // after they are queued, so no locking is needed around them.
 func (p *Player) pump() {
 	defer close(p.pumpDone)
+	restoreThread := elevatePumpThread()
+	defer restoreThread()
+
+	if p.doneEvent != 0 && p.devEvent != 0 && p.wakeEvent != 0 {
+		handles := []windows.Handle{p.doneEvent, p.devEvent, p.wakeEvent}
+		for {
+			ev, _ := windows.WaitForMultipleObjects(handles, false, 3)
+			if ev == windows.WAIT_OBJECT_0 {
+				return
+			}
+			p.pumpStep()
+		}
+	}
+
 	ticker := time.NewTicker(3 * time.Millisecond)
 	defer ticker.Stop()
 

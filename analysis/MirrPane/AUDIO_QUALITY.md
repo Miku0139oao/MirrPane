@@ -190,3 +190,57 @@ its early packets treated as late; the 5 s freshness window and fail-open
 behavior bound the damage, but a device that emits sync at a fixed offset from
 playout could see unnecessary drops. This is not verified against a real
 Apple sender's sync schedule beyond the measured session.
+
+## Live 2K 60 fps load verification and MMCSS / CALLBACK_EVENT fix (2026-11-25)
+
+Live iPhone testing on v0.3.8 (`audioBuffer: "low"`) showed:
+
+- **Portrait (`664×1440`, Spotify)**: 2 minutes continuous playback had
+  `audioTrims = 0`, `audioUnderruns = +0`, and `audioOccupancyMs = 32–52 ms`.
+  `audioLateDropped` caught 6 genuinely late packets (`behind = 103.9 ms` past
+  the sender's `sync.rtp` playout deadline, where `sync.next - sync.rtp = 7497`
+  ticks = 170.0 ms).
+- **Landscape 2K (`2560×1178`, 58–60 fps)**: video stayed locked at 60 fps
+  (`downloadAvgMs ~5.4 ms`, `convertAvgMs ~4.7 ms`), and the sender delivered a
+  rock-steady 194–196 audio packets per 2.11 s (`132.789 s` nominal in
+  `132.779 s` wall time, `audioLateDropped = +0`). Yet `audioOccupancyMs`
+  climbed at **~23 ms/s** (`28.6 → 88.7 → 140.0 → 200 ms`) with zero software
+  underruns, triggering hard overflow trims (`audioTrims: 1 → 9`) and audible
+  micro-glitches.
+
+Root cause: `5 × 10 ms` headers only covered up to ~38 ms of `WHDR_DONE`
+turnaround + wakeup jitter (`10 ms + 35 ms + 3 ms = 48 ms <= 50 ms`, 2 ms
+margin). Under live 2K 60 fps D3D11VA readback, `sws_scale`, 12 MB/frame
+shared-memory copy and Flutter DWM rendering, `callbackNull` 3 ms polling on an
+ordinary Go goroutine exceeded that 40 ms turnaround budget, starving `waveOut`
+by ~2.2% (`~46.9 kHz` actual consumption) while software `inFlight` remained
+non-zero.
+
+Fixes in `backend/internal/audioout/player_windows.go`:
+
+1. **`CALLBACK_EVENT` (`0x00050000`) + `WaitForMultipleObjects`**: `waveOutOpen`
+   now signals a kernel event immediately on `WOM_DONE` (and `Write()`/`Close()`
+   signal wake/done events) instead of polling `WHDR_DONE` blindly on a Go timer.
+2. **MMCSS `"Pro Audio"` thread + `timeBeginPeriod(1)`**: `pump()` locks its OS
+   thread (`runtime.LockOSThread`) and joins `AvSetMmThreadCharacteristicsW("Pro Audio")`
+   (with `THREAD_PRIORITY_TIME_CRITICAL` fallback) so video/GPU/GC work cannot
+   preempt header refills.
+3. **Expanded device-turnaround & burst headroom** (zero added steady-state
+   latency, since `trimTarget` and `highWater` are unchanged):
+   - `low`: `7 × 10 ms` device queue / `250 ms` ring / `20 ms` target (`60 ms` high-water)
+   - `balanced`: `8 × 10 ms` device queue / `300 ms` ring / `30 ms` target (`70 ms` high-water)
+   - `stable`: `10 × 10 ms` device queue / `400 ms` ring / `40 ms` target (`80 ms` high-water)
+
+Post-fix live verification (`2560×1178` 2K landscape @ 59.9–60.2 fps, `low`
+profile, 125 s / 11,279 audio frames):
+
+- **`audioTrims`**: **`0`** across the entire session (down from ~1.45/s in
+  v0.3.7 and 9 trims in 3.5 min before the `waveOut` pump fix).
+- **`audioUnderruns`**: **`+0`** during continuous playback (`12 → 12` across
+  the 67 s continuous run from frame 5,256 to 11,279; earlier increments were
+  sender `TEARDOWN`/`SETUP` track transitions).
+- **`audioOccupancyMs`**: absorbed a `116.4 ms` transition burst (`165.75 ms`
+  lifetime peak within the `250 ms` ring), drifted smoothly back below
+  `60 ms` high-water, and held steady at **`31–56 ms`** with zero climb.
+- **Subjective listening**: user confirmed clean 2K audio with no warble or
+  stutter.

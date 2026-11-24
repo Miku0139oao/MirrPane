@@ -91,9 +91,9 @@ func TestAudioProfileParams(t *testing.T) {
 		profile               string
 		count, capacity, trim int
 	}{
-		{"low", 5, 200, 20},
-		{"balanced", 5, 250, 30},
-		{"stable", 6, 350, 40},
+		{"low", 7, 250, 20},
+		{"balanced", 8, 300, 30},
+		{"stable", 10, 400, 40},
 	} {
 		count, capacity, trim := profileParams(tc.profile)
 		if count != tc.count || capacity != SampleRate*tc.capacity/1000 || trim != SampleRate*tc.trim/1000 {
