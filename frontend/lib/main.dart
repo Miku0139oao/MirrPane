@@ -270,7 +270,12 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   }
 
   Future<void> _disconnect() async {
-    await _host.disconnect();
+    final ok = await _host.disconnect();
+    if (!mounted) return;
+    if (!ok) {
+      _showToast('中斷連線失敗：接收器沒有回應');
+      return;
+    }
     if (_fullscreen) {
       await _toggleFullscreen(enable: false);
     }
@@ -1737,7 +1742,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     setState(() => _busy = true);
     final res = _resolutions[_resKey] ?? (1920, 1080, '');
     final trimmedName = _name.text.trim();
-    final ok = await widget.host.saveConfig({
+    final host = widget.host;
+    await host.stop();
+    final ok = await host.saveConfig({
       if (trimmedName.isNotEmpty) 'name': trimmedName,
       'width': res.$1,
       'height': res.$2,
@@ -1747,15 +1754,26 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       'scaleFilter': _scaleFilter,
       'audioBuffer': _audioBuffer,
     });
-    if (ok) await widget.onRestart();
-    if (mounted) Navigator.of(context).pop();
+    await _finishReceiverEdit(ok);
   }
 
   Future<void> _resetIdentity() async {
     setState(() => _busy = true);
-    await widget.host.resetIdentity();
+    final host = widget.host;
+    await host.stop();
+    await _finishReceiverEdit(await host.resetIdentity());
+  }
+
+  Future<void> _finishReceiverEdit(bool ok) async {
+    if (!mounted) return;
     await widget.onRestart();
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('未能變更接收設定，請確認資料夾可寫且其他接收器已關閉')),
+      );
+    }
+    Navigator.of(context).pop();
   }
 
   Future<void> _clearTrust() async {

@@ -416,6 +416,23 @@ func (d *Decoder) Close() {
 	d.frameReady = false
 }
 
+// ResetStream starts a fresh codec and hardware recovery budget for the next
+// sender. The GPU slot pool outlives a session while a reader holds a texture.
+func (d *Decoder) ResetStream() error {
+	d.release()
+	d.params = nil
+	d.pending = nil
+	d.img = Image{}
+	d.ready = false
+	d.health = newHWFailureTracker()
+	d.reason = ""
+	if !d.options.PreferHardware {
+		d.health.forceSoftware()
+		d.reason = "hardware decoding not requested"
+	}
+	return d.openBest(d.options.PreferHardware)
+}
+
 // release frees every FFmpeg object. The codec context (and its worker
 // threads) is always freed before the hardware device reference.
 func (d *Decoder) release() {

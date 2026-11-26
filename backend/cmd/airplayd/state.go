@@ -3,13 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,25 +91,27 @@ type apiState struct {
 	// Pipeline telemetry. All durations are milliseconds over the last
 	// frames.StatsWindow pictures; keys are additive so older app builds keep
 	// parsing the body.
-	FPS             float64 `json:"fps"`
-	DecodeAvgMs     float64 `json:"decodeAvgMs"`
-	DecodeP95Ms     float64 `json:"decodeP95Ms"`
-	DownloadAvgMs   float64 `json:"downloadAvgMs"`
-	DownloadP95Ms   float64 `json:"downloadP95Ms"`
-	ConvertAvgMs    float64 `json:"convertAvgMs"`
-	ConvertP95Ms    float64 `json:"convertP95Ms"`
-	PublishAvgMs    float64 `json:"publishAvgMs"`
-	PublishP95Ms    float64 `json:"publishP95Ms"`
-	LagFrames       uint64  `json:"lagFrames"`
-	ConsumerAgeMs   float64 `json:"consumerAgeMs"`
-	ConsumerAdopted uint64  `json:"consumerAdopted"`
-	HWMode          string  `json:"hwMode"`
-	GPUZeroCopy     bool    `json:"gpuZeroCopy"`
-	AudioOccupancy  float64 `json:"audioOccupancyMs"`
-	AudioUnderruns  uint64  `json:"audioUnderruns"`
-	AudioHighWater  float64 `json:"audioHighWaterMs"`
-	AudioTrims      uint64  `json:"audioTrims"`
-	AudioLateDrop   uint64  `json:"audioLateDropped"`
+	FPS                float64 `json:"fps"`
+	DecodeAvgMs        float64 `json:"decodeAvgMs"`
+	DecodeP95Ms        float64 `json:"decodeP95Ms"`
+	DownloadAvgMs      float64 `json:"downloadAvgMs"`
+	DownloadP95Ms      float64 `json:"downloadP95Ms"`
+	ConvertAvgMs       float64 `json:"convertAvgMs"`
+	ConvertP95Ms       float64 `json:"convertP95Ms"`
+	PublishAvgMs       float64 `json:"publishAvgMs"`
+	PublishP95Ms       float64 `json:"publishP95Ms"`
+	LagFrames          uint64  `json:"lagFrames"`
+	ConsumerAgeMs      float64 `json:"consumerAgeMs"`
+	ConsumerAdopted    uint64  `json:"consumerAdopted"`
+	HWMode             string  `json:"hwMode"`
+	GPUZeroCopy        bool    `json:"gpuZeroCopy"`
+	AudioOccupancy     float64 `json:"audioOccupancyMs"`
+	AudioUnderruns     uint64  `json:"audioUnderruns"`
+	AudioHighWater     float64 `json:"audioHighWaterMs"`
+	AudioTrims         uint64  `json:"audioTrims"`
+	AudioLateDrop      uint64  `json:"audioLateDropped"`
+	AudioDeviceErrors  uint64  `json:"audioDeviceErrors"`
+	AudioDeviceReopens uint64  `json:"audioDeviceReopens"`
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -203,24 +203,26 @@ func apiHandler(
 			ScaleFilter:  cfg.ScaleFilter,
 			AudioBuffer:  cfg.AudioBuffer,
 
-			FPS:             stats.FPS,
-			DecodeAvgMs:     stats.DecodeAvgMs,
-			DecodeP95Ms:     stats.DecodeP95Ms,
-			DownloadAvgMs:   stats.DownloadAvgMs,
-			DownloadP95Ms:   stats.DownloadP95Ms,
-			ConvertAvgMs:    stats.ConvertAvgMs,
-			ConvertP95Ms:    stats.ConvertP95Ms,
-			PublishAvgMs:    stats.PublishAvgMs,
-			PublishP95Ms:    stats.PublishP95Ms,
-			LagFrames:       stats.LagFrames,
-			ConsumerAgeMs:   stats.ConsumerAgeMs,
-			ConsumerAdopted: stats.ConsumerAdopted,
-			HWMode:          decoderMode,
-			GPUZeroCopy:     stats.GPUZeroCopy,
-			AudioOccupancy:  audioStats.OccupancyMs,
-			AudioUnderruns:  audioStats.UnderrunCount,
-			AudioHighWater:  audioStats.HighWaterMs,
-			AudioTrims:      audioStats.TrimCount,
+			FPS:                stats.FPS,
+			DecodeAvgMs:        stats.DecodeAvgMs,
+			DecodeP95Ms:        stats.DecodeP95Ms,
+			DownloadAvgMs:      stats.DownloadAvgMs,
+			DownloadP95Ms:      stats.DownloadP95Ms,
+			ConvertAvgMs:       stats.ConvertAvgMs,
+			ConvertP95Ms:       stats.ConvertP95Ms,
+			PublishAvgMs:       stats.PublishAvgMs,
+			PublishP95Ms:       stats.PublishP95Ms,
+			LagFrames:          stats.LagFrames,
+			ConsumerAgeMs:      stats.ConsumerAgeMs,
+			ConsumerAdopted:    stats.ConsumerAdopted,
+			HWMode:             decoderMode,
+			GPUZeroCopy:        stats.GPUZeroCopy,
+			AudioOccupancy:     audioStats.OccupancyMs,
+			AudioUnderruns:     audioStats.UnderrunCount,
+			AudioHighWater:     audioStats.HighWaterMs,
+			AudioTrims:         audioStats.TrimCount,
+			AudioDeviceErrors:  audioStats.DeviceErrors,
+			AudioDeviceReopens: audioStats.DeviceReopens,
 		}
 		if recv != nil {
 			body.AudioLateDrop = recv.AudioLateDropped()
@@ -345,9 +347,8 @@ func apiHandler(
 			http.Error(w, "no active video sink", http.StatusServiceUnavailable)
 			return
 		}
-		filename := fmt.Sprintf("MirrPane-%s.png", time.Now().Format("20060102-150405"))
-		outPath := filepath.Join(shotsDir, filename)
-		if err := sink.SnapshotPNG(outPath); err != nil {
+		outPath, err := sink.SnapshotPNG(shotsDir)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}

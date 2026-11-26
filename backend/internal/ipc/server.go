@@ -9,9 +9,11 @@
 package ipc
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"log"
+	"math"
 	"net"
 	"net/netip"
 	"strconv"
@@ -26,6 +28,8 @@ import (
 
 // serverVersion is advertised in the Server header and the /info plist.
 const serverVersion = protocol.SourceVersion
+
+const maxControlConnections = 64
 
 // Server answers the AirPlay control endpoints that iPhones and iPads call when
 // they discover and connect to a receiver.
@@ -66,11 +70,13 @@ type Server struct {
 	limitLogCount int
 
 	// TXTRecord returns the DNS-SD TXT record in wire form for /info?txtAirPlay
-	// (raop false) or /info?txtRAOP (raop true). Set after mDNS starts.
+	// (raop false) or /info?txtRAOP (raop true). Set before serving.
 	TXTRecord func(raop bool) []byte
 
-	ln      net.Listener
-	closing chan struct{}
+	ln       net.Listener
+	closing  chan struct{}
+	sockets  map[net.Conn]struct{}
+	handlers sync.WaitGroup
 
 	started time.Time
 }
@@ -100,6 +106,7 @@ func New(info protocol.DeviceInfo, display Display) *Server {
 		info:    info,
 		display: display,
 		closing: make(chan struct{}),
+		sockets: make(map[net.Conn]struct{}),
 		started: time.Now(),
 	}
 }
@@ -117,6 +124,13 @@ func (s *Server) Listen(addr string) error {
 // lets the caller report the real port before advertising it.
 func (s *Server) Serve(ln net.Listener) error {
 	s.mu.Lock()
+	select {
+	case <-s.closing:
+		s.mu.Unlock()
+		ln.Close()
+		return net.ErrClosed
+	default:
+	}
 	s.ln = ln
 	s.mu.Unlock()
 
@@ -138,10 +152,40 @@ func (s *Server) Serve(ln net.Listener) error {
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
-			go s.serveConn(conn)
+			if !s.admit(conn) {
+				conn.Close()
+				continue
+			}
+			go func() {
+				defer s.finish(conn)
+				s.serveConn(conn)
+			}()
 		}
 	}()
 	return nil
+}
+
+func (s *Server) admit(conn net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.closing:
+		return false
+	default:
+	}
+	if len(s.sockets) >= maxControlConnections {
+		return false
+	}
+	s.sockets[conn] = struct{}{}
+	s.handlers.Add(1)
+	return true
+}
+
+func (s *Server) finish(conn net.Conn) {
+	s.mu.Lock()
+	delete(s.sockets, conn)
+	s.mu.Unlock()
+	s.handlers.Done()
 }
 
 // Addr reports the bound TCP address.
@@ -154,24 +198,24 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
-// Close stops the listener.
+// Close stops accepting and waits for the existing control handlers to finish.
 func (s *Server) Close() error {
-	closeOnce(s.closing)
-	s.mu.RLock()
-	ln := s.ln
-	s.mu.RUnlock()
-	if ln != nil {
-		return ln.Close()
-	}
-	return nil
-}
-
-func closeOnce(ch chan struct{}) {
+	s.mu.Lock()
+	var err error
 	select {
-	case <-ch:
+	case <-s.closing:
 	default:
-		close(ch)
+		close(s.closing)
+		if s.ln != nil {
+			err = s.ln.Close()
+		}
+		for socket := range s.sockets {
+			socket.Close()
+		}
 	}
+	s.mu.Unlock()
+	s.handlers.Wait()
+	return err
 }
 
 // dispatch answers one control message. The routing table matches UxPlay's
@@ -563,11 +607,16 @@ func (s *Server) handleSetParameter(req *Request) *Response {
 	if req.Header("Content-Type") != "text/parameters" {
 		return &Response{}
 	}
-	body := string(req.Body)
+	body := req.Body
 	switch {
-	case strings.HasPrefix(body, "volume:"):
-		log.Printf("ipc: sender set scene volume %q", strings.TrimSpace(body))
-	case strings.HasPrefix(body, "progress:"):
+	case bytes.HasPrefix(body, []byte("volume:")):
+		if len(body) <= 64 {
+			v, err := strconv.ParseFloat(string(bytes.TrimSpace(body[len("volume:"):])), 64)
+			if err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) {
+				log.Printf("ipc: sender set scene volume %g", v)
+			}
+		}
+	case bytes.HasPrefix(body, []byte("progress:")):
 		// Live mirroring has no scrubbing; accept and ignore.
 	default:
 		// Never echo the (up to 4 MiB) body to the log.

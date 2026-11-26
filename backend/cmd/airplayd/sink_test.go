@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"unsafe"
@@ -17,6 +18,74 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/mirror"
 	"golang.org/x/sys/windows"
 )
+
+func TestSessionSnapshotsAreFreshAndUnique(t *testing.T) {
+	name := fmt.Sprintf(`Local\MirrPaneSnapshot-%d`, os.Getpid())
+	pub, err := frames.NewPublisher(name, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish := func(color byte) {
+		t.Helper()
+		if err := pub.Publish(2, 1, 8, []byte{color, 0, 0, 255, color, 0, 0, 255}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(27)
+	sink := newFrameSink(nil, pub, nil)
+	defer sink.Close()
+	dir := t.TempDir()
+	if _, err := sink.SnapshotPNG(dir); err == nil {
+		t.Fatal("new receiver offered a previous picture")
+	}
+	publish(90)
+	const count = 6
+	var wg sync.WaitGroup
+	paths := make(chan string, count)
+	for range count {
+		wg.Go(func() {
+			path, err := sink.SnapshotPNG(dir)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			paths <- path
+		})
+	}
+	wg.Wait()
+	close(paths)
+	seen := map[string]bool{}
+	for path := range paths {
+		if seen[path] {
+			t.Fatalf("duplicate filename %q", path)
+		}
+		seen[path] = true
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(f)
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, _, _, _ := img.At(1, 0).RGBA(); r>>8 != 90 {
+			t.Fatalf("unexpected snapshot pixel %d", r>>8)
+		}
+	}
+	if len(seen) != count {
+		t.Fatalf("saved %d of %d shots", len(seen), count)
+	}
+	sink.ResetStream()
+	if _, err := sink.SnapshotPNG(dir); err == nil {
+		t.Fatal("snapshot used a disconnected sender's picture")
+	}
+	publish(180)
+	pic, err := sink.snapshotPicture()
+	if err != nil || pic.Pix[0] != 180 {
+		t.Fatalf("new session picture: %v", err)
+	}
+}
 
 // The fixture is a single intra-coded 2560x1178 picture, red on the left
 // and blue on the right. Exercise the real decoder, sink and native reader
@@ -202,8 +271,8 @@ func TestFrameSinkGPUZeroCopySnapshotAndConsumerFallback(t *testing.T) {
 
 func assertSinkSnapshot(t *testing.T, sink *frameSink) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "snapshot.png")
-	if err := sink.SnapshotPNG(path); err != nil {
+	path, err := sink.SnapshotPNG(t.TempDir())
+	if err != nil {
 		t.Fatalf("SnapshotPNG: %v", err)
 	}
 	f, err := os.Open(path)

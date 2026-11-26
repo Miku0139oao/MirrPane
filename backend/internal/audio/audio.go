@@ -15,9 +15,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -35,8 +37,7 @@ const (
 )
 
 // Key is one candidate AES key. When a sender paired, the setup key is
-// hashed with the ECDH secret; several candidates are offered and the first
-// that decrypts to a plausible AAC frame wins.
+// hashed with the ECDH secret. The decoder confirms the candidate by producing PCM.
 type Key struct {
 	Name string
 	Key  []byte
@@ -44,6 +45,9 @@ type Key struct {
 
 // Handlers receive what the audio path produces.
 type Handlers struct {
+	// Output writes PCM to the playback queue in session order. It is serialized
+	// with reset and must not call back into the receiver.
+	Output func(*decode.AudioFrame)
 	// OnFrame is called for each decoded access unit, in stream order.
 	OnFrame func(*decode.AudioFrame)
 	// OnSync is called when the sender reports its RTP/NTP mapping.
@@ -69,10 +73,21 @@ type Receiver struct {
 	dataPort    int
 	controlPort int
 
+	// Peer binding, pending repairs and key probing are protected by decMu.
+	peer                          netip.Addr
+	remoteControl                 netip.AddrPort
+	controlSource                 netip.AddrPort
+	dataSource                    netip.AddrPort
+	repair                        repairQueue
+	chosenFailures, probeFailures int
+	trialKey                      int
+	haveTrial                     bool
+	nextProbe, lastDecodeLog      time.Time
+
 	mu      sync.Mutex
 	keys    []Key
 	iv      []byte
-	chosen  int // index of the key that produced a plausible frame, -1 until known
+	chosen  int // index of the key that decoded a frame, -1 until confirmed
 	packets uint64
 	decoded uint64
 	dropped uint64
@@ -140,14 +155,24 @@ func New(logger *log.Logger, handlers Handlers) (*Receiver, error) {
 // must advertise, in the order /setup wants them.
 func (r *Receiver) Ports() (data, control int) { return r.dataPort, r.controlPort }
 
-// Configure sets the key material for the next stream. The optional config is
-// the AudioSpecificConfig; omitting it selects the default AAC-ELD config.
-// A fresh stream resets the sequence history, key choice and decoder buffers.
+// Configure sets decoder key material without admitting any network peer.
+// ConfigurePeer is used for authenticated network streams.
 func (r *Receiver) Configure(keys []Key, iv []byte, config ...[]byte) {
+	r.ConfigurePeer(netip.Addr{}, 0, keys, iv, config...)
+}
+
+// ConfigurePeer binds the incoming UDP stream to the peer authenticated by
+// SETUP. The sender's negotiated control port is also the resend destination.
+func (r *Receiver) ConfigurePeer(peer netip.Addr, controlPort int, keys []Key, iv []byte, config ...[]byte) {
 	r.decMu.Lock()
 	if r.closed {
 		r.decMu.Unlock()
 		return
+	}
+	r.clearIngress()
+	r.peer = peer.Unmap()
+	if r.peer.IsValid() && controlPort > 0 && controlPort <= 65535 {
+		r.remoteControl = netip.AddrPortFrom(r.peer, uint16(controlPort))
 	}
 	r.mu.Lock()
 	r.keys = append([]Key(nil), keys...)
@@ -200,6 +225,7 @@ func (r *Receiver) resetStream(clearKeys bool) {
 	if r.closed {
 		return
 	}
+	r.clearIngress()
 	r.mu.Lock()
 	r.haveLast = false
 	r.syncClock = rtpSync{}
@@ -247,6 +273,7 @@ func (r *Receiver) Close() {
 	_ = r.data.Close()
 	_ = r.control.Close()
 	r.decMu.Lock()
+	r.clearIngress()
 	r.closed = true
 	if r.dec != nil {
 		r.dec.Close()
@@ -258,34 +285,22 @@ func (r *Receiver) Close() {
 func (r *Receiver) readData() {
 	buf := make([]byte, 2048)
 	for {
-		n, _, err := r.data.ReadFromUDP(buf)
+		n, from, err := r.data.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
-		r.handlePacket(buf[:n])
+		r.receiveDatagram(from, buf[:n], false)
 	}
 }
 
 func (r *Receiver) readControl() {
 	buf := make([]byte, 2048)
 	for {
-		n, _, err := r.control.ReadFromUDP(buf)
+		n, from, err := r.control.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
 		}
-		if n < 2 {
-			continue
-		}
-		kind := buf[1] &^ 0x80
-		switch kind {
-		case typeSync:
-			r.handleSync(buf[:n])
-		case typeResend:
-			// The resent packet is a complete RTP packet at offset 4.
-			if n > 4 {
-				r.handlePacket(buf[4:n])
-			}
-		}
+		r.receiveDatagram(from, buf[:n], true)
 	}
 }
 
@@ -295,6 +310,13 @@ func (r *Receiver) handleSync(pkt []byte) {
 	if len(pkt) < 20 {
 		return
 	}
+	rtp, ntp, next := r.recordSync(pkt)
+	if r.handlers.OnSync != nil {
+		r.handlers.OnSync(rtp, ntp, next)
+	}
+}
+
+func (r *Receiver) recordSync(pkt []byte) (uint32, uint64, uint32) {
 	rtp := binary.BigEndian.Uint32(pkt[4:8])
 	ntp := binary.BigEndian.Uint64(pkt[8:16])
 	next := binary.BigEndian.Uint32(pkt[16:20])
@@ -302,15 +324,22 @@ func (r *Receiver) handleSync(pkt []byte) {
 	r.mu.Lock()
 	r.syncClock = rtpSync{rtp: rtp, ntp: ntp, localTime: receivedAt, valid: true}
 	r.mu.Unlock()
-	if r.handlers.OnSync != nil {
-		r.handlers.OnSync(rtp, ntp, next)
-	}
+	return rtp, ntp, next
 }
 
 // handlePacket decrypts and decodes one RTP audio packet.
 func (r *Receiver) handlePacket(pkt []byte) {
-	if len(pkt) < HeaderLen {
-		return
+	r.decMu.Lock()
+	frame := r.consumePacket(pkt)
+	r.decMu.Unlock()
+	if frame != nil && r.handlers.OnFrame != nil {
+		r.handlers.OnFrame(frame)
+	}
+}
+
+func (r *Receiver) consumePacket(pkt []byte) *decode.AudioFrame {
+	if len(pkt) < HeaderLen || r.closed {
+		return nil
 	}
 	r.mu.Lock()
 	r.packets++
@@ -326,24 +355,27 @@ func (r *Receiver) handlePacket(pkt []byte) {
 
 	// At stream start the sender sends a 4-byte no-data marker; it is not audio.
 	if len(payload) == 4 && payload[0] == 0x00 && payload[1] == 0x68 && payload[2] == 0x34 && payload[3] == 0x00 {
-		return
+		return nil
 	}
 	if len(payload) == 0 {
-		return
+		return nil
 	}
 
 	seq := binary.BigEndian.Uint16(pkt[2:4])
 	rtp := binary.BigEndian.Uint32(pkt[4:8])
-	frame, err := r.decodePacket(seq, rtp, payload)
+	frame, err := r.decodePacketLocked(seq, rtp, payload)
 	if err != nil {
-		if err != decode.ErrNoFrame {
+		now := r.clockNow()
+		if !errors.Is(err, decode.ErrNoFrame) && (r.lastDecodeLog.IsZero() || now.Sub(r.lastDecodeLog) >= lateDropLogInterval) {
+			r.lastDecodeLog = now
 			r.log.Printf("audio: decode: %v", err)
 		}
-		return
+		return nil
 	}
-	if frame != nil && r.handlers.OnFrame != nil {
-		r.handlers.OnFrame(frame)
+	if frame != nil && r.handlers.Output != nil {
+		r.handlers.Output(frame)
 	}
+	return frame
 }
 
 // decodePacket keeps stream state, decryption and decoding together so a reset
@@ -351,6 +383,10 @@ func (r *Receiver) handlePacket(pkt []byte) {
 func (r *Receiver) decodePacket(seq uint16, rtp uint32, payload []byte) (*decode.AudioFrame, error) {
 	r.decMu.Lock()
 	defer r.decMu.Unlock()
+	return r.decodePacketLocked(seq, rtp, payload)
+}
+
+func (r *Receiver) decodePacketLocked(seq uint16, rtp uint32, payload []byte) (*decode.AudioFrame, error) {
 	if r.closed {
 		return nil, nil
 	}
@@ -386,17 +422,8 @@ func (r *Receiver) decodePacket(seq uint16, rtp uint32, payload []byte) (*decode
 	}
 	r.mu.Unlock()
 
-	plain, ok := r.decrypt(payload)
-	if !ok {
-		return nil, nil
-	}
-
-	if r.dec == nil {
-		return nil, nil
-	}
-
-	frame, err := r.dec.Decode(plain)
-	if err != nil {
+	frame, err := r.decodeWithKey(payload, now)
+	if err != nil || frame == nil {
 		return nil, err
 	}
 	// Decode's PCM buffer is reused. Own the delivered frame before releasing
@@ -410,42 +437,65 @@ func (r *Receiver) decodePacket(seq uint16, rtp uint32, payload []byte) (*decode
 	return &owned, nil
 }
 
-// decrypt applies AES-128-CBC to one payload the way raop_buffer.c:130-136
-// does: only the block-aligned prefix is encrypted, any trailing remainder is
-// passed through, and the CBC state restarts from the fixed IV every packet.
-func (r *Receiver) decrypt(payload []byte) ([]byte, bool) {
-	r.mu.Lock()
-	keys := r.keys
-	iv := r.iv
-	chosen := r.chosen
-	r.mu.Unlock()
+var errNoAudioKey = errors.New("no configured key decoded this audio frame")
 
-	if len(keys) == 0 || len(iv) != aes.BlockSize {
-		return nil, false
+// Only decoded PCM confirms a candidate. A guessed prefix is a cheap filter,
+// and ambiguous packets must not permanently choose the wrong compatibility key.
+func (r *Receiver) decodeWithKey(payload []byte, now time.Time) (*decode.AudioFrame, error) {
+	if r.dec == nil || len(r.keys) == 0 || len(r.iv) != aes.BlockSize || now.Before(r.nextProbe) {
+		return nil, nil
 	}
-
-	if chosen >= 0 {
-		out := cbcDecrypt(keys[chosen].Key, iv, payload)
-		if plausibleAAC(out) {
-			return out, true
+	try := func(i int) (*decode.AudioFrame, error) {
+		plain := cbcDecrypt(r.keys[i].Key, r.iv, payload)
+		if !plausibleAAC(plain) {
+			return nil, errNoAudioKey
 		}
-		return nil, false
+		if r.haveTrial && r.trialKey != i {
+			r.dec.Flush()
+		}
+		r.trialKey, r.haveTrial = i, true
+		f, err := r.dec.Decode(plain)
+		if err == nil && (f == nil || f.Frames() == 0) {
+			err = decode.ErrNoFrame
+		}
+		return f, err
 	}
-
-	// First packet: try each candidate and keep the one that yields a plausible
-	// AAC frame. A wrong key produces bytes that cannot start a frame.
-	for i, k := range keys {
-		out := cbcDecrypt(k.Key, iv, payload)
-		if plausibleAAC(out) {
-			r.mu.Lock()
-			r.chosen = i
-			r.mu.Unlock()
-			r.log.Printf("audio: key candidate %q decrypts to % x", k.Name, firstBytes(out, 4))
-			return out, true
+	if r.chosen >= 0 {
+		frame, err := try(r.chosen)
+		if err == nil {
+			r.chosenFailures = 0
+			return frame, nil
+		}
+		r.chosenFailures++
+		limit := 3
+		if errors.Is(err, decode.ErrNoFrame) {
+			limit = 8 // tolerate codec priming before reconsidering this choice
+		}
+		if r.chosenFailures >= limit {
+			r.chosen, r.chosenFailures = -1, 0
+			r.haveTrial = false
+			r.dec.Flush()
+		}
+		return nil, err
+	}
+	var lastErr error
+	for i := range r.keys {
+		frame, err := try(i)
+		if err == nil {
+			r.chosen, r.probeFailures = i, 0
+			r.log.Printf("audio: decoder confirmed key candidate %q", r.keys[i].Name)
+			return frame, nil
+		}
+		lastErr = err
+	}
+	if !errors.Is(lastErr, decode.ErrNoFrame) {
+		r.probeFailures++
+		if r.probeFailures >= 3 {
+			r.nextProbe = now.Add(100 * time.Millisecond)
+			r.probeFailures = 0
 		}
 	}
-	r.log.Printf("audio: no key candidate produced a plausible frame (% x)", firstBytes(payload, 4))
-	return nil, false
+	return nil, lastErr
 }
 
 func cbcDecrypt(key, iv, payload []byte) []byte {
@@ -477,11 +527,4 @@ func plausibleAAC(b []byte) bool {
 		return true
 	}
 	return false
-}
-
-func firstBytes(b []byte, n int) []byte {
-	if len(b) < n {
-		return b
-	}
-	return b[:n]
 }

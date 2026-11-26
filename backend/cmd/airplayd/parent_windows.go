@@ -3,6 +3,8 @@
 package main
 
 import (
+	"fmt"
+	"math"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -25,20 +27,31 @@ func hasConsole() bool {
 // The UI starts the sidecar as a child process. Windows does not reap children,
 // so a window that is force-closed would otherwise leave a receiver holding the
 // AirPlay port and still accepting connections — with no window to show for it.
-func watchParent(pid int) {
-	if pid <= 0 {
-		return
+func watchParent(pid int) error {
+	if pid == 0 {
+		return nil
+	}
+	if pid < 0 || uint64(pid) > math.MaxUint32 {
+		return fmt.Errorf("invalid parent PID %d", pid)
 	}
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
-		return
+		return fmt.Errorf("open parent process %d: %w", pid, err)
+	}
+	// Detect an already-exited parent before touching settings or advertising.
+	state, err := windows.WaitForSingleObject(handle, 0)
+	if err != nil || state != uint32(windows.WAIT_TIMEOUT) {
+		windows.CloseHandle(handle)
+		return fmt.Errorf("parent process %d is unavailable (wait %d, %v)", pid, state, err)
 	}
 	go func() {
 		defer windows.CloseHandle(handle)
 		if _, err := windows.WaitForSingleObject(handle, windows.INFINITE); err != nil {
-			return
+			note("parent process monitor failed: %v", err)
+			os.Exit(1)
 		}
 		note("parent process exited; stopping")
 		os.Exit(0)
 	}()
+	return nil
 }

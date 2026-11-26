@@ -7,12 +7,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -382,5 +385,279 @@ func TestFindIgnoresPATHAndCWD(t *testing.T) {
 
 	if dir, err := Find(); err == nil {
 		t.Fatalf("Find() selected untrusted PATH/CWD directory %q", dir)
+	}
+}
+
+func assertNoStagingLeftovers(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".download-") || strings.Contains(entry.Name(), ".stale-") {
+			t.Fatalf("staging leftover after install: %s", entry.Name())
+		}
+	}
+}
+
+func readManifestLines(t *testing.T, dir string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, manifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// P2.5: a cache that is present but damaged (a missing DLL, a non-empty but
+// corrupted DLL, a wrong licence, or a manifest that no longer matches) must be
+// repaired by moving the damaged directory aside and publishing the freshly
+// downloaded, verified one. Windows cannot rename onto a non-empty directory,
+// so the earlier implementation left the missing file missing.
+func TestInstallRepairsDamagedCache(t *testing.T) {
+	for _, damage := range []string{"missing-dll", "corrupt-dll", "corrupt-license", "manifest-without-dll"} {
+		t.Run(damage, func(t *testing.T) {
+			var downloads atomic.Int32
+			i := testInstaller(t, sharedArchive(t), nil, &downloads)
+			root := t.TempDir()
+			dir, err := i.install(context.Background(), root, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !installed(dir) {
+				t.Fatal("fresh install is not complete")
+			}
+			switch damage {
+			case "missing-dll":
+				if err := os.Remove(filepath.Join(dir, DLLs[1])); err != nil {
+					t.Fatal(err)
+				}
+			case "corrupt-dll":
+				if err := os.WriteFile(filepath.Join(dir, DLLs[3]), []byte("truncated but non-empty"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "corrupt-license":
+				if err := os.WriteFile(filepath.Join(dir, "COPYING"), []byte("not the GPL text"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "manifest-without-dll":
+				lines := readManifestLines(t, dir)
+				var kept []string
+				for _, line := range lines {
+					if !strings.HasSuffix(line, "  "+DLLs[0]) {
+						kept = append(kept, line)
+					}
+				}
+				if err := os.WriteFile(filepath.Join(dir, manifestName), []byte(strings.Join(kept, "\n")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if installed(dir) {
+				t.Fatalf("%s was not detected as damaged", damage)
+			}
+			again, err := i.install(context.Background(), root, nil)
+			if err != nil {
+				t.Fatalf("repair failed: %v", err)
+			}
+			if again != dir || !installed(dir) || downloads.Load() != 2 {
+				t.Fatalf("damage not repaired: dir=%s installed=%t downloads=%d", again, installed(dir), downloads.Load())
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, DLLs[3])); err != nil || !bytes.Equal(got, []byte("test DLL content: ffmpeg/bin/"+DLLs[3])) {
+				t.Fatalf("DLL content not restored: %q %v", got, err)
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, "COPYING")); err != nil || string(got) != "test DLL content: ffmpeg/LICENSE.txt" {
+				t.Fatalf("licence not restored: %q %v", got, err)
+			}
+			assertNoStagingLeftovers(t, root)
+		})
+	}
+}
+
+func TestConcurrentInstallsPublishOneVerifiedRuntime(t *testing.T) {
+	var downloads atomic.Int32
+	i := testInstaller(t, sharedArchive(t), nil, &downloads)
+	root := t.TempDir()
+	const workers = 4
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for n := 0; n < workers; n++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, errs[n] = i.install(context.Background(), root, nil)
+		}(n)
+	}
+	wg.Wait()
+	for n, err := range errs {
+		if err != nil {
+			t.Fatalf("installer %d: %v", n, err)
+		}
+	}
+	dir := cached(root)
+	if dir == "" || !installed(dir) {
+		t.Fatalf("no verified runtime published (downloads=%d)", downloads.Load())
+	}
+	assertNoStagingLeftovers(t, root)
+}
+
+func TestManifestMustCoverEveryShippedDLL(t *testing.T) {
+	dir := t.TempDir()
+	hashes := make(map[string]string)
+	for _, dll := range DLLs {
+		data := []byte("dll " + dll)
+		if err := os.WriteFile(filepath.Join(dir, dll), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		hashes[dll] = hex.EncodeToString(sum[:])
+	}
+	// Legacy directories without a manifest are accepted on presence alone.
+	if !complete(dir) {
+		t.Fatal("legacy cache without a manifest rejected")
+	}
+	// A manifest is authoritative: it must list every shipped DLL and match.
+	partial := map[string]string{DLLs[0]: hashes[DLLs[0]]}
+	if err := writeManifest(dir, partial); err != nil {
+		t.Fatal(err)
+	}
+	if complete(dir) {
+		t.Fatal("manifest missing a DLL accepted")
+	}
+	if err := writeManifest(dir, hashes); err != nil {
+		t.Fatal(err)
+	}
+	if !complete(dir) {
+		t.Fatal("valid manifest rejected")
+	}
+	if err := os.WriteFile(filepath.Join(dir, DLLs[2]), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if complete(dir) {
+		t.Fatal("tampered DLL accepted")
+	}
+}
+
+func TestLegacyPinnedCacheRequiresVerifiedContents(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runtime-"+assetSHA256[:16])
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append([]string{"COPYING"}, DLLs[:]...) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("incomplete previous installation"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if installed(dir) {
+		t.Fatal("legacy pinned cache accepted unrelated file contents")
+	}
+}
+
+// P2.5: when the cached copy passes the presence check but fails the ABI
+// validator, Ensure replaces it with a fresh verified download instead of
+// returning the broken directory forever.
+func TestEnsureReplacesRuntimeThatFailsValidation(t *testing.T) {
+	var downloads atomic.Int32
+	i := testInstaller(t, sharedArchive(t), nil, &downloads)
+	root := t.TempDir()
+	dir, err := i.install(context.Background(), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate content that looks installed but is ABI-incompatible: the
+	// validator rejects the old tree until it has been replaced.
+	stale := filepath.Join(dir, "abi-mismatch.flag")
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MIRRPANE_FFMPEG_DIR", "")
+	validate := func(dir string) error {
+		if _, err := os.Stat(filepath.Join(dir, "abi-mismatch.flag")); err == nil {
+			return errors.New("decode: incompatible ABI")
+		}
+		return nil
+	}
+	got, err := ensure(context.Background(), root, nil, validate, i)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if downloads.Load() != 2 {
+		t.Fatalf("validation failure did not force a re-download: downloads=%d", downloads.Load())
+	}
+	if got != dir || !installed(got) {
+		t.Fatalf("repaired runtime not used: %s", got)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale directory content survived the repair")
+	}
+	assertNoStagingLeftovers(t, root)
+}
+
+// A compatible cache must not be re-downloaded when the network is unavailable.
+func TestEnsureUsesGoodCacheOffline(t *testing.T) {
+	var downloads atomic.Int32
+	i := testInstaller(t, sharedArchive(t), nil, &downloads)
+	root := t.TempDir()
+	dir, err := i.install(context.Background(), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offline := i
+	offline.releaseURL = "http://127.0.0.1:1/pinned"
+	offline.expectedURL = "http://127.0.0.1:1/archive"
+	offline.retryDelay = time.Millisecond
+	t.Setenv("MIRRPANE_FFMPEG_DIR", "")
+	got, err := ensure(context.Background(), root, nil, func(string) error { return nil }, offline)
+	if err != nil || got != dir || downloads.Load() != 1 {
+		t.Fatalf("good cache was not reused offline: %s %v, downloads=%d", got, err, downloads.Load())
+	}
+}
+
+// -Force must replace a complete pinned cache, not silently reuse it.
+func TestForcedInstallReplacesCompleteCache(t *testing.T) {
+	var downloads atomic.Int32
+	i := testInstaller(t, sharedArchive(t), nil, &downloads)
+	root := t.TempDir()
+	dir, err := i.install(context.Background(), root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stale.flag"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := i.installWith(context.Background(), root, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != dir || downloads.Load() != 2 || !installed(dir) {
+		t.Fatalf("forced install reused the cache: downloads=%d", downloads.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stale.flag")); !os.IsNotExist(err) {
+		t.Fatal("forced install did not replace the directory")
+	}
+	assertNoStagingLeftovers(t, root)
+}
+
+// Supplementary: the manifest lines are sorted so identical content produces
+// an identical cache directory listing.
+func TestManifestIsSorted(t *testing.T) {
+	hashes := map[string]string{"b": strings.Repeat("1", 64), "a": strings.Repeat("2", 64)}
+	dir := t.TempDir()
+	if err := writeManifest(dir, hashes); err != nil {
+		t.Fatal(err)
+	}
+	lines := readManifestLines(t, dir)
+	names := make([]string, len(lines))
+	for i, line := range lines {
+		names[i] = strings.Fields(line)[1]
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Fatalf("manifest not sorted: %v", names)
 	}
 }

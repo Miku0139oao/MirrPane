@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -88,6 +89,11 @@ type mirrpaneApp struct {
 	quarterTurns int
 	barVisible   bool
 	barLastMove  time.Time
+	// barHovered pauses auto-hide while the pointer is over the top bar, so a
+	// button cannot disappear under the cursor before it is clicked;
+	// barFocused does the same while one of its controls has the keyboard.
+	barHovered bool
+	barFocused bool
 
 	// configDraft collects the restart-required settings from the settings UI.
 	configDraft   configDraft
@@ -222,6 +228,11 @@ func (a *mirrpaneApp) applySnapshot(snap Snapshot) {
 		// Stop showing the prior sender when another session starts.
 		a.clearVideoPicture()
 	}
+	if audioOnly(snap.State) && !audioOnly(a.snap.State) {
+		// An audio-only session carries no picture; do not leave the previous
+		// session's last frame behind its "僅音訊" card.
+		a.clearVideoPicture()
+	}
 	a.snap = snap
 	if snap.Phase == PhaseBooting || snap.Phase == PhaseFailed {
 		a.audioSynced = false
@@ -251,7 +262,8 @@ func (a *mirrpaneApp) presentFrame(c *ui.Context) {
 		a.uiFPS = float64(a.fpsFrames) / elapsed.Seconds()
 		a.fpsFrames, a.fpsStart = 0, now
 	}
-	if a.prefs.BarHideSeconds > 0 && now.Sub(a.barLastMove) >= time.Duration(a.prefs.BarHideSeconds)*time.Second {
+	if a.prefs.BarHideSeconds > 0 && !a.barHovered && !a.barFocused &&
+		now.Sub(a.barLastMove) >= time.Duration(a.prefs.BarHideSeconds)*time.Second {
 		a.barVisible = false
 	}
 }
@@ -306,15 +318,58 @@ func (a *mirrpaneApp) toggleAlwaysOnTop() {
 }
 
 func (a *mirrpaneApp) setFullScreen(v bool) {
+	a.fullscreen = v
 	if a.win == nil {
 		return
 	}
-	a.fullscreen = v
 	a.win.SetFullScreen(v)
 }
 
 func (a *mirrpaneApp) toggleFullScreen() {
 	a.setFullScreen(!a.fullscreen)
+}
+
+// shortcut reports whether the key was pressed this frame for the first time.
+// MyGo sets the auto-repeat flag when Shortcut consumes the key, so asking
+// ShortcutRepeated right after the match distinguishes a held key from a
+// fresh press.
+func shortcut(c *ui.Context, mods ui.Modifiers, key ui.Key) bool {
+	return c.Shortcut(mods, key) && !c.ShortcutRepeated()
+}
+
+// disconnect asks the receiver to drop the session. Only an acknowledged
+// disconnect returns to the waiting screen; a receiver that cannot be reached
+// leaves the window as it was and the failure is shown to the user.
+func (a *mirrpaneApp) disconnect() {
+	if a.demo {
+		a.pendingToast = "預覽模式使用模擬訊號"
+		return
+	}
+	go func() { a.applyDisconnect(a.sidecar.Disconnect()) }()
+}
+
+// applyDisconnect turns one disconnect attempt into what the user sees. A
+// failure is reported and leaves fullscreen alone, so a still-live picture is
+// not silently windowed.
+func (a *mirrpaneApp) applyDisconnect(err error) bool {
+	if err != nil {
+		a.toastAsync("中斷連線失敗：" + err.Error())
+		return false
+	}
+	a.afterDisconnect()
+	return true
+}
+
+// afterDisconnect leaves fullscreen and shows the waiting screen, matching the
+// old UI's behaviour on a successful disconnect.
+func (a *mirrpaneApp) afterDisconnect() {
+	if a.closed.Load() {
+		return
+	}
+	a.dispatchUI(func() {
+		a.setFullScreen(false)
+		a.pendingToast = "已中斷連線，等待重新連接"
+	})
 }
 
 func (a *mirrpaneApp) openLogs() {
@@ -373,6 +428,44 @@ func (a *mirrpaneApp) toggleMute() {
 
 func (a *mirrpaneApp) screenshotsDir() string {
 	return filepath.Join(a.installDir, "screenshots")
+}
+
+// ensureScreenshotsDir creates the screenshots folder. A fresh portable
+// install ships without it, and Explorer cannot open a path that does not
+// exist.
+func (a *mirrpaneApp) ensureScreenshotsDir() error {
+	return os.MkdirAll(a.screenshotsDir(), 0o755)
+}
+
+// openScreenshots creates the screenshots folder first and reports a failure
+// to create or open it instead of doing nothing.
+func (a *mirrpaneApp) openScreenshots() {
+	if err := a.ensureScreenshotsDir(); err != nil {
+		a.pendingToast = "無法建立截圖資料夾：" + err.Error()
+		return
+	}
+	if err := openFolder(a.screenshotsDir()); err != nil {
+		a.pendingToast = "無法開啟截圖資料夾：" + err.Error()
+	}
+}
+
+// openInstallDir opens the program folder and reports a failure.
+func (a *mirrpaneApp) openInstallDir() {
+	if err := openFolder(a.installDir); err != nil {
+		a.pendingToast = "無法開啟程式資料夾：" + err.Error()
+	}
+}
+
+// barShown reports whether the live top bar is on screen. It is shared by the
+// bar and the HUD so the HUD's top offset cannot disagree with the bar.
+func (a *mirrpaneApp) barShown(interrupted bool, st *ReceiverState) bool {
+	return interrupted || a.barVisible || a.prefs.BarHideSeconds == 0 || audioOnly(st)
+}
+
+// audioOnly reports a live session that carries sound but no picture, which
+// the receiver marks with the "audio" reason.
+func audioOnly(st *ReceiverState) bool {
+	return st != nil && st.Reason == "audio"
 }
 
 func (a *mirrpaneApp) takeSnapshot() {
@@ -439,7 +532,19 @@ func (a *mirrpaneApp) openSettings() {
 // saveConfigAndRestart writes the graphics/audio drafts into config.json and
 // restarts the sidecar so they take effect, mirroring the old UI's
 // "儲存並重啟" button.
+//
+// The settings dialog is closed only once the restart is accepted; while a
+// previous restart is still running the draft stays open so an edit cannot be
+// dropped without the user seeing it.
 func (a *mirrpaneApp) saveConfigAndRestart() {
+	if a.demo {
+		a.pendingToast = "預覽模式使用模擬訊號"
+		return
+	}
+	if a.restarting || a.closed.Load() {
+		a.pendingToast = "接收器正在重新啟動，請稍候再儲存"
+		return
+	}
 	patch := a.configDraft.changes(a.initialConfig)
 	a.showSettings = false
 	if len(patch) == 0 {
@@ -478,14 +583,16 @@ func (draft configDraft) changes(original configDraft) map[string]any {
 }
 
 // Only one restart can own the settings and sidecar at a time. A failed edit
-// still brings the receiver back with the original configuration.
-func (a *mirrpaneApp) restartReceiver(edit func() error, message string) {
+// still brings the receiver back with the original configuration. It reports
+// whether this call took ownership, so a caller can keep its draft open when a
+// previous restart is still running.
+func (a *mirrpaneApp) restartReceiver(edit func() error, message string) bool {
 	if a.demo {
 		a.pendingToast = "預覽模式使用模擬訊號"
-		return
+		return false
 	}
 	if a.restarting || a.closed.Load() {
-		return
+		return false
 	}
 	a.restarting = true
 	a.workers.Add(1)
@@ -499,12 +606,19 @@ func (a *mirrpaneApp) restartReceiver(edit func() error, message string) {
 		}
 		if !a.closed.Load() {
 			a.sidecar.Start()
-			a.win.Update(func() {
+			win := a.win
+			if win == nil || win.IsDestroyed() {
+				a.restarting = false
+				a.pendingToast = message
+				return
+			}
+			win.Update(func() {
 				a.restarting = false
 				a.pendingToast = message
 			})
 		}
 	}()
+	return true
 }
 
 func (a *mirrpaneApp) view(c *ui.Context) {
@@ -520,61 +634,67 @@ func (a *mirrpaneApp) view(c *ui.Context) {
 	if ta := a.pendingToastAction; ta != nil {
 		a.pendingToastAction = nil
 		folder := ta.folder
-		c.ToastAction(ta.msg, ta.label, func() { openFolder(folder) })
+		c.ToastAction(ta.msg, ta.label, func() {
+			if err := openFolder(folder); err != nil {
+				a.pendingToast = "無法開啟資料夾：" + err.Error()
+			}
+		})
 	}
 
 	// Global keyboard shortcuts. Modifier shortcuts are checked first; the
 	// single-letter ones are skipped while a text field has focus.
-	if !c.ShortcutRepeated() {
-		if c.Shortcut(0, ui.KeyF11) {
-			a.toggleFullScreen()
+	//
+	// MyGo only sets ShortcutRepeated when Shortcut consumes the key, so the
+	// repeat check has to follow each match. Checking it once before the
+	// matches let every auto-repeat frame run the action again.
+	if shortcut(c, 0, ui.KeyF11) {
+		a.toggleFullScreen()
+	}
+	if shortcut(c, 0, ui.KeyEscape) {
+		switch {
+		case a.showSettings, a.showLogs:
+			a.showSettings, a.showLogs = false, false
+		case a.fullscreen:
+			a.setFullScreen(false)
 		}
-		if c.Shortcut(0, ui.KeyEscape) {
-			switch {
-			case a.showSettings, a.showLogs:
-				a.showSettings, a.showLogs = false, false
-			case a.fullscreen:
-				a.setFullScreen(false)
-			}
+	}
+	if shortcut(c, ui.Ctrl, ui.KeyT) {
+		a.toggleAlwaysOnTop()
+		if a.alwaysOnTop {
+			a.pendingToast = "視窗已置頂"
+		} else {
+			a.pendingToast = "已取消視窗置頂"
 		}
-		if c.Shortcut(ui.Ctrl, ui.KeyT) {
-			a.toggleAlwaysOnTop()
-			if a.alwaysOnTop {
-				a.pendingToast = "視窗已置頂"
-			} else {
-				a.pendingToast = "已取消視窗置頂"
-			}
+	}
+	if shortcut(c, ui.Ctrl, ui.KeyL) {
+		a.openLogs()
+	}
+	if shortcut(c, ui.Ctrl, ui.KeyComma) {
+		a.openSettings()
+	}
+	if shortcut(c, ui.Ctrl, ui.KeyK) {
+		// Alias for Ctrl+, because an active IME can swallow punctuation
+		// chords before the app sees them.
+		a.openSettings()
+	}
+	if shortcut(c, ui.Ctrl, ui.KeyS) && a.streaming() {
+		a.takeSnapshot()
+	}
+	if !a.showSettings && !a.showLogs && !c.FocusTakesText() && a.streaming() {
+		if shortcut(c, 0, ui.KeyR) {
+			a.rotateRight()
 		}
-		if c.Shortcut(ui.Ctrl, ui.KeyL) {
-			a.openLogs()
+		if shortcut(c, 0, ui.KeyH) {
+			a.toggleFlip()
 		}
-		if c.Shortcut(ui.Ctrl, ui.KeyComma) {
-			a.openSettings()
+		if shortcut(c, 0, ui.KeyZ) {
+			a.toggleFill()
 		}
-		if c.Shortcut(ui.Ctrl, ui.KeyK) {
-			// Alias for Ctrl+, because an active IME can swallow punctuation
-			// chords before the app sees them.
-			a.openSettings()
+		if shortcut(c, 0, ui.KeyM) {
+			a.toggleMute()
 		}
-		if c.Shortcut(ui.Ctrl, ui.KeyS) && a.streaming() {
-			a.takeSnapshot()
-		}
-		if !a.showSettings && !a.showLogs && !c.FocusTakesText() && a.streaming() {
-			if c.Shortcut(0, ui.KeyR) {
-				a.rotateRight()
-			}
-			if c.Shortcut(0, ui.KeyH) {
-				a.toggleFlip()
-			}
-			if c.Shortcut(0, ui.KeyZ) {
-				a.toggleFill()
-			}
-			if c.Shortcut(0, ui.KeyM) {
-				a.toggleMute()
-			}
-			if c.Shortcut(0, ui.KeyTab) {
-				a.toggleHud()
-			}
+		if shortcut(c, 0, ui.KeyTab) {
+			a.toggleHud()
 		}
 	}
 
@@ -744,6 +864,15 @@ func (a *mirrpaneApp) buildWaitingScreen(c *ui.Context) {
 					}
 				})
 
+				ui.Row(c).FillWidth().Gap(8).Wrap().Children(func() {
+					if ui.Button(c.Key("wait-rescan"), "重新廣播").Clicked() {
+						a.restartReceiver(nil, "接收器已重新啟動")
+					}
+					if ui.Button(c.Key("wait-shots"), "開啟截圖資料夾").Clicked() {
+						a.openScreenshots()
+					}
+				})
+
 				// Target resolution, decoder, and AirPlay version badges.
 				ui.Row(c).Gap(8).Wrap().Children(func() {
 					resText := fmt.Sprintf("目標 %dx%d @ %d fps", st.TargetWidth, st.TargetHeight, st.MaxFPS)
@@ -780,7 +909,7 @@ func (a *mirrpaneApp) buildConnectingScreen(c *ui.Context) {
 					ui.Text(c, st.Reason).FontSize(13).TextColor(colMuted)
 				}
 				if ui.Button(c.Key("cancel-connect"), "中斷連線").Clicked() {
-					go func() { _ = a.sidecar.Disconnect() }()
+					a.disconnect()
 				}
 			})
 		})
@@ -795,34 +924,61 @@ func (a *mirrpaneApp) buildLiveScreen(c *ui.Context, interrupted bool) {
 	}
 
 	box := ui.Box(c).Fill().Background(ui.RGB(0, 0, 0))
-	// Any pointer activity reveals the auto-hidden top bar and restarts its
-	// idle timer.
-	box.ObserveInput(func(ev ui.InputEvent) {
-		if ev.Kind == ui.InputPointerMove || ev.Kind == ui.InputPointerDown {
+	// Pointer activity over the picture reveals the auto-hidden top bar and
+	// restarts its idle timer; a double press toggles fullscreen, as the old
+	// Flutter UI did. HandleInput only receives input the controls inside did
+	// not take, so a press on a toolbar button never reaches this.
+	box.HandleInput(func(ev ui.InputEvent) bool {
+		switch ev.Kind {
+		case ui.InputPointerMove, ui.InputPointerDown:
 			a.barLastMove = time.Now()
 			if !a.barVisible {
 				a.barVisible = true
+				a.barHovered = false
 				if a.win != nil && !a.win.IsDestroyed() {
 					a.win.Invalidate()
 				}
 			}
+			if ev.Kind == ui.InputPointerDown && ev.Clicks >= 2 && !a.barHovered {
+				a.toggleFullScreen()
+			}
 		}
+		return false // observing only: the press goes on as it would
 	})
 	box.Children(func() {
 		a.buildVideoSurface(c)
 
 		// Overlay top bar. ZIndex keeps the bar above the GPU-composited video
 		// picture, which this mygo version paints over later siblings otherwise.
-		showBar := a.barVisible || interrupted || a.prefs.BarHideSeconds == 0
+		showBar := a.barShown(interrupted, st)
+		if !showBar {
+			a.barHovered, a.barFocused = false, false
+		}
 		if showBar {
 			ui.Column(c).Absolute().Top(0).Left(0).Right(0).Padding(10, 14).ZIndex(60).Children(func() {
 				a.buildLiveTopBar(c, st)
 			})
 		}
 
+		// Audio-only sessions have no picture; name the sender on the empty
+		// surface so a live audio stream does not look like a missing video.
+		if !interrupted && audioOnly(st) {
+			ui.Column(c).Absolute().Top(0).Left(0).Right(0).Bottom(0).Center().PassThrough().
+				Children(func() {
+					ui.Column(c).Width(440).Padding(24).Gap(10).Radius(14).Background(colOverlayBg).
+						Border(1, colBorder).AlignItems(ui.Center).Children(func() {
+						pill(c, "僅音訊", colAccent)
+						ui.Textf(c, "來源裝置：%s", nonEmpty(st.Sender, "AirPlay")).
+							FontSize(16).Bold().TextColor(colInk)
+						ui.Text(c, "發送端正在播放音訊，沒有視訊畫面。").
+							FontSize(13).TextColor(colMuted).TextAlign(ui.Center)
+					})
+				})
+		}
+
 		// Telemetry HUD overlay.
 		if a.prefs.ShowHud {
-			a.buildHudOverlay(c, st)
+			a.buildHudOverlay(c, st, showBar)
 		}
 
 		// Interrupted overlay card over the frozen last frame.
@@ -846,7 +1002,7 @@ func (a *mirrpaneApp) buildLiveScreen(c *ui.Context, interrupted bool) {
 							a.restartReceiver(nil, "")
 						}
 						if ui.PrimaryButton(c.Key("int-disconnect"), "返回等待畫面").Clicked() {
-							go func() { _ = a.sidecar.Disconnect() }()
+							a.disconnect()
 						}
 					})
 				})
@@ -867,14 +1023,27 @@ func (a *mirrpaneApp) buildLiveTopBar(c *ui.Context, st *ReceiverState) {
 	}
 	decText := nonEmpty(st.Decoder, nonEmpty(st.DecoderMode, "auto"))
 
-	ui.Column(c).FillWidth().Padding(8, 12).Gap(6).Radius(10).Background(colOverlayBg).
-		Border(1, colBorder).Children(func() {
+	bar := ui.Column(c).FillWidth().Padding(8, 12).Gap(6).Radius(10).Background(colOverlayBg).
+		Border(1, colBorder)
+	// Hovered and FocusWithin are read as the bar builds: mygo rebuilds when
+	// the pointer comes over it, leaves, or the keyboard focus changes, and
+	// while a control holds either the hide timer stays paused.
+	hovered, focused := bar.Hovered(), bar.FocusWithin()
+	a.barHovered, a.barFocused = hovered, focused
+	if hovered || focused {
+		a.barLastMove = time.Now()
+	}
+	bar.Children(func() {
 		// Status line: sender and stream quality.
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, nonEmpty(st.Sender, "AirPlay")).Bold().FontSize(14).SingleLine()
-			ui.Badge(c, resText)
-			ui.Badge(c, fmt.Sprintf("%.0f fps", displayFPS))
-			ui.Badge(c, decText)
+			if audioOnly(st) {
+				ui.Badge(c, "僅音訊")
+			} else {
+				ui.Badge(c, resText)
+				ui.Badge(c, fmt.Sprintf("%.0f fps", displayFPS))
+				ui.Badge(c, decText)
+			}
 			ui.Spacer(c)
 		})
 
@@ -932,24 +1101,26 @@ func (a *mirrpaneApp) buildLiveTopBar(c *ui.Context, st *ReceiverState) {
 				a.openSettings()
 			}
 			if ui.Button(c.Key("live-disc"), "中斷").TextColor(colDanger).Clicked() {
-				go func() { _ = a.sidecar.Disconnect() }()
+				a.disconnect()
 			}
 		})
 	})
 }
 
-func (a *mirrpaneApp) buildHudOverlay(c *ui.Context, st *ReceiverState) {
+func (a *mirrpaneApp) buildHudOverlay(c *ui.Context, st *ReceiverState, showBar bool) {
 	bw, bh := a.bitmap.Size()
 	w, h := st.Width, st.Height
 	if w <= 0 || h <= 0 {
 		w, h = bw, bh
 	}
 
-	// Position all four corners in the view's logical coordinates.
+	// Position all four corners in the view's logical coordinates. The bar's
+	// visibility decides the top offset, so an interrupted stream that forces
+	// the bar on cannot leave the HUD underneath it.
 	const cardH = float32(78)
 	_, viewH := c.Size()
 	topPad := float32(142) // clear all three toolbar rows
-	if !a.barVisible && a.prefs.BarHideSeconds > 0 {
+	if !showBar {
 		topPad = 14
 	}
 	top := topPad
@@ -991,7 +1162,7 @@ func (a *mirrpaneApp) buildFailedScreen(c *ui.Context) {
 					pill(c, "接收器無法啟動", colDanger)
 					ui.Spacer(c)
 					if ui.Button(c.Key("fail-open-dir"), "開啟資料夾").Clicked() {
-						openFolder(a.installDir)
+						a.openInstallDir()
 					}
 				})
 				errMsg := nonEmpty(a.snap.Error, "未知錯誤")
@@ -1045,6 +1216,23 @@ func (a *mirrpaneApp) buildLogsModal(c *ui.Context) {
 			}
 			if ui.Button(c.Key("logs-close"), "關閉").Clicked() {
 				a.showLogs = false
+			}
+		})
+		// The path and a copy button match the old Flutter log window, so a
+		// user can attach the file to a report without hunting for it.
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, a.sidecar.LogPath()).Grow(1).Font("Consolas").FontSize(11).
+				TextColor(colMuted).SingleLine()
+			if ui.Button(c.Key("logs-copy-path"), "複製路徑").Clicked() {
+				c.WriteClipboard(a.sidecar.LogPath())
+				c.Toast("已複製日誌路徑")
+			}
+			if ui.Button(c.Key("logs-copy"), "複製日誌").Clicked() {
+				if len(a.logLines) == 0 {
+					a.logLines = a.sidecar.LogTail(40)
+				}
+				c.WriteClipboard(strings.Join(a.logLines, "\r\n"))
+				c.Toast("已複製日誌內容")
 			}
 		})
 		ui.Scroll(c).Grow(1).FillWidth().Padding(12).Radius(8).
@@ -1110,10 +1298,10 @@ func (a *mirrpaneApp) buildSettingsGeneral(c *ui.Context) {
 	}
 	ui.Row(c).FillWidth().Gap(8).Wrap().Children(func() {
 		if ui.Button(c.Key("set-open-shots"), "開啟截圖資料夾").Clicked() {
-			openFolder(a.screenshotsDir())
+			a.openScreenshots()
 		}
 		if ui.Button(c.Key("set-open-dir"), "開啟程式資料夾").Clicked() {
-			openFolder(a.installDir)
+			a.openInstallDir()
 		}
 		if ui.Button(c.Key("set-reset-trust"), "清除信任裝置").Clicked() {
 			go func() {
@@ -1125,8 +1313,11 @@ func (a *mirrpaneApp) buildSettingsGeneral(c *ui.Context) {
 			}()
 		}
 		if ui.Button(c.Key("set-reset-id"), "重設配對身分").TextColor(colDanger).Clicked() {
-			a.showSettings = false
-			a.restartReceiver(func() error { return ResetIdentity(a.installDir) }, "接收器已重設配對身分")
+			if a.restartReceiver(func() error { return ResetIdentity(a.installDir) }, "接收器已重設配對身分") {
+				a.showSettings = false
+			} else {
+				a.pendingToast = "接收器正在重新啟動，請稍候再操作"
+			}
 		}
 	})
 }
@@ -1180,10 +1371,12 @@ func (a *mirrpaneApp) buildSettingsRender(c *ui.Context) {
 		next.HudCorner = corner
 		a.savePrefs(next)
 	}
-	quality := a.prefs.FilterQuality
-	if selectRow(c, "set-qual", "縮放濾鏡", &quality, allowedFilterQualities) {
+	// The renderer has two real sampling modes; offering four options that all
+	// looked the same made the setting meaningless. Legacy values still load.
+	quality := samplingChoice(a.prefs.FilterQuality)
+	if selectRow(c, "set-qual", "縮放取樣", &quality, samplingChoices) {
 		next := a.prefs
-		next.FilterQuality = quality
+		next.FilterQuality = filterQualityForChoice(quality)
 		a.savePrefs(next)
 	}
 	hideStr := strconv.Itoa(a.prefs.BarHideSeconds)
@@ -1275,14 +1468,23 @@ func infoRow(c *ui.Context, label, value string) {
 	})
 }
 
-func (a *mirrpaneApp) toastAsync(msg string) {
+// dispatchUI runs fn on the window's UI thread, or here when the app runs
+// without a window (tests, or the moment after teardown). Inside the window it
+// goes through Update so UI state is never mutated from a worker goroutine.
+func (a *mirrpaneApp) dispatchUI(fn func()) {
 	win := a.win
 	if win == nil || win.IsDestroyed() {
+		fn()
 		return
 	}
-	win.Update(func() {
-		a.pendingToast = msg
-	})
+	win.Update(fn)
+}
+
+func (a *mirrpaneApp) toastAsync(msg string) {
+	if a.closed.Load() {
+		return
+	}
+	a.dispatchUI(func() { a.pendingToast = msg })
 }
 
 func pill(c *ui.Context, text string, accent ui.Color) {
@@ -1333,7 +1535,7 @@ func shortFingerprint(fp string) string {
 	return fp[:8] + "…" + fp[len(fp)-8:]
 }
 
-func openFolder(dir string) {
+func openFolder(dir string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
@@ -1343,7 +1545,9 @@ func openFolder(dir string) {
 	default:
 		cmd = exec.Command("xdg-open", dir)
 	}
-	if err := cmd.Start(); err == nil {
-		go func() { _ = cmd.Wait() }()
+	if err := cmd.Start(); err != nil {
+		return err
 	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -22,6 +24,12 @@ import (
 // DLLs must come from one compatible Windows x64 build. The corresponding
 // structure layouts are checked into internal/decode/abi_windows_amd64.go.
 var DLLs = [...]string{"avutil-61.dll", "swresample-7.dll", "swscale-10.dll", "avcodec-63.dll"}
+
+// Generated from the archive identified by assetSHA256. This also validates
+// existing installations created before the downloader wrote local manifests.
+//
+//go:embed pinned-files.sha256
+var pinnedFiles []byte
 
 const (
 	// The asset filename omits the date. Packaging cross-checks this dated ABI
@@ -33,16 +41,94 @@ const (
 	assetURL    = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/" + releaseTag + "/" + assetName
 	assetSHA256 = "20b19e93d8597a42f91b73adaf852034403668542311a422e77ff9d323c6b744"
 	maxArchive  = 512 << 20
+
+	// manifestName records the SHA-256 of every extracted file. A cache entry
+	// without a manifest uses the verified inventory when its name is pinned.
+	manifestName = "SHA256SUMS"
 )
 
-func complete(dir string) bool {
+func knownFile(name string) bool {
+	if name == "COPYING" {
+		return true
+	}
+	for _, dll := range DLLs {
+		if name == dll {
+			return true
+		}
+	}
+	return false
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyFiles reports whether dir holds all required DLLs and, when the
+// directory has a manifest, whether every recorded file still matches it.
+func verifyFiles(dir string) bool {
 	for _, name := range DLLs {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 			return false
 		}
 	}
+	data := pinnedFiles
+	if filepath.Base(filepath.Clean(dir)) != "runtime-"+assetSHA256[:16] {
+		var err error
+		data, err = os.ReadFile(filepath.Join(dir, manifestName))
+		if errors.Is(err, os.ErrNotExist) {
+			return true // custom compatible runtime, checked by the ABI loader
+		}
+		if err != nil {
+			return false
+		}
+	}
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || len(fields[0]) != 2*sha256.Size {
+			return false
+		}
+		digest, name := fields[0], fields[1]
+		if filepath.Base(name) != name || name == manifestName || seen[name] || !knownFile(name) {
+			return false
+		}
+		seen[name] = true
+		actual, err := fileSHA256(filepath.Join(dir, name))
+		if err != nil || actual != digest {
+			return false
+		}
+	}
+	for _, dll := range DLLs {
+		if !seen[dll] {
+			return false // a manifest must cover every shipped DLL
+		}
+	}
 	return true
+}
+
+func complete(dir string) bool { return verifyFiles(dir) }
+
+// installed additionally requires the licence text that packaging relies on.
+func installed(dir string) bool {
+	if !verifyFiles(dir) {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "COPYING"))
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 func cached(root string) string {
@@ -73,10 +159,18 @@ func Find() (string, error) {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
-		dirs = append(dirs, dir, filepath.Join(dir, "ffmpeg"), cached(filepath.Join(dir, "ffmpeg")))
+		dirs = append(dirs, dir, filepath.Join(dir, "ffmpeg"))
+		if c := cached(filepath.Join(dir, "ffmpeg")); c != "" {
+			dirs = append(dirs, c)
+		}
 	}
+	seen := make(map[string]bool)
 	for _, dir := range dirs {
-		if dir != "" && complete(dir) {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if complete(dir) {
 			return filepath.Abs(dir)
 		}
 	}
@@ -89,6 +183,10 @@ func Find() (string, error) {
 // An optional validator checks exports/ABI before selecting a runtime, allowing
 // automatic discovery to recover from damaged or incompatible local libraries.
 func Ensure(ctx context.Context, root string, progress func(string), validate func(string) error) (string, error) {
+	return ensure(ctx, root, progress, validate, pinnedInstaller())
+}
+
+func ensure(ctx context.Context, root string, progress func(string), validate func(string) error, ins installer) (string, error) {
 	check := func(dir string) error {
 		if validate != nil {
 			return validate(dir)
@@ -115,17 +213,36 @@ func Ensure(ctx context.Context, root string, progress func(string), validate fu
 			return cache, nil
 		}
 	}
-	dir, err := pinnedInstaller().install(ctx, root, progress)
-	if err == nil {
-		err = check(dir)
+	dir, err := ins.install(ctx, root, progress)
+	if err != nil {
+		return "", err
 	}
-	return dir, err
+	if err = check(dir); err == nil {
+		return dir, nil
+	}
+	// The installed copy passed the completeness check but failed ABI/export
+	// validation. Replace it once with a freshly verified download so a
+	// damaged but present cache repairs itself; the same pinned content failing
+	// again is reported as the original validation error.
+	if repaired, repairErr := ins.installWith(ctx, root, progress, true); repairErr == nil {
+		if err = check(repaired); err == nil {
+			return repaired, nil
+		}
+	}
+	return "", err
 }
 
 // DownloadLatest retains its original public name for the setup helper, but
 // downloads only the pinned build. CI and first-run use identical verification.
 func DownloadLatest(ctx context.Context, root string, progress func(string)) (string, error) {
 	return pinnedInstaller().install(ctx, root, progress)
+}
+
+// DownloadForced re-downloads and replaces the pinned build even when a
+// complete cache exists. The setup helper uses it for -Force after a damaged
+// cache passed the presence check.
+func DownloadForced(ctx context.Context, root string, progress func(string)) (string, error) {
+	return pinnedInstaller().installWith(ctx, root, progress, true)
 }
 
 func pinnedInstaller() installer {
@@ -243,6 +360,10 @@ func (i installer) get(ctx context.Context, url string) (*http.Response, error) 
 }
 
 func (i installer) install(ctx context.Context, root string, progress func(string)) (string, error) {
+	return i.installWith(ctx, root, progress, false)
+}
+
+func (i installer) installWith(ctx context.Context, root string, progress func(string), force bool) (string, error) {
 	report := func(s string) {
 		if progress != nil {
 			progress(s)
@@ -281,7 +402,7 @@ func (i installer) install(ctx context.Context, root string, progress func(strin
 	}
 	name := "runtime-" + digest[:16]
 	destination := filepath.Join(root, name)
-	if _, licenseErr := os.Stat(filepath.Join(destination, "COPYING")); !complete(destination) || licenseErr != nil {
+	if force || !installed(destination) {
 		stage, err := os.MkdirTemp(root, ".download-")
 		if err != nil {
 			return "", err
@@ -297,33 +418,99 @@ func (i installer) install(ctx context.Context, root string, progress func(strin
 		if err := extract(archivePath, dllDir); err != nil {
 			return "", err
 		}
-		// Publish only a complete, verified runtime. A concurrent instance may
-		// have installed the same content while this download was in flight.
-		if err := os.Rename(dllDir, destination); err != nil && !complete(destination) {
-			return "", fmt.Errorf("FFmpeg install: %w", err)
-		}
-		// Older cache entries may have the DLLs but predate license extraction.
-		if _, err := os.Stat(filepath.Join(destination, "COPYING")); os.IsNotExist(err) {
-			if err := os.Rename(filepath.Join(dllDir, "COPYING"), filepath.Join(destination, "COPYING")); err != nil {
-				return "", fmt.Errorf("FFmpeg install COPYING: %w", err)
-			}
+		// Publish only a complete, verified runtime. Windows cannot rename onto
+		// a non-empty directory, so a damaged entry (for example one missing a
+		// DLL or holding a corrupted non-empty DLL) is moved aside first and the
+		// new, verified directory takes its place. A concurrent instance may
+		// have published good content while this download was in flight; its
+		// result is reused and the damaged directory is discarded.
+		if err := publish(dllDir, destination, force); err != nil {
+			return "", err
 		}
 	}
+	if err := writeMarker(root, name); err != nil {
+		return "", err
+	}
+	report("FFmpeg 已就緒")
+	return filepath.Abs(destination)
+}
+
+// writeMarker atomically points root/current at name. Concurrent installers
+// may replace it at the same moment; Windows can report a sharing violation
+// for the replacement, so retry and accept an identical value.
+func writeMarker(root, name string) error {
 	marker, err := os.CreateTemp(root, ".current-")
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer os.Remove(marker.Name())
 	_, writeErr := marker.WriteString(name + "\n")
 	closeErr := marker.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return "", err
+		return err
 	}
-	if err := os.Rename(marker.Name(), filepath.Join(root, "current")); err != nil {
-		return "", err
+	destination := filepath.Join(root, "current")
+	var last error
+	for attempt := 0; attempt < 10; attempt++ {
+		if err := os.Rename(marker.Name(), destination); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+		if data, err := os.ReadFile(destination); err == nil && strings.TrimSpace(string(data)) == name {
+			return nil // another installer already pointed it here
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
-	report("FFmpeg 已就緒")
-	return filepath.Abs(destination)
+	return last
+}
+
+// publish swaps a verified stage into destination. With force, even a complete
+// directory is replaced; otherwise a complete one already present (from an
+// earlier run or a concurrent installer) is kept.
+func publish(stage, destination string, force bool) error {
+	if !force && installed(destination) {
+		return nil
+	}
+	aside := ""
+	if _, err := os.Lstat(destination); err == nil {
+		aside = fmt.Sprintf("%s.stale-%d", destination, time.Now().UnixNano())
+		if err := os.Rename(destination, aside); err != nil {
+			if !force && installed(destination) {
+				return nil // repaired by another process while we downloaded
+			}
+			if _, statErr := os.Lstat(destination); os.IsNotExist(statErr) {
+				aside = "" // another installer moved the damaged copy away first
+			} else {
+				return fmt.Errorf("FFmpeg install: cannot move damaged runtime %s aside: %w", destination, err)
+			}
+		}
+	}
+	if err := os.Rename(stage, destination); err != nil {
+		// A concurrent installer can publish its complete directory between our
+		// Lstat and this rename; Windows then refuses to replace a non-empty
+		// directory. Reuse that result instead of failing the install.
+		if installed(destination) {
+			if aside != "" {
+				os.RemoveAll(aside)
+			}
+			return nil
+		}
+		if aside != "" {
+			if _, statErr := os.Lstat(destination); os.IsNotExist(statErr) {
+				if restoreErr := os.Rename(aside, destination); restoreErr != nil {
+					return fmt.Errorf("FFmpeg install: %w; the previous runtime is kept at %s (restore failed: %v)", err, aside, restoreErr)
+				}
+			} else {
+				return fmt.Errorf("FFmpeg install: %w; the previous runtime is kept at %s", err, aside)
+			}
+		}
+		return fmt.Errorf("FFmpeg install: %w", err)
+	}
+	if aside != "" {
+		os.RemoveAll(aside)
+	}
+	return nil
 }
 
 func (i installer) download(ctx context.Context, asset releaseAsset, destination string, report func(string)) error {
@@ -431,6 +618,7 @@ func extract(archivePath, destination string) error {
 		return err
 	}
 	files := make(map[string]bool)
+	hashes := make(map[string]string)
 	var total uint64
 	for _, entry := range z.File {
 		name := path.Base(entry.Name)
@@ -459,12 +647,14 @@ func extract(archivePath, destination string) error {
 			source.Close()
 			return err
 		}
-		n, copyErr := io.Copy(f, io.LimitReader(source, 256<<20+1))
+		h := sha256.New()
+		n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(source, 256<<20+1))
 		err = errors.Join(copyErr, f.Close(), source.Close())
 		if err != nil || n == 0 || uint64(n) != entry.UncompressedSize64 {
 			return fmt.Errorf("FFmpeg archive: invalid %s: %w", name, errors.Join(err, io.ErrUnexpectedEOF))
 		}
 		files[name] = true
+		hashes[name] = hex.EncodeToString(h.Sum(nil))
 	}
 	if !complete(destination) {
 		return fmt.Errorf("pinned FFmpeg shared build has an unsupported ABI (requires %s)", strings.Join(DLLs[:], ", "))
@@ -472,5 +662,20 @@ func extract(archivePath, destination string) error {
 	if !files["COPYING"] {
 		return errors.New("FFmpeg archive is missing its GPL COPYING/LICENSE.txt")
 	}
-	return nil
+	// Write the manifest last: the directory is only publishable once every
+	// file it records is on disk and hashed.
+	return writeManifest(destination, hashes)
+}
+
+func writeManifest(dir string, hashes map[string]string) error {
+	names := make([]string, 0, len(hashes))
+	for name := range hashes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&b, "%s  %s\n", hashes[name], name)
+	}
+	return os.WriteFile(filepath.Join(dir, manifestName), []byte(b.String()), 0o644)
 }

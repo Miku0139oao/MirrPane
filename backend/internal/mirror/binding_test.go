@@ -52,7 +52,7 @@ func bindingServer() *Server {
 
 func prepareBinding(t *testing.T, s *Server, remote string, id uint64) {
 	t.Helper()
-	if !s.Prepare(remote, id, KeyCandidate{Name: "test", Key: []byte("0123456789abcdef")}) {
+	if _, ok := s.Prepare(remote, id, KeyCandidate{Name: "test", Key: []byte("0123456789abcdef")}); !ok {
 		t.Fatal("authenticated setup refused")
 	}
 }
@@ -103,8 +103,8 @@ func TestStreamRequiresFreshSetup(t *testing.T) {
 			if name == "expired setup" {
 				s.pending.expires = time.Now().Add(-time.Second)
 			}
-			s.handlers.OnConnected = func(string) { t.Error("rejected peer was reported connected") }
-			s.handlers.OnDisconnected = func() { t.Error("rejected peer disconnected the active sender") }
+			s.handlers.OnConnected = func(uint64, string) { t.Error("rejected peer was reported connected") }
+			s.handlers.OnDisconnected = func(uint64) { t.Error("rejected peer disconnected the active sender") }
 			s.serve(conn)
 			if !conn.closed || s.conn != nil {
 				t.Fatal("unbound connection was accepted")
@@ -120,7 +120,7 @@ func TestRejectedPeerDoesNotPreemptHealthyStream(t *testing.T) {
 	proveBinding(t, s, old)
 	prepareBinding(t, s, "192.168.1.20", 43)
 	pending := s.pending
-	if s.Prepare("192.168.1.21", 99, KeyCandidate{Key: make([]byte, 16)}) {
+	if _, ok := s.Prepare("192.168.1.21", 99, KeyCandidate{Key: make([]byte, 16)}); ok {
 		t.Fatal("different sender overwrote live setup")
 	}
 	bad := &memoryStreamConn{remote: "192.168.1.21:5001"}
@@ -291,8 +291,8 @@ func TestSupersededConnectionCannotClearReconnect(t *testing.T) {
 	old := &memoryStreamConn{remote: "192.168.1.20:5000"}
 	next := &memoryStreamConn{remote: "192.168.1.20:5001"}
 	disconnects := 0
-	s.handlers.OnDisconnected = func() { disconnects++ }
-	s.handlers.OnConnected = func(remote string) {
+	s.handlers.OnDisconnected = func(uint64) { disconnects++ }
+	s.handlers.OnConnected = func(_ uint64, remote string) {
 		if remote != old.remote {
 			return
 		}
@@ -348,7 +348,7 @@ func TestForeignKeylessPeerCannotConsumeSetupOrPublishState(t *testing.T) {
 		t.Fatal("fresh setup did not permit an alternate data address")
 	}
 	connected, geometry, frames := 0, 0, 0
-	s.handlers.OnConnected = func(string) { connected++ }
+	s.handlers.OnConnected = func(uint64, string) { connected++ }
 	s.handlers.OnGeometry = func(Size) { geometry++ }
 	s.handlers.OnFrame = func(*Frame) { frames++ }
 	st := &streamState{srv: s, conn: foreign, pending: pending}
@@ -460,5 +460,77 @@ func TestExpiredPendingSetupCannotCommitValidKeyFrame(t *testing.T) {
 	st.handleVideo(encryptedBindingFrame(t, pending), 0, 0)
 	if st.active != 0 || s.conn != nil || s.sender.IsValid() || s.streamID != 0 || frames != 0 || peer.deadline.IsZero() {
 		t.Fatal("valid decrypted frame committed ownership after setup expired")
+	}
+}
+
+// The connect, frame and disconnect callbacks of one connection all report
+// the same generation, and a new setup gets a different one.
+func TestCallbacksCarrySessionGeneration(t *testing.T) {
+	s := bindingServer()
+	var connectGen, disconnectGen uint64
+	var frameGens []uint64
+	disconnects := 0
+	s.handlers.OnConnected = func(session uint64, _ string) { connectGen = session }
+	s.handlers.OnFrame = func(f *Frame) { frameGens = append(frameGens, f.Session) }
+	s.handlers.OnDisconnected = func(session uint64) { disconnects++; disconnectGen = session }
+
+	generation, ok := s.Prepare("192.168.1.20", 42, KeyCandidate{Name: "test", Key: []byte("0123456789abcdef")})
+	if !ok || generation == 0 {
+		t.Fatalf("prepare = %d, %v", generation, ok)
+	}
+	conn := &memoryStreamConn{remote: "192.168.1.20:5000"}
+	header := make([]byte, HeaderLen)
+	enc := encryptedBindingFrame(t, s.pending)
+	binary.LittleEndian.PutUint32(header, uint32(len(enc)))
+	conn.input = bytes.NewReader(append(header, enc...))
+	s.serve(conn)
+
+	if connectGen != generation || len(frameGens) != 1 || frameGens[0] != generation {
+		t.Fatalf("connect/frame generations = %d/%v, want %d", connectGen, frameGens, generation)
+	}
+	if disconnects != 1 || disconnectGen != generation {
+		t.Fatalf("disconnect callbacks = %d gen %d, want 1 gen %d", disconnects, disconnectGen, generation)
+	}
+	next, ok := s.Prepare("192.168.1.20", 43, KeyCandidate{Name: "test", Key: []byte("0123456789abcdef")})
+	if !ok || next == 0 || next == generation {
+		t.Fatalf("reconnect generation = %d, want a fresh value after %d", next, generation)
+	}
+}
+
+// A stop between admission and the first decrypted frame must not publish a
+// connect or frame callback for the stopped session.
+func TestStoppedStreamCannotPublishLateCallbacks(t *testing.T) {
+	s := bindingServer()
+	connected, frames, disconnected := 0, 0, 0
+	s.handlers.OnConnected = func(uint64, string) { connected++ }
+	s.handlers.OnFrame = func(*Frame) { frames++ }
+	s.handlers.OnDisconnected = func(uint64) { disconnected++ }
+
+	if _, ok := s.Prepare("192.168.1.20", 42, KeyCandidate{Name: "test", Key: []byte("0123456789abcdef")}); !ok {
+		t.Fatal("setup refused")
+	}
+	conn := &memoryStreamConn{remote: "192.168.1.20:5000"}
+	pending := s.admit(conn)
+	if pending == nil {
+		t.Fatal("admission refused")
+	}
+	key := pending.candidates[0]
+	block, err := aes.NewCipher(key.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := cipher.NewCTR(block, key.IV)
+	st := &streamState{srv: s, conn: conn, pending: pending, active: -1,
+		cands: []cipher.Stream{cipher.NewCTR(block, key.IV)}, names: []string{"test"}}
+	s.DropClient()
+
+	plain := binary.BigEndian.AppendUint32(nil, 2)
+	plain = append(plain, 0x65, 1)
+	enc := make([]byte, len(plain))
+	sender.XORKeyStream(enc, plain)
+	st.handleVideo(enc, 0, 0)
+
+	if connected != 0 || frames != 0 || disconnected != 0 || s.conn != nil {
+		t.Fatalf("stopped stream callbacks = connect %d frame %d disconnect %d", connected, frames, disconnected)
 	}
 }

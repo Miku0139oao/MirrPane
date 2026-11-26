@@ -188,6 +188,154 @@ class Snapshot {
   final String? message;
 }
 
+/// One line of the child's machine-readable startup protocol.
+class StartupProgress {
+  const StartupProgress.booting(this.message) : failed = false;
+  const StartupProgress.failure(this.message) : failed = true;
+
+  final String message;
+  final bool failed;
+}
+
+/// ReceiverLifecycle decides when a starting or running receiver is reported
+/// failed, mirroring backend/cmd/mirrpane/sidecar.go:
+///
+///  * every ffmpeg_setup progress line is a sign of life, so a long download
+///    extends the idle deadline instead of tripping it after 11 minutes;
+///  * the whole provisioning step has the backend's 30-minute cap;
+///  * a receiver that answered once and then stops answering is reported once
+///    and recovers on the next successful poll;
+///  * an unexpected exit after the first state is surfaced rather than
+///    leaving the previous picture (and "live" claim) on screen.
+///
+/// It is clock-injected so tests can stand at any point in a startup.
+class ReceiverLifecycle {
+  ReceiverLifecycle({DateTime Function()? clock})
+    : _clock = clock ?? DateTime.now;
+
+  /// The API did not answer for this long after setup finished.
+  static const pollTimeout = Duration(seconds: 8);
+
+  /// No setup progress at all for this long while the runtime is provisioning.
+  static const setupIdleTimeout = Duration(minutes: 11);
+
+  /// The backend provisions FFmpeg under this cap.
+  static const setupTotalTimeout = Duration(minutes: 30);
+
+  final DateTime Function() _clock;
+
+  DateTime? _launchAt;
+  DateTime? _lastProgress;
+  bool _runtimeSetup = false;
+  bool _everReached = false;
+  bool _failureShown = false;
+  bool _dead = false;
+  String? _startupError;
+
+  bool get everReached => _everReached;
+  bool get dead => _dead;
+  String? get startupError => _startupError;
+
+  /// Begins a launch: deadlines start now and previous launch state is gone.
+  void start() {
+    final now = _clock();
+    _launchAt = now;
+    _lastProgress = now;
+    _runtimeSetup = false;
+    _everReached = false;
+    _failureShown = false;
+    _dead = false;
+    _startupError = null;
+  }
+
+  /// Applies one startup-protocol line. Null means the line was not an event
+  /// this launch can show (not JSON, not ffmpeg_setup, or already answered).
+  StartupProgress? onStartupLine(String line) {
+    if (_dead || _everReached) return null;
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(line);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map<String, dynamic> ||
+        decoded['event'] != 'ffmpeg_setup') {
+      return null;
+    }
+    var message = decoded['message'];
+    if (message is! String || message.isEmpty) {
+      if (decoded['failed'] != true) return null;
+      // A failed step always names itself, even without backend text.
+      message = '接收器無法啟動';
+    }
+    _lastProgress = _clock();
+    if (decoded['failed'] == true) {
+      _startupError = message;
+      // Like the native side, a terminal failure is announced once; the exit
+      // that follows must not replace it with a generic message.
+      if (_failureShown) return null;
+      _failureShown = true;
+      return StartupProgress.failure(message);
+    }
+    _runtimeSetup = decoded['done'] != true;
+    // A stray progress line must not flip a shown failure back to booting.
+    if (_failureShown) return null;
+    return StartupProgress.booting(message);
+  }
+
+  /// A successful /api/state poll. Returns false once the launch is dead, so
+  /// the caller drops the state instead of reviving a failed picture.
+  bool onState() {
+    if (_dead) return false;
+    _everReached = true;
+    _lastProgress = _clock();
+    _startupError = null;
+    _runtimeSetup = false;
+    // The receiver answers again: a later outage or exit must be reported
+    // afresh instead of being deduplicated against the old failure.
+    _failureShown = false;
+    return true;
+  }
+
+  /// A failed poll. Returns a failure message when it is time to show one;
+  /// repeated misses after that stay quiet until a poll succeeds again.
+  String? onPollError() {
+    if (_dead || _failureShown) return null;
+    final launched = _launchAt;
+    final progress = _lastProgress;
+    if (launched == null || progress == null) return null;
+    final now = _clock();
+    final idle = _runtimeSetup ? setupIdleTimeout : pollTimeout;
+    final stalled = now.difference(progress) > idle;
+    final overTotal =
+        !_everReached && now.difference(launched) > setupTotalTimeout;
+    if (!stalled && !overTotal) return null;
+    _failureShown = true;
+    if (_everReached) return '接收器已停止回應，正在重新連線…';
+    if (_startupError != null) return _startupError;
+    if (overTotal && !stalled) return '接收器啟動逾時（30 分鐘）';
+    return '接收器沒有回應';
+  }
+
+  /// The child process exited. Returns the message to show, or null when the
+  /// exit was expected or already reported.
+  String? onExit(int code) {
+    if (_dead) return null;
+    _dead = true;
+    final report = !_failureShown || _everReached;
+    _failureShown = true;
+    if (!report) return null;
+    if (_startupError != null) return _startupError;
+    if (_everReached) return '接收器意外結束（代碼 $code）';
+    return '接收器結束了（代碼 $code）';
+  }
+
+  /// The UI stopped this receiver itself; nothing is reported afterwards.
+  void stop() {
+    _dead = true;
+  }
+}
+
 /// ReceiverHost owns the sidecar process and talks to its localhost API.
 class ReceiverHost {
   ReceiverHost(this.installDir);
@@ -201,37 +349,53 @@ class ReceiverHost {
   HttpClient? _http;
   int _port = 0;
   Timer? _poll;
-  DateTime? _startedAt;
   bool _stopped = false;
-  bool _everReached = false;
-  bool _runtimeSetup = false;
-  String? _startupError;
+  final ReceiverLifecycle _lifecycle = ReceiverLifecycle();
 
   String get logPath => '${installDir.path}\\logs\\airplayd.log';
   String get configPath => '${installDir.path}\\config\\config.json';
   String get screenshotsDir => '${installDir.path}\\screenshots';
 
-  /// Merges patch into config.json, creating the file if it does not exist yet.
-  Future<bool> saveConfig(Map<String, dynamic> patch) async {
+  Future<bool> _editReceiverConfig(Future<void> Function(File) edit) async {
+    final file = File(configPath);
+    RandomAccessFile? lease;
     try {
-      final file = File(configPath);
+      await file.parent.create(recursive: true);
+      lease = await File.fromUri(file.parent.uri.resolve('receiver.lock'))
+          .open(mode: FileMode.append);
+      await lease.lock(FileLock.exclusive, 0, 1);
+      await edit(file);
+      return true;
+    } on Exception {
+      return false;
+    } finally {
+      await lease?.close();
+    }
+  }
+
+  /// Applies an edit while the receiver for this installation is stopped.
+  Future<bool> saveConfig(Map<String, dynamic> patch) {
+    return _editReceiverConfig((file) async {
       Map<String, dynamic> data = <String, dynamic>{};
       if (await file.exists()) {
         final decoded = jsonDecode(await file.readAsString());
-        if (decoded is Map<String, dynamic>) {
-          data = decoded;
+        if (decoded is! Map<String, dynamic>) {
+          throw const FormatException('鏡屏設定檔格式錯誤');
         }
-      } else {
-        await file.parent.create(recursive: true);
+        data = decoded;
       }
       data.addAll(patch);
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(data),
-      );
-      return true;
-    } catch (_) {
-      return false;
-    }
+      final temp = File('${file.path}.tmp');
+      try {
+        await temp.writeAsString(
+          const JsonEncoder.withIndent('  ').convert(data),
+          flush: true,
+        );
+        await temp.rename(file.path);
+      } finally {
+        if (await temp.exists()) await temp.delete();
+      }
+    });
   }
 
   /// Updates the advertised receiver name in config.json.
@@ -243,15 +407,14 @@ class ReceiverHost {
 
   /// Removes config.json so the sidecar generates a fresh AirPlay identity on
   /// next start.
-  Future<void> resetIdentity() async {
-    try {
-      final file = File(configPath);
+  Future<bool> resetIdentity() {
+    return _editReceiverConfig((file) async {
       if (await file.exists()) await file.delete();
-    } catch (_) {}
+    });
   }
 
   Future<void> start() async {
-    _startedAt = DateTime.now();
+    _lifecycle.start();
 
     final exe = File('${installDir.path}\\backend\\airplayd.exe');
     if (!await exe.exists()) {
@@ -297,8 +460,12 @@ class ReceiverHost {
 
     unawaited(
       _process!.exitCode.then((code) {
-        if (_stopped || _everReached) return;
-        _emitFailure(_startupError ?? '接收器結束了（代碼 $code）');
+        if (_stopped) return;
+        final message = _lifecycle.onExit(code);
+        // Nothing can answer on this launch any more; stop the poll timer and
+        // the socket so a dead receiver cannot keep publishing stale state.
+        _closeTransport();
+        if (message != null) _emitFailure(message);
       }),
     );
 
@@ -308,33 +475,21 @@ class ReceiverHost {
   }
 
   void _startupProgress(String line) {
-    if (_stopped || _everReached) return;
-    try {
-      final event = jsonDecode(line);
-      if (event is! Map<String, dynamic> ||
-          event['event'] != 'ffmpeg_setup' ||
-          event['message'] is! String) {
-        return;
-      }
-      final message = event['message'] as String;
-      _runtimeSetup = event['done'] != true;
-      if (event['failed'] == true) {
-        _startupError = message;
-        _emitFailure(message);
-        return;
-      }
-      if (!_runtimeSetup) _startedAt = DateTime.now();
-      notifier.value = Snapshot(Phase.booting, message: message);
-    } on FormatException {
-      // Other diagnostic lines do not belong to the startup protocol.
+    if (_stopped) return;
+    final progress = _lifecycle.onStartupLine(line);
+    if (progress == null) return;
+    if (progress.failed) {
+      _emitFailure(progress.message);
+      return;
     }
+    notifier.value = Snapshot(Phase.booting, message: progress.message);
   }
 
   Future<Map<String, dynamic>?> _postJson(
     String path, [
     Map<String, dynamic>? body,
   ]) async {
-    if (_stopped || _port == 0) return null;
+    if (_stopped || _lifecycle.dead || _port == 0) return null;
     final client = _http;
     if (client == null) return null;
     try {
@@ -358,10 +513,13 @@ class ReceiverHost {
     }
   }
 
-  /// Drops the current mirroring connection and returns to Waiting.
-  Future<void> disconnect() async {
-    await _postJson('/api/disconnect');
+  /// Drops the current mirroring connection and returns to Waiting. Reports
+  /// whether the receiver acknowledged the request, so the UI can tell the
+  /// user when nothing happened.
+  Future<bool> disconnect() async {
+    final res = await _postJson('/api/disconnect');
     unawaited(_tick());
+    return res?['ok'] == true;
   }
 
   /// Clears every trusted sender so the next verified device must be approved
@@ -408,7 +566,7 @@ class ReceiverHost {
   }
 
   Future<void> _tick() async {
-    if (_stopped || _port == 0) return;
+    if (_stopped || _lifecycle.dead || _port == 0) return;
     final client = _http;
     if (client == null) return;
 
@@ -419,25 +577,37 @@ class ReceiverHost {
       final response = await request.close().timeout(
         const Duration(milliseconds: 700),
       );
-      if (response.statusCode != 200) return;
+      if (response.statusCode != 200) {
+        final message = _lifecycle.onPollError();
+        if (message != null) _emitFailure(message);
+        return;
+      }
       final body = await response
           .transform(utf8.decoder)
           .join()
           .timeout(const Duration(milliseconds: 700));
       final json = jsonDecode(body);
       if (json is! Map<String, dynamic>) return;
+      if (!_lifecycle.onState()) {
+        _closeTransport();
+        return;
+      }
 
       final state = ReceiverState.fromJson(json);
-      _everReached = true;
       notifier.value = Snapshot(_phaseOf(state), state: state);
     } catch (_) {
-      final deadline = _runtimeSetup
-          ? const Duration(minutes: 11)
-          : const Duration(seconds: 8);
-      if (!_everReached && DateTime.now().difference(_startedAt!) > deadline) {
-        _emitFailure(_startupError ?? '接收器沒有回應');
-      }
+      final message = _lifecycle.onPollError();
+      if (message != null) _emitFailure(message);
     }
+  }
+
+  /// Stops polling and closes the API socket for a dead launch, so no late
+  /// response can overwrite the failure the user is looking at.
+  void _closeTransport() {
+    _poll?.cancel();
+    _poll = null;
+    _http?.close(force: true);
+    _http = null;
   }
 
   Phase _phaseOf(ReceiverState state) {
@@ -474,6 +644,7 @@ class ReceiverHost {
   Future<void> stop() async {
     if (_stopped) return;
     _stopped = true;
+    _lifecycle.stop();
     _poll?.cancel();
     _http?.close(force: true);
     final process = _process;

@@ -36,6 +36,8 @@ func (r *Receiver) scheduleDisconnectLocked(remote string, cs *clientSession) {
 		after = func(d time.Duration, f func()) disconnectTimer { return time.AfterFunc(d, f) }
 	}
 	cs.closeTimer = after(delay, func() {
+		r.transitionMu.Lock()
+		defer r.transitionMu.Unlock()
 		r.mu.Lock()
 		if r.sessions[remote] != cs || cs.closeVersion != version || cs.closeTimer == nil {
 			r.mu.Unlock()
@@ -44,13 +46,15 @@ func (r *Receiver) scheduleDisconnectLocked(remote string, cs *clientSession) {
 		cs.closeTimer = nil
 		delete(r.sessions, remote)
 		owner := r.activeConn == remote
+		var fx mediaEffects
 		if owner {
 			r.cleanStop.Store(true)
-			r.dropMediaLocked()
+			fx = r.dropMediaLocked()
 			r.recordStateLocked(StatusIdle, "control connection closed")
 		}
 		r.mu.Unlock()
 		if owner {
+			r.applyEffects(fx)
 			r.flushState()
 		}
 	})

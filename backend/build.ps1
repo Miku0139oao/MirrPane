@@ -23,6 +23,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $ffmpegBin $name) -Destination (Join-Path $destination $name) -Force
     }
     Copy-Item -LiteralPath (Join-Path $ffmpegBin 'COPYING') -Destination (Join-Path $destination 'COPYING') -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'internal\ffmpeg\pinned-files.sha256') -Destination (Join-Path $destination 'SHA256SUMS') -Force
     Write-Host "built $Output (CGO_ENABLED=0) with FFmpeg runtime from $ffmpegBin"
 }
 finally {

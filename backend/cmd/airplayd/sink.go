@@ -7,7 +7,6 @@ import (
 	"image/png"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,13 +32,14 @@ type frameSink struct {
 	rec  *streamRecorder
 	gate *frames.ConsumerGate
 
-	frames   atomic.Uint64
-	width    atomic.Int64
-	height   atomic.Int64
-	hwMode   atomic.Bool
-	haveMode atomic.Bool
-	errRate  rateLimiter
-	zeroCopy bool // most recently published picture, protected by mu
+	frames      atomic.Uint64
+	width       atomic.Int64
+	height      atomic.Int64
+	hwMode      atomic.Bool
+	haveMode    atomic.Bool
+	errRate     rateLimiter
+	zeroCopy    bool // most recently published picture, protected by mu
+	decoderUsed bool
 
 	// metrics is the rolling pipeline telemetry exposed by /api/state. It is
 	// updated by Handle and read by Stats, so both take s.mu.
@@ -94,7 +94,37 @@ type SinkStats struct {
 }
 
 func newFrameSink(dec *decode.Decoder, pub *frames.Publisher, rec *streamRecorder) *frameSink {
+	if pub != nil {
+		pub.ClearPicture()
+	}
 	return &frameSink{dec: dec, pub: pub, rec: rec, gate: frames.DefaultConsumerGate()}
+}
+
+// ResetStream runs at a media ownership boundary, serialized with Handle and
+// snapshotPicture. No picture is available until the new owner publishes one.
+func (s *frameSink) ResetStream() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	if s.pub != nil {
+		s.pub.ClearPicture()
+	}
+	s.gate = frames.DefaultConsumerGate()
+	s.metrics = frameMetrics{}
+	s.frames.Store(0)
+	s.width.Store(0)
+	s.height.Store(0)
+	s.haveMode.Store(false)
+	s.zeroCopy = false
+	if s.decoderUsed {
+		err := s.dec.ResetStream()
+		s.decoderUsed = err != nil
+		if err != nil {
+			log.Printf("decode: reset stream: %v", err)
+		}
+	}
 }
 
 // Handle decodes one access unit and, when a consumer is rendering, publishes
@@ -126,6 +156,7 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	live := s.pub != nil && s.gate.Allow(s.pub.ConsumerStats())
 
 	decodeStart := time.Now()
+	s.decoderUsed = true
 	err := s.dec.ReceiveAccessUnit(f.Data, live)
 	decodeTime := time.Since(decodeStart)
 	if err != nil {
@@ -243,27 +274,28 @@ func (s *frameSink) Mode() string {
 	return "software"
 }
 
-// SnapshotPNG writes the most recent published picture to path as a PNG image.
+// SnapshotPNG saves the most recent picture to a uniquely created file.
 // A GPU picture is read back on demand. The producer lock is released before
 // PNG encoding and disk I/O.
-func (s *frameSink) SnapshotPNG(path string) error {
+func (s *frameSink) SnapshotPNG(dir string) (string, error) {
 	rgba, err := s.snapshotPicture()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
 	}
-	f, err := os.Create(path)
+	f, err := os.CreateTemp(dir, "MirrPane-"+time.Now().Format("20060102-150405")+"-*.png")
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := png.Encode(f, rgba); err != nil {
-		_ = f.Close()
-		return err
+	encodeErr := png.Encode(f, rgba)
+	if err := errors.Join(encodeErr, f.Close()); err != nil {
+		os.Remove(f.Name())
+		return "", err
 	}
-	return f.Close()
+	return f.Name(), nil
 }
 
 func (s *frameSink) snapshotPicture() (*image.RGBA, error) {

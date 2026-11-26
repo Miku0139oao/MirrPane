@@ -6,7 +6,7 @@
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **最新版本**：`v0.4.0`
+- **最新版本**：`v0.4.1`
 
 ---
 
@@ -91,7 +91,7 @@ MirrPane/
 
 ## 快速使用
 
-1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.4.0`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
+1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.4.1`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
 2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
 4. 介面提供 `F11` 全螢幕、`Ctrl+T` 置頂、`Ctrl+,`／`Ctrl+K` 設定、`Ctrl+L` 日誌與 `Ctrl+S` 截圖等快捷鍵；設定視窗包含一般、圖形與解碼、渲染、音訊等區段。
@@ -102,7 +102,7 @@ MirrPane/
 
 ### 環境需求
 
-- **Go**：`1.27.3+`（需包含已修補的標準庫；`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
+- **Go**：`1.27.4+`（`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
 - **建置工具**：PowerShell；發行版 UI 與後端皆以 `CGO_ENABLED=0` 建置，不需要 Flutter、Visual Studio C++ 或 CMake
 - **舊版 Flutter UI（選用）**：若需維護 `frontend/`，另需 Flutter `3.47+`（Dart SDK `^3.13.5`）與 Visual Studio C++ Build Tools
 
@@ -131,7 +131,7 @@ MirrPane/
 
    ```powershell
    cd backend
-   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.0
+   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.1
    ```
 
 3. **整包建置與打包**（於專案根目錄執行）：
@@ -140,7 +140,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   版本預設讀取 `VERSION`；`-Version 0.4.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
+   版本預設讀取 `VERSION`；`-Version 0.4.1-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
 
 ### 驗證與測試項目
 

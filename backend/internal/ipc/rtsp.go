@@ -344,8 +344,9 @@ func (s *Server) serveConn(conn net.Conn) {
 
 	r := bufio.NewReaderSize(conn, 32<<10)
 	w := bufio.NewWriterSize(conn, 32<<10)
+	readTimeout := 10 * time.Second
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		req, err := readRequest(r)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
@@ -359,6 +360,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		readTimeout = idleTimeout
 		start := time.Now()
 
 		resp := s.dispatch(req, connKey)
@@ -366,7 +368,7 @@ func (s *Server) serveConn(conn net.Conn) {
 			return
 		}
 		log.Printf("ipc: %q %q from %s -> %d (%d ms, %d in, %d out)",
-			req.Method, logTarget(req.Target), conn.RemoteAddr(), resp.Status,
+			logTarget(req.Method), logTarget(req.Target), conn.RemoteAddr(), resp.Status,
 			time.Since(start).Milliseconds(), len(req.Body), len(resp.Body))
 		if resp.Disconnect || req.Close {
 			return

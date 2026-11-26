@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/netip"
 	"sync"
 	"testing"
 
@@ -25,6 +26,7 @@ import (
 type testMirror struct {
 	remote          string
 	streamID        uint64
+	generation      uint64
 	keys            []mirror.KeyCandidate
 	pending, client bool
 	refuse          bool
@@ -33,14 +35,16 @@ type testMirror struct {
 }
 
 func (m *testMirror) Port() int { return 7100 }
-func (m *testMirror) Prepare(remote string, id uint64, keys ...mirror.KeyCandidate) bool {
+func (m *testMirror) Prepare(remote string, id uint64, keys ...mirror.KeyCandidate) (uint64, bool) {
 	if m.refuse {
-		return false
+		return 0, false
 	}
 	m.remote, m.streamID, m.keys = remote, id, keys
 	m.pending = true
 	m.prepares++
-	return true
+	// Each accepted setup gets a fresh generation, like the real server.
+	m.generation++
+	return m.generation, true
 }
 func (m *testMirror) Busy() bool              { return m.pending || m.client }
 func (m *testMirror) DropClient()             { m.client = false; m.drops++ }
@@ -51,6 +55,8 @@ func (m *testMirror) Close() error            { return nil }
 type testAudio struct {
 	keys                       []audio.Key
 	iv                         []byte
+	peer                       netip.Addr
+	controlPort                int
 	busy                       bool
 	configures, resets, clears int
 }
@@ -64,7 +70,8 @@ func (allowTestSenders) IsTrustedSender(string) bool { return true }
 func (allowTestSenders) ClearTrustedSenders() error  { return nil }
 
 func (a *testAudio) Ports() (int, int) { return 7200, 7201 }
-func (a *testAudio) Configure(keys []audio.Key, iv []byte, _ ...[]byte) {
+func (a *testAudio) ConfigurePeer(peer netip.Addr, controlPort int, keys []audio.Key, iv []byte, _ ...[]byte) {
+	a.peer, a.controlPort = peer, controlPort
 	a.keys = make([]audio.Key, len(keys))
 	for i, key := range keys {
 		a.keys[i] = audio.Key{Name: key.Name, Key: append([]byte(nil), key.Key...)}
@@ -296,8 +303,9 @@ func TestSameSenderReconnectAndStaleTakeover(t *testing.T) {
 	if _, err := r.Setup(owner, streamRequest(110)); err != nil {
 		t.Fatalf("same-sender reconnect refused: %v", err)
 	}
-	if m.prepares != 2 || a.configures != 2 {
-		t.Fatal("same-sender reconnect did not prepare its stream")
+	if m.prepares != 2 || a.configures != 1 {
+		// A video-only reconnect must not reset audio that is still playing.
+		t.Fatal("same-sender reconnect did not prepare its stream or reset audio")
 	}
 	verifySender(t, r, other)
 	if _, err := r.Setup(other, streamKeys(t, r, other, 2)); err != nil {

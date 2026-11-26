@@ -6,12 +6,37 @@ $root = Split-Path -Parent $PSScriptRoot
 $runtimeRoot = Join-Path $root 'third_party\ffmpeg'
 $required = 'avutil-61.dll', 'swresample-7.dll', 'swscale-10.dll', 'avcodec-63.dll'
 
+function Test-Manifest([string]$Directory) {
+    # New caches record every extracted file's SHA-256. A damaged DLL that is
+    # still non-empty therefore fails the check and triggers a re-download.
+    $sums = Join-Path $Directory 'SHA256SUMS'
+    if ($Pinned) { $sums = Join-Path $root 'backend\internal\ffmpeg\pinned-files.sha256' }
+    if ($Pinned -and -not (Test-Path -LiteralPath $sums -PathType Leaf)) { throw 'FFmpeg pinned file inventory is missing' }
+    if (-not (Test-Path -LiteralPath $sums -PathType Leaf)) { return $true }
+    $recorded = @{}
+    foreach ($line in @(Get-Content -LiteralPath $sums)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -cnotmatch '^([0-9a-f]{64})  (\S+)$') { return $false }
+        $digest = $Matches[1]
+        $name = $Matches[2]
+        if ($name -cne [IO.Path]::GetFileName($name) -or $name -ceq 'SHA256SUMS') { return $false }
+        $file = Join-Path $Directory $name
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $digest) { return $false }
+        $recorded[$name] = $true
+    }
+    foreach ($dll in $required) {
+        if (-not $recorded.ContainsKey($dll)) { return $false }
+    }
+    return $true
+}
+
 function Test-Runtime([string]$Directory) {
     foreach ($dll in $required) {
         $file = Join-Path $Directory $dll
         if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Item -LiteralPath $file).Length -eq 0) { return $false }
     }
-    return $true
+    return Test-Manifest $Directory
 }
 
 $runtimeDir = Join-Path $runtimeRoot 'bin'
@@ -35,7 +60,11 @@ if ($Force -or -not (Test-Runtime $runtimeDir) -or ($Pinned -and -not (Test-Path
     Push-Location (Join-Path $root 'backend')
     try {
         $env:CGO_ENABLED = '0'
-        $result = & go run ./cmd/ffmpeg-setup -output $runtimeRoot
+        # -Force must replace the cache even when it still looks complete;
+        # otherwise a damaged or stale pinned runtime would be reused.
+        $setupArgs = @('-output', $runtimeRoot)
+        if ($Force) { $setupArgs += '-force' }
+        $result = & go run ./cmd/ffmpeg-setup @setupArgs
         if ($LASTEXITCODE -ne 0) { throw 'FFmpeg runtime setup failed' }
         $runtimeDir = ($result | Select-Object -Last 1).Trim()
     }

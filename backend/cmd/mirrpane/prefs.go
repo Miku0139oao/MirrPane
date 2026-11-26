@@ -165,6 +165,11 @@ func ConfigPath(installDir string) string {
 // if it does not exist yet.
 func SaveConfigPatch(installDir string, patch map[string]any) error {
 	path := ConfigPath(installDir)
+	owner, err := config.LockReceiver(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
 	dataMap := map[string]json.RawMessage{}
 	if existing, err := os.ReadFile(path); err == nil {
 		if err := json.Unmarshal(existing, &dataMap); err != nil {
@@ -203,7 +208,13 @@ func SaveReceiverName(installDir, name string) error {
 // ResetIdentity removes config/config.json so the sidecar generates a fresh
 // AirPlay identity on its next start.
 func ResetIdentity(installDir string) error {
-	err := os.Remove(ConfigPath(installDir))
+	path := ConfigPath(installDir)
+	owner, err := config.LockReceiver(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
+	err = os.Remove(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

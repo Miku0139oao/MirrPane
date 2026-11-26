@@ -46,6 +46,31 @@ func max32(a, b float32) float32 {
 // for enlarged pixel content.
 func sharpSampling(filterQuality string) bool { return filterQuality == "none" }
 
+// samplingChoices are the two sampling modes the native renderer can actually
+// produce: nearest-neighbour (sharp pixels) and smooth interpolation. The
+// stored preference keeps the old Flutter vocabulary so a retained legacy UI
+// and an existing ui_prefs.json stay compatible: "none" means sharp, and every
+// smooth value (low, medium, high) is offered as the one smooth mode.
+var samplingChoices = []string{"銳利（像素）", "平滑（插值）"}
+
+// samplingChoice maps a stored filterQuality, including legacy values, onto
+// the mode the settings offer.
+func samplingChoice(filterQuality string) string {
+	if sharpSampling(filterQuality) {
+		return samplingChoices[0]
+	}
+	return samplingChoices[1]
+}
+
+// filterQualityForChoice maps a settings choice back to the stored value. It
+// writes "medium" for smooth so older builds read a valid value.
+func filterQualityForChoice(choice string) string {
+	if choice == samplingChoices[0] {
+		return "none"
+	}
+	return "medium"
+}
+
 // opaqueBlank returns the picture the video surface shows when no session is
 // live: one opaque black pixel, so nothing of the previous sender shows.
 func opaqueBlank() *image.RGBA {

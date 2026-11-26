@@ -66,6 +66,21 @@ func main() {
 	)
 	flag.Parse()
 
+	if err := watchParent(*parent); err != nil {
+		startup(err.Error(), true, true)
+		os.Exit(1)
+	}
+	dataFolder := *dataDir
+	if dataFolder == "" {
+		dataFolder = defaultDataDir()
+	}
+	owner, err := config.LockReceiver(dataFolder)
+	if err != nil {
+		startup(err.Error(), true, true)
+		os.Exit(1)
+	}
+	defer owner.Close()
+
 	// The shipped build has no console (see build.ps1), so a log file is the only
 	// evidence a run leaves behind: it is on by default and -log overrides where
 	// it goes. Naming it on the command line also turns on the chatty lines.
@@ -76,7 +91,7 @@ func main() {
 	}
 	if logPath != "" {
 		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
-			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+			if f, err := openReceiverLog(logPath, 4<<20); err == nil {
 				defer f.Close()
 				// A piped stderr with no reader would eventually block every
 				// write, and the logger's mutex would freeze the whole process.
@@ -94,8 +109,6 @@ func main() {
 		log.SetOutput(devNull{})
 	}
 
-	watchParent(*parent)
-
 	ip := protocol.LocalIPv4()
 	if ip == "" && !chatty {
 		// Logging is off, but an unusable network is worth saying out loud.
@@ -103,10 +116,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	dataFolder := *dataDir
-	if dataFolder == "" {
-		dataFolder = defaultDataDir()
-	}
 	cfg, err := config.Load(dataFolder, *name)
 	if err != nil {
 		note("error: %v", err)
@@ -140,22 +149,11 @@ func main() {
 
 	// Effective display & runtime settings come from config.json unless
 	// explicitly overridden on the command line.
-	effWidth := cfg.Width
-	if *width > 0 {
-		effWidth = *width
-	}
-	effHeight := cfg.Height
-	if *height > 0 {
-		effHeight = *height
-	}
-	effFPS := cfg.MaxFPS
-	if *maxFPS > 0 {
-		effFPS = *maxFPS
-	}
+	display := effectiveDisplay(cfg, *width, *height, *maxFPS)
 
 	// The frame section is created before the UI starts so the UI can attach to
 	// a name that already exists.
-	pub, err := frames.NewPublisher(*shmName, effWidth, effHeight)
+	pub, err := frames.NewPublisher(*shmName, display.Width, display.Height)
 	if err != nil {
 		note("error: %v", err)
 		os.Exit(1)
@@ -171,24 +169,10 @@ func main() {
 	defer controlPort.Close()
 	port = &controlPort.port
 
-	srv := ipc.New(info, ipc.Display{
-		Width:     effWidth,
-		Height:    effHeight,
-		MaxFPS:    effFPS,
-		RefreshHz: float64(effFPS),
-	})
+	srv := ipc.New(info, display)
 
 	// First-run setup is reported over stdout while the localhost API is not
 	// ready yet. Flutter keeps the startup screen responsive during a download.
-	startup := func(message string, done, failed bool) {
-		note("ffmpeg: %s", message)
-		_ = json.NewEncoder(os.Stdout).Encode(struct {
-			Event   string `json:"event"`
-			Message string `json:"message"`
-			Done    bool   `json:"done"`
-			Failed  bool   `json:"failed"`
-		}{"ffmpeg_setup", message, done, failed})
-	}
 	startup("正在偵測 FFmpeg…", false, false)
 	executable, err := os.Executable()
 	if err != nil {
@@ -225,18 +209,14 @@ func main() {
 	sink := newFrameSink(dec, pub, rec)
 	state := newRuntimeState()
 
-	// Audio goes straight to the default output device. A machine with no sound
-	// card still mirrors the screen, so a failure here is reported and skipped.
-	speaker, err := audioout.OpenWithProfile(cfg.AudioBuffer)
-	if err != nil {
-		note("audio: %v (mirroring without sound)", err)
-	}
-	if speaker != nil {
-		defer speaker.Close()
-	}
+	speaker := audioout.NewReceiverPlayer(cfg.AudioBuffer)
+	defer speaker.Close()
 
-	var recv *receiver.Receiver
-	recv, err = receiver.New(info, keys, trusted, log.Default(), receiver.Events{
+	var running atomic.Pointer[receiver.Receiver]
+	recv, err := receiver.New(info, keys, trusted, log.Default(), receiver.Events{
+		OnVideoReset: sink.ResetStream,
+		OnAudioReset: speaker.Flush,
+		OnClient:     func(_, name, _ string) { state.setSender(name) },
 		OnFrame: func(f *mirror.Frame) {
 			n := frameCount.Add(1)
 			sink.Handle(f)
@@ -247,8 +227,8 @@ func main() {
 			case n <= 5:
 				log.Printf("video: #%d ntp=%d dur=%d %s %d bytes %v",
 					n, f.NTP, f.Duration, f.Codec, len(f.Data), f.Valid)
-			case n%60 == 0 && recv != nil:
-				b, fr := recv.Stats()
+			case n%60 == 0 && running.Load() != nil:
+				b, fr := running.Load().Stats()
 				w, h := sink.Size()
 				log.Printf("video: %d frames, %.1f MiB, %s, last %d KiB %v, decoded %dx%d (%d pictures)",
 					fr, float64(b)/(1<<20), f.Codec, len(f.Data)/(1<<10), f.Valid, w, h, sink.Frames())
@@ -259,9 +239,7 @@ func main() {
 				s.Width, s.Height, s.SourceWidth, s.SourceHeight, s.XOffset, s.YOffset)
 		},
 		OnAudio: func(f *decode.AudioFrame) {
-			if speaker != nil {
-				speaker.Write(f.Samples)
-			}
+			speaker.Write(f.Samples)
 			n := audioFrames.Add(1)
 			if !chatty {
 				return
@@ -273,9 +251,9 @@ func main() {
 		OnState: func(s receiver.Status, reason string) {
 			state.set(s, reason)
 			log.Printf("state: %v (%s)", s, reason)
-			if s == receiver.StatusInterrupted && recv != nil {
+			if r := running.Load(); s == receiver.StatusInterrupted && r != nil {
 				// A silent session needs a verdict: were there packets at all?
-				got, dropped, decoded := recv.AudioStats()
+				got, dropped, decoded := r.AudioStats()
 				log.Printf("audio: stream ended with %d packet(s), %d dropped, %d decoded",
 					got, dropped, decoded)
 			}
@@ -287,6 +265,7 @@ func main() {
 	}
 	// Deferred last-first: the receiver stops the producers, then the sink waits
 	// for any frame still in flight before freeing what it touches.
+	running.Store(recv)
 	defer sink.Close()
 	defer recv.Close()
 
@@ -298,24 +277,24 @@ func main() {
 	srv.OnDisconnect = recv.DropSession
 	srv.OnStop = recv.DropAllSessions
 
+	adv := mdns.New(cfg.Name, *port, info)
+	srv.TXTRecord = adv.TXTRecord
 	if err := srv.Serve(controlPort.ln); err != nil {
 		note("error: %v", err)
 		os.Exit(1)
 	}
+	defer srv.Close()
 	note("control: %s", srv.Addr())
 
 	// The advertised name is the stored one, not the flag default: -name only
 	// seeds config.json on first run. Advertising the flag meant a renamed
 	// receiver kept announcing its old name, and a sender kept matching the
 	// device it had already paired with.
-	adv := mdns.New(cfg.Name, *port, info)
 	if err := adv.Start(); err != nil {
 		note("error: %v", err)
 		os.Exit(1)
 	}
 	defer adv.Stop()
-	// /info?txtAirPlay must answer with the record we actually published.
-	srv.TXTRecord = adv.TXTRecord
 	note("advertising: %s", info.Name)
 	note("ip: %s", ip)
 
@@ -349,6 +328,31 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	note("stopped")
+}
+
+func startup(message string, done, failed bool) {
+	note("startup: %s", message)
+	_ = json.NewEncoder(os.Stdout).Encode(struct {
+		Event   string `json:"event"`
+		Message string `json:"message"`
+		Done    bool   `json:"done"`
+		Failed  bool   `json:"failed"`
+	}{"ffmpeg_setup", message, done, failed})
+}
+
+// Overrides apply to this process only. The API and advertisement share the
+// same effective values while config.json keeps the user's saved settings.
+func effectiveDisplay(cfg *config.Config, width, height, fps int) ipc.Display {
+	if width > 0 {
+		cfg.Width = width
+	}
+	if height > 0 {
+		cfg.Height = height
+	}
+	if fps > 0 {
+		cfg.MaxFPS = fps
+	}
+	return ipc.Display{Width: cfg.Width, Height: cfg.Height, MaxFPS: cfg.MaxFPS, RefreshHz: float64(cfg.MaxFPS)}
 }
 
 // boundControl is the control listener together with the port it took.

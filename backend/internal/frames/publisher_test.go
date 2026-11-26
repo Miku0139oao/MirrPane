@@ -10,6 +10,53 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestExistingLayoutMismatchLeavesActiveSectionIntact(t *testing.T) {
+	const name = `Local\MirrPaneTestIncompatibleLayout`
+	p, err := NewPublisher(name, 32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err := p.Publish(1, 1, 4, []byte{0, 0, 0, 255}); err != nil {
+		t.Fatal(err)
+	}
+	p.ctrl.HeaderBytes++
+	before := *p.ctrl
+	if another, err := NewPublisher(name, 32, 32); err == nil {
+		another.Close()
+		t.Fatal("incompatible section was accepted")
+	}
+	if before != *p.ctrl {
+		t.Fatal("a rejected publisher changed the existing mapping")
+	}
+}
+
+func TestClearedPublicationKeepsSequenceAcrossRestart(t *testing.T) {
+	const name = `Local\MirrPaneTestClearedPublication`
+	p, err := NewPublisher(name, 32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	pixels := []byte{4, 5, 6, 255}
+	if err := p.Publish(1, 1, 4, pixels); err != nil {
+		t.Fatal(err)
+	}
+	first := p.seq
+	p.ClearPicture()
+	if _, _, ok := p.LatestSlot(); ok {
+		t.Fatal("retracted session has a current slot")
+	}
+	next, err := NewPublisher(name, 32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if err := next.Publish(1, 1, 4, pixels); err != nil || next.seq <= first {
+		t.Fatalf("sequence after restart: %d after %d (%v)", next.seq, first, err)
+	}
+}
+
 // The control block is a contract with the C++ reader. Every offset here is
 // mirrored by a static_assert in frontend/windows/runner/frame_reader.cc; a
 // drift on either side must fail a build, not produce a garbled picture.

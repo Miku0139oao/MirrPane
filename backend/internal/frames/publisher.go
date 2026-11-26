@@ -266,14 +266,14 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 	p.ctrl = (*control)(unsafe.Add(unsafe.Pointer(nil), base))
 	p.slots = unsafe.Add(unsafe.Pointer(p.ctrl), SlotDataOffset)
 
-	if reused &&
-		p.ctrl.Magic == Magic &&
-		p.ctrl.Version == Version &&
-		p.ctrl.SlotCount == SlotCount &&
-		p.ctrl.SlotStride == slotStride &&
-		p.ctrl.SlotDataOffset == SlotDataOffset {
+	if reused {
+		if p.ctrl.Magic != Magic || p.ctrl.Version != Version || p.ctrl.HeaderBytes != HeaderBytes ||
+			p.ctrl.SlotCount != SlotCount || p.ctrl.SlotStride != slotStride || p.ctrl.SlotDataOffset != SlotDataOffset {
+			p.Close()
+			return nil, fmt.Errorf("frames: existing section %q has an incompatible layout", name)
+		}
 		prevPublish := atomic.LoadUint64(&p.ctrl.Publish)
-		p.seq = prevPublish >> 2
+		p.seq = max(prevPublish>>2, atomic.LoadUint64(&p.ctrl.FrameSeq))
 		if cur := int(prevPublish & 0x3); cur < SlotCount {
 			p.current = cur
 			if prevPublish != 0 && p.ctrl.Slots[cur].Format == FormatDXGIBGRA {
@@ -319,6 +319,12 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 
 // Name reports the mapping name.
 func (p *Publisher) Name() string { return p.name }
+
+// ClearPicture retracts the previous sender's publication. A reader that
+// already holds a slot may finish drawing from it until it adopts a new one.
+func (p *Publisher) ClearPicture() {
+	atomic.StoreUint64(&p.ctrl.Publish, 0)
+}
 
 // SlotStride reports the size of one slot.
 func (p *Publisher) SlotStride() uint32 { return p.stride }

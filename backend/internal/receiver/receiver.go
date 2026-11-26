@@ -3,6 +3,7 @@
 package receiver
 
 import (
+	"bytes"
 	"crypto/sha512"
 	"errors"
 	"fmt"
@@ -43,11 +44,20 @@ type Events struct {
 	OnGeometry func(mirror.Size)
 	OnState    func(Status, string)
 	OnClient   func(deviceID, name, model string)
+	// OnVideoReset is called before the first picture of a new mirror session
+	// and when the owning session ends, so decoder state and any published
+	// picture from the previous session are discarded. It never runs
+	// concurrently with OnFrame.
+	OnVideoReset func()
+	// OnAudioReset is called when a new audio track becomes active and when
+	// the current one ends, so buffered PCM from the previous session cannot
+	// play into the new one. It never runs concurrently with OnAudio.
+	OnAudioReset func()
 }
 
 type mirrorServer interface {
 	Port() int
-	Prepare(string, uint64, ...mirror.KeyCandidate) bool
+	Prepare(string, uint64, ...mirror.KeyCandidate) (uint64, bool)
 	Busy() bool
 	DropClient()
 	ResetKey()
@@ -57,7 +67,7 @@ type mirrorServer interface {
 
 type audioReceiver interface {
 	Ports() (int, int)
-	Configure([]audio.Key, []byte, ...[]byte)
+	ConfigurePeer(peer netip.Addr, controlPort int, keys []audio.Key, iv []byte, config ...[]byte)
 	Busy() bool
 	ResetStream()
 	ResetKey()
@@ -108,6 +118,21 @@ type Receiver struct {
 	approvalSources   map[netip.Prefix][]time.Time
 	pinnedSender      string
 
+	// Media session ownership. preparedSession is the mirror generation the
+	// latest accepted /setup authorized; videoSession is the generation that
+	// actually committed and owns video. liveSource says which track keeps the
+	// UI in StatusLive: "video", "audio" or "".
+	preparedSession uint64
+	videoSession    uint64
+	liveSource      string
+	audioBound      bool
+	audioBind       *audioBinding
+
+	// The approved sender currently named to the UI.
+	clientDeviceID string
+	clientName     string
+	clientModel    string
+
 	// stateMu serializes OnState delivery without holding mu. Lock order is
 	// strictly stateMu -> mu so callbacks can inspect mu safely and stale
 	// connecting transitions cannot overwrite newer live or idle state.
@@ -115,6 +140,45 @@ type Receiver struct {
 	status      Status
 	stateReason string
 	pendingEmit bool
+
+	// Callback lanes keep a reset from overlapping media of the same kind.
+	// Lock order is videoCbMu/audioCbMu -> mu; no reset runs with mu held.
+	videoCbMu sync.Mutex
+	audioCbMu sync.Mutex
+	// Serialize ownership changes through the delivery of their reset and
+	// client notifications. An old teardown cannot flush a newer stream.
+	transitionMu sync.Mutex
+}
+
+// mediaEffects are reset/notification side effects computed under mu and
+// delivered after the lock is released.
+type mediaEffects struct {
+	videoReset    bool
+	audioReset    bool
+	clientCleared bool
+}
+
+// audioBinding is the peer, owner and key material currently configured in the
+// audio receiver. It is compared against each /setup so a duplicate setup from
+// the same owner cannot reset audio that is already streaming.
+type audioBinding struct {
+	owner       string
+	peer        netip.Addr
+	controlPort int
+	keys        []audio.Key
+	iv          []byte
+}
+
+func (b *audioBinding) matches(owner string, peer netip.Addr, controlPort int, keys []audio.Key, iv []byte) bool {
+	if b == nil || b.owner != owner || b.peer != peer || b.controlPort != controlPort || len(b.keys) != len(keys) || !bytes.Equal(b.iv, iv) {
+		return false
+	}
+	for i := range keys {
+		if b.keys[i].Name != keys[i].Name || !bytes.Equal(b.keys[i].Key, keys[i].Key) {
+			return false
+		}
+	}
+	return true
 }
 
 // clientSession is the state of one control connection, keyed by connKey.
@@ -155,11 +219,7 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logge
 	}
 
 	mr := mirror.NewServer(logger, mirror.Handlers{
-		OnFrame: func(f *mirror.Frame) {
-			if events.OnFrame != nil {
-				events.OnFrame(f)
-			}
-		},
+		OnFrame: r.handleMirrorFrame,
 		OnGeometry: func(s mirror.Size) {
 			r.log.Printf("mirror: geometry %dx%d (source %dx%d, offset %d,%d)",
 				s.Width, s.Height, s.SourceWidth, s.SourceHeight, s.XOffset, s.YOffset)
@@ -167,23 +227,8 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logge
 				events.OnGeometry(s)
 			}
 		},
-		OnConnected: func(remote string) {
-			r.mu.Lock()
-			r.cleanStop.Store(false)
-			r.recordStateLocked(StatusLive, "mirroring")
-			r.mu.Unlock()
-			r.flushState()
-		},
-		OnDisconnected: func() {
-			r.mu.Lock()
-			if r.cleanStop.Swap(false) {
-				r.recordStateLocked(StatusIdle, "disconnected")
-			} else {
-				r.recordStateLocked(StatusInterrupted, "sender closed the stream")
-			}
-			r.mu.Unlock()
-			r.flushState()
-		},
+		OnConnected:    r.handleMirrorConnected,
+		OnDisconnected: r.handleMirrorDisconnected,
 		OnPause: func() {
 			r.log.Printf("mirror: sender suspended video")
 		},
@@ -201,7 +246,12 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logge
 	r.timing = timing
 
 	audioRx, err := audio.New(logger, audio.Handlers{
-		OnFrame: func(f *decode.AudioFrame) {
+		Output: func(f *decode.AudioFrame) {
+			// A reset (new track or track end) cannot interleave with frames
+			// already being written to the speaker: it waits for this lane and
+			// then flushes everything delivered so far.
+			r.audioCbMu.Lock()
+			defer r.audioCbMu.Unlock()
 			if events.OnAudio != nil {
 				events.OnAudio(f)
 			}
@@ -287,6 +337,8 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 			}
 		}
 	}
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
 	r.cancelDisconnectLocked(remote)
 	cs := r.sessions[remote]
@@ -299,20 +351,38 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 	}
 	owner := (r.activeConn == "" && r.activeRemote == "") || r.activeConn == remote || sameTrustedActive
 	if audioOnly {
+		var fx mediaEffects
+		idle := false
 		if owner && r.audioRx != nil {
 			r.audioRx.ResetStream()
+			r.audioBound, r.audioBind = false, nil
+			fx.audioReset = true
+			if r.liveSource == "audio" {
+				r.liveSource = ""
+				if r.clearClientLocked() {
+					fx.clientCleared = true
+				}
+				r.recordStateLocked(StatusIdle, "audio ended")
+				idle = true
+			}
 		}
 		r.mu.Unlock()
+		r.applyEffects(fx)
+		if idle {
+			r.flushState()
+		}
 		return
 	}
 	delete(r.sessions, remote)
+	var fx mediaEffects
 	if owner {
 		r.cleanStop.Store(true)
-		r.dropMediaLocked()
+		fx = r.dropMediaLocked()
 		r.recordStateLocked(StatusIdle, "sender stopped mirroring")
 	}
 	r.mu.Unlock()
 	if owner {
+		r.applyEffects(fx)
 		r.flushState()
 	}
 }
@@ -320,18 +390,24 @@ func (r *Receiver) Teardown(remote string, body []byte) {
 // Disconnect drops the current mirroring session from the receiver side and
 // returns cleanly to StatusIdle.
 func (r *Receiver) Disconnect() {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
 	r.cleanStop.Store(true)
 	r.cancelAllDisconnectsLocked()
-	r.dropMediaLocked()
+	fx := r.dropMediaLocked()
 	clear(r.sessions)
 	r.recordStateLocked(StatusIdle, "disconnected by user")
 	r.mu.Unlock()
+	r.applyEffects(fx)
 	r.flushState()
 }
 
 // dropMediaLocked releases both the active client and any unused setup keys.
-func (r *Receiver) dropMediaLocked() {
+// It returns the resets the consumer needs so the caller can deliver them
+// after releasing mu.
+func (r *Receiver) dropMediaLocked() mediaEffects {
+	var fx mediaEffects
 	r.cancelDisconnectLocked(r.activeConn)
 	if r.activeConn != "" {
 		delete(r.sessions, r.activeConn)
@@ -343,9 +419,22 @@ func (r *Receiver) dropMediaLocked() {
 	if r.audioRx != nil {
 		r.audioRx.ResetKey()
 	}
+	if r.videoSession != 0 {
+		fx.videoReset = true
+	}
+	if r.audioBound {
+		fx.audioReset = true
+	}
+	if r.clearClientLocked() {
+		fx.clientCleared = true
+	}
 	r.activeConn = ""
 	r.activeRemote = ""
 	r.activeFingerprint = ""
+	r.preparedSession, r.videoSession = 0, 0
+	r.liveSource = ""
+	r.audioBound, r.audioBind = false, nil
+	return fx
 }
 
 func (r *Receiver) recordStateLocked(s Status, reason string) {
@@ -372,6 +461,144 @@ func (r *Receiver) flushState() {
 			r.events.OnState(s, reason)
 		}
 	}
+}
+
+// handleMirrorFrame forwards a picture only while the generation that produced
+// it still owns video. The callback lane also orders frames against
+// OnVideoReset, so a stop can never deliver a picture after the consumer was
+// told to discard the previous session.
+func (r *Receiver) handleMirrorFrame(f *mirror.Frame) {
+	if f == nil {
+		return
+	}
+	r.videoCbMu.Lock()
+	defer r.videoCbMu.Unlock()
+	r.mu.Lock()
+	live := f.Session != 0 && f.Session == r.videoSession
+	onFrame := r.events.OnFrame
+	r.mu.Unlock()
+	if !live || onFrame == nil {
+		return
+	}
+	onFrame(f)
+}
+
+// handleMirrorConnected accepts a connect callback only for the generation the
+// latest authorized /setup prepared. A callback delayed past a stop or a newer
+// setup therefore cannot mark a stopped stream live.
+func (r *Receiver) handleMirrorConnected(session uint64, remote string) {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
+	r.videoCbMu.Lock()
+	r.mu.Lock()
+	if session == 0 || session != r.preparedSession || r.activeConn == "" {
+		r.mu.Unlock()
+		r.videoCbMu.Unlock()
+		return
+	}
+	r.videoSession = session
+	r.cleanStop.Store(false)
+	r.liveSource = "video"
+	r.recordStateLocked(StatusLive, "mirroring")
+	r.mu.Unlock()
+	if r.events.OnVideoReset != nil {
+		r.events.OnVideoReset()
+	}
+	r.videoCbMu.Unlock()
+	r.flushState()
+}
+
+// handleMirrorDisconnected ends only the session that still owns video and
+// discards that session's pictures and decoder state. A superseded connection's
+// late close is ignored.
+func (r *Receiver) handleMirrorDisconnected(session uint64) {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
+	r.mu.Lock()
+	if session == 0 || session != r.videoSession {
+		r.mu.Unlock()
+		return
+	}
+	r.videoSession = 0
+	clean := r.cleanStop.Swap(false)
+	fx := mediaEffects{videoReset: true}
+	if r.liveSource == "video" {
+		r.liveSource = ""
+	}
+	if r.clearClientLocked() {
+		fx.clientCleared = true
+	}
+	if clean {
+		r.recordStateLocked(StatusIdle, "disconnected")
+	} else {
+		r.recordStateLocked(StatusInterrupted, "sender closed the stream")
+	}
+	r.mu.Unlock()
+	r.applyEffects(fx)
+	r.flushState()
+}
+
+// resetVideo runs the consumer's video reset in the frame callback lane.
+func (r *Receiver) resetVideo() {
+	r.videoCbMu.Lock()
+	defer r.videoCbMu.Unlock()
+	if r.events.OnVideoReset != nil {
+		r.events.OnVideoReset()
+	}
+}
+
+// resetAudio runs the consumer's audio reset in the audio callback lane.
+func (r *Receiver) resetAudio() {
+	r.audioCbMu.Lock()
+	defer r.audioCbMu.Unlock()
+	if r.events.OnAudioReset != nil {
+		r.events.OnAudioReset()
+	}
+}
+
+// applyEffects delivers collected reset/notification effects. The caller must
+// have released mu.
+func (r *Receiver) applyEffects(fx mediaEffects) {
+	if fx.videoReset {
+		r.resetVideo()
+	}
+	if fx.audioReset {
+		r.resetAudio()
+	}
+	if fx.clientCleared && r.events.OnClient != nil {
+		r.events.OnClient("", "", "")
+	}
+}
+
+// clearClientLocked reports whether the UI still held a sender name.
+func (r *Receiver) clearClientLocked() bool {
+	if r.clientDeviceID == "" && r.clientName == "" && r.clientModel == "" {
+		return false
+	}
+	r.clientDeviceID, r.clientName, r.clientModel = "", "", ""
+	return true
+}
+
+// recordClientLocked stores a newly approved sender's identity for the UI,
+// keeping earlier fields when a later setup omits them.
+func (r *Receiver) recordClientLocked(deviceID, name, model string) (string, string, string, bool) {
+	if deviceID == "" && name == "" && model == "" {
+		return "", "", "", false
+	}
+	if deviceID == "" {
+		deviceID = r.clientDeviceID
+	}
+	if name == "" {
+		name = r.clientName
+	}
+	if model == "" {
+		model = r.clientModel
+	}
+	if deviceID == r.clientDeviceID && name == r.clientName && model == r.clientModel {
+		return "", "", "", false
+	}
+	r.clientDeviceID, r.clientName, r.clientModel = deviceID, name, model
+	return deviceID, name, model, true
 }
 
 // hostIP extracts the IP address from a control connection key ("ip:port",
@@ -462,17 +689,24 @@ func (r *Receiver) evictSessionLocked() {
 // The owning connection's media keeps a short grace period; reconnects must
 // verify afresh on a new connection. Unowned connections are forgotten at once.
 func (r *Receiver) DropSession(remote string) {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
 	if r.activeConn != remote || remote == "" || r.sessions[remote] == nil {
 		_, hadSession := r.sessions[remote]
 		r.cancelDisconnectLocked(remote)
 		delete(r.sessions, remote)
 		idle := hadSession && r.activeConn == "" && len(r.sessions) == 0
+		var fx mediaEffects
 		if idle {
+			if r.clearClientLocked() {
+				fx.clientCleared = true
+			}
 			r.recordStateLocked(StatusIdle, "control connection closed")
 		}
 		r.mu.Unlock()
 		if idle {
+			r.applyEffects(fx)
 			r.flushState()
 		}
 		return
@@ -493,16 +727,17 @@ func (r *Receiver) DropSession(remote string) {
 // DropAllSessions forgets every sender, including their FairPlay and pairing
 // state, when the HTTP /stop endpoint stops the receiver session.
 func (r *Receiver) DropAllSessions() {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
 	r.cleanStop.Store(true)
 	r.cancelAllDisconnectsLocked()
-	r.dropMediaLocked()
+	fx := r.dropMediaLocked()
 	clear(r.sessions)
-	if r.pendingEmit && r.status == StatusConnecting {
-		r.pendingEmit = false
-		r.status = StatusIdle
-	}
+	r.recordStateLocked(StatusIdle, "receiver stopped")
 	r.mu.Unlock()
+	r.applyEffects(fx)
+	r.flushState()
 }
 
 // FPSetup answers /fp-setup. A 16-byte body is the first exchange, a 164-byte
@@ -590,26 +825,31 @@ func (r *Receiver) authorizeSetupLocked(fingerprint, remote, label string) error
 // ClearTrustedSenders durably clears approvals and immediately revokes all
 // pairing/media sessions and pending decisions. Identity resets also clear trust.
 func (r *Receiver) ClearTrustedSenders() error {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.trust == nil {
+		r.mu.Unlock()
 		return errors.New("receiver: sender trust store unavailable")
 	}
 	if err := r.trust.ClearTrustedSenders(); err != nil {
+		r.mu.Unlock()
 		return err
 	}
 	r.cleanStop.Store(true)
 	r.cancelAllDisconnectsLocked()
-	r.dropMediaLocked()
+	fx := r.dropMediaLocked()
 	clear(r.sessions)
 	clear(r.pending)
 	clear(r.rejected)
 	clear(r.approvalSources)
 	r.pinnedSender = ""
-	if r.pendingEmit && r.status == StatusConnecting {
-		r.pendingEmit = false
-		r.status = StatusIdle
-	}
+	// A successful clear revokes the session no matter which state the UI was
+	// showing, so record idle explicitly and notify after the lock is released.
+	r.recordStateLocked(StatusIdle, "trust cleared")
+	r.mu.Unlock()
+	r.applyEffects(fx)
+	r.flushState()
 	return nil
 }
 
@@ -650,24 +890,54 @@ func wrapProtocol(err error) error {
 	}
 }
 
+// setupEffects are the notifications a successful /setup collects while mu is
+// held; they are delivered after the lock is released.
+type setupEffects struct {
+	media        mediaEffects
+	clientChange bool
+	clientDevice string
+	clientName   string
+	clientModel  string
+	stateChanged bool
+}
+
 // Setup answers /setup. The first call carries ekey/eiv and is followed by calls
 // that create the mirror and audio streams.
 func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, error) {
+	r.transitionMu.Lock()
+	defer r.transitionMu.Unlock()
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	res, err, fx := r.setupLocked(remote, req)
+	r.mu.Unlock()
+	r.applyEffects(fx.media)
+	if fx.clientChange && r.events.OnClient != nil {
+		r.events.OnClient(fx.clientDevice, fx.clientName, fx.clientModel)
+	}
+	if fx.stateChanged {
+		r.flushState()
+	}
+	return res, err
+}
+
+func (r *Receiver) setupLocked(remote string, req map[string]any) (map[string]any, error, setupEffects) {
+	var fx setupEffects
 	cs := r.sessionLocked(remote)
 	remoteIP := hostIP(remote)
 	streams, _ := req["streams"].([]any)
 	_, hasEKey := req["ekey"]
 	_, hasEIV := req["eiv"]
 	if (hasEKey || hasEIV || len(streams) > 0) && !cs.pair.Verified() {
-		return nil, &protocolError{status: 403, err: ErrNotPaired}
+		return nil, &protocolError{status: 403, err: ErrNotPaired}, fx
 	}
 	var fingerprint string
+	var clientDeviceID, clientName, clientModel string
 	if cs.pair.Verified() {
 		fingerprint = trust.Fingerprint(cs.pair.PeerPublicKey())
-		if err := r.authorizeSetupLocked(fingerprint, remoteIP, senderLabel(req)); err != nil {
-			return nil, err
+		clientName = senderLabel(req)
+		clientDeviceID = senderDeviceID(req)
+		clientModel = senderModel(req)
+		if err := r.authorizeSetupLocked(fingerprint, remoteIP, clientName); err != nil {
+			return nil, err, fx
 		}
 	}
 	// Stage all per-sender changes until the complete request is accepted.
@@ -677,11 +947,11 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 	if hasEKey || hasEIV {
 		ekey, eiv, ok := keyMaterial(req)
 		if !ok {
-			return nil, &protocolError{status: 400, err: errors.New("receiver: malformed stream key material")}
+			return nil, &protocolError{status: 400, err: errors.New("receiver: malformed stream key material")}, fx
 		}
 		key, err := cs.fp.DecryptKey(ekey)
 		if err != nil {
-			return nil, &protocolError{status: 400, err: fmt.Errorf("decrypt ekey: %w", err)}
+			return nil, &protocolError{status: 400, err: fmt.Errorf("decrypt ekey: %w", err)}, fx
 		}
 		next.iv = append([]byte(nil), eiv...)
 		next.aes = key
@@ -709,7 +979,12 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 
 	if len(streams) == 0 {
 		*cs = next
-		return res, nil
+		// A key-only setup is still the first accepted contact: name the sender
+		// once its identity is authorized.
+		if deviceID, name, model, changed := r.recordClientLocked(clientDeviceID, clientName, clientModel); changed {
+			fx.clientChange, fx.clientDevice, fx.clientName, fx.clientModel = true, deviceID, name, model
+		}
+		return res, nil, fx
 	}
 
 	// Logging the requested types makes a silent sender diagnosable: no audio
@@ -725,6 +1000,7 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 
 	out := make([]any, 0, len(streams))
 	hasVideo, hasAudio := false, false
+	audioControlPort := 0
 	for _, raw := range streams {
 		stream, ok := raw.(map[string]any)
 		if !ok {
@@ -733,7 +1009,7 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 		switch streamType(stream) {
 		case 110:
 			if !next.haveEKey {
-				return nil, &protocolError{status: 400, err: ErrNoKey}
+				return nil, &protocolError{status: 400, err: ErrNoKey}, fx
 			}
 			id := uint64Value(stream["streamConnectionID"])
 			next.lastStreamID = id
@@ -744,9 +1020,13 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 			})
 		case 96:
 			if !next.haveEKey {
-				return nil, &protocolError{status: 400, err: ErrNoKey}
+				return nil, &protocolError{status: 400, err: ErrNoKey}, fx
 			}
 			hasAudio = true
+			// The sender names the UDP port it listens on for resend requests.
+			// Absent or invalid means no resends (0); the advertised control
+			// port below stays non-zero so the sender keeps a resend path.
+			audioControlPort = senderControlPort(stream)
 			// ct 8 is AAC-ELD, which is the only mirrored-audio codec iOS uses.
 			// controlPort must be non-zero or the sender disables resends, so it
 			// is always advertised.
@@ -755,8 +1035,8 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 			// cannot forge log lines.
 			ct := fmt.Sprint(stream["ct"])
 			spf := fmt.Sprint(stream["spf"])
-			r.log.Printf("setup: audio stream ct=%q spf=%q on data %d / control %d",
-				ct, spf, dataPort, controlPort)
+			r.log.Printf("setup: audio stream ct=%q spf=%q on data %d / control %d (sender control %d)",
+				ct, spf, dataPort, controlPort, audioControlPort)
 			out = append(out, map[string]any{
 				"type":        uint64(96),
 				"dataPort":    uint64(dataPort),
@@ -774,14 +1054,26 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 		sameConn := r.activeConn == remote
 		sameTrustedIdentity := r.activeFingerprint != "" && fingerprint == r.activeFingerprint && r.activeRemote == remoteIP
 		if r.activeConn != "" && !sameConn && !sameTrustedIdentity && (r.mirror.Busy() || r.audioRx.Busy()) {
-			return nil, &protocolError{status: 453, err: ErrBusy}
+			return nil, &protocolError{status: 453, err: ErrBusy}, fx
 		}
-		if hasVideo && !r.mirror.Prepare(remoteIP, next.lastStreamID, next.aesCandidates...) {
-			return nil, &protocolError{status: 453, err: ErrBusy}
+		if hasVideo {
+			generation, ok := r.mirror.Prepare(remoteIP, next.lastStreamID, next.aesCandidates...)
+			if !ok {
+				return nil, &protocolError{status: 453, err: ErrBusy}, fx
+			}
+			// Only a connection that commits this exact setup may report live.
+			r.preparedSession = generation
 		}
 		if !hasVideo && r.activeConn != "" && !sameConn && !sameTrustedIdentity {
 			r.mirror.DropClient()
 			r.mirror.ResetKey()
+			if r.videoSession != 0 {
+				fx.media.videoReset = true
+			}
+			r.preparedSession, r.videoSession = 0, 0
+			if r.liveSource == "video" {
+				r.liveSource = ""
+			}
 		}
 		if r.activeConn != "" && r.activeConn != remote {
 			r.cancelDisconnectLocked(r.activeConn)
@@ -790,17 +1082,68 @@ func (r *Receiver) Setup(remote string, req map[string]any) (map[string]any, err
 		r.activeConn = remote
 		r.activeRemote = remoteIP
 		r.activeFingerprint = fingerprint
-		// Audio uses the same per-sender candidates, with CBC and the setup IV.
-		// Key-only setup never reconfigures this shared receiver.
-		audioKeys := make([]audio.Key, len(next.aesCandidates))
-		for i, c := range next.aesCandidates {
-			audioKeys[i] = audio.Key{Name: c.Name, Key: c.Key}
+		if hasAudio {
+			// The audio receiver needs the authenticated peer and the sender's
+			// own control port to verify sources and request resends. A repeat
+			// setup from the same owner with identical material must not reset a
+			// stream that is already playing, so only a changed binding is
+			// configured (and a new track is announced to the consumer).
+			peer := parsePeer(remoteIP)
+			audioKeys := audioKeysFromCandidates(next.aesCandidates)
+			if !r.audioBound || !r.audioBind.matches(fingerprint, peer, audioControlPort, audioKeys, next.iv) {
+				r.audioRx.ConfigurePeer(peer, audioControlPort, audioKeys, append([]byte(nil), next.iv...))
+				r.audioBound = true
+				r.audioBind = &audioBinding{
+					owner:       fingerprint,
+					peer:        peer,
+					controlPort: audioControlPort,
+					keys:        audioKeys,
+					iv:          append([]byte(nil), next.iv...),
+				}
+				fx.media.audioReset = true
+			}
+			// Audio-only senders have no video frame to announce playback.
+			if !hasVideo && r.videoSession == 0 && r.liveSource == "" {
+				r.liveSource = "audio"
+				r.recordStateLocked(StatusLive, "audio")
+				fx.stateChanged = true
+			}
 		}
-		r.audioRx.Configure(audioKeys, next.iv)
 	}
 	*cs = next
+	// The sender is now the accepted owner; only a completed setup may name it
+	// to the UI, so a trusted but busy probe cannot mislabel a live session.
+	if deviceID, name, model, changed := r.recordClientLocked(clientDeviceID, clientName, clientModel); changed {
+		fx.clientChange, fx.clientDevice, fx.clientName, fx.clientModel = true, deviceID, name, model
+	}
 	res["streams"] = out
-	return res, nil
+	return res, nil, fx
+}
+
+// senderControlPort reads the control port a sender listens on for resend
+// requests. Absent or out of range means "no resend channel".
+func senderControlPort(stream map[string]any) int {
+	port := uint64Value(stream["controlPort"])
+	if port == 0 || port > 65535 {
+		return 0
+	}
+	return int(port)
+}
+
+func parsePeer(remoteIP string) netip.Addr {
+	addr, err := netip.ParseAddr(remoteIP)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return addr.Unmap()
+}
+
+func audioKeysFromCandidates(candidates []mirror.KeyCandidate) []audio.Key {
+	keys := make([]audio.Key, len(candidates))
+	for i, c := range candidates {
+		keys[i] = audio.Key{Name: c.Name, Key: append([]byte(nil), c.Key...)}
+	}
+	return keys
 }
 
 // PairVerifySecret records the ECDH shared secret produced by pair-verify. The

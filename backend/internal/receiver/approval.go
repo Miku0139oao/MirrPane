@@ -252,20 +252,46 @@ func (r *Receiver) RejectSender(fingerprint string) error {
 func senderLabel(req map[string]any) string {
 	for _, key := range []string{"name", "deviceName"} {
 		if label, ok := req[key].(string); ok {
-			var runes []rune
-			for _, r := range strings.TrimSpace(label) {
-				if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-					continue
-				}
-				runes = append(runes, r)
-				if len(runes) == 64 {
-					break
-				}
-			}
-			if len(runes) > 0 {
-				return strings.TrimSpace(string(runes))
+			if cleaned := cleanSenderField(label); cleaned != "" {
+				return cleaned
 			}
 		}
 	}
 	return ""
+}
+
+// senderDeviceID reads the sender's advertised identity. It is display data
+// only; trust is decided by the pairing fingerprint.
+func senderDeviceID(req map[string]any) string {
+	for _, key := range []string{"deviceID", "macAddress"} {
+		if value, ok := req[key].(string); ok {
+			if cleaned := cleanSenderField(value); cleaned != "" {
+				return cleaned
+			}
+		}
+	}
+	return ""
+}
+
+func senderModel(req map[string]any) string {
+	if value, ok := req["model"].(string); ok {
+		return cleanSenderField(value)
+	}
+	return ""
+}
+
+// cleanSenderField keeps a remote-supplied display string to one bounded line
+// without control characters.
+func cleanSenderField(label string) string {
+	var runes []rune
+	for _, r := range strings.TrimSpace(label) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+		runes = append(runes, r)
+		if len(runes) == 64 {
+			break
+		}
+	}
+	return strings.TrimSpace(string(runes))
 }

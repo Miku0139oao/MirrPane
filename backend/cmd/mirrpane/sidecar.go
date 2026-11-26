@@ -170,6 +170,9 @@ type Sidecar struct {
 	pollClient   *http.Client
 	postClient   *http.Client
 	lastProgress time.Time
+	// launchAt bounds the whole startup, so steady provisioning progress cannot
+	// keep the UI waiting past the backend's own setup cap.
+	launchAt     time.Time
 	stopped      bool
 	everReached  bool
 	runtimeSetup bool
@@ -287,6 +290,7 @@ func (s *Sidecar) startLocked() {
 	s.launchCtx = ctx
 	s.baseURL = ""
 	s.lastProgress = time.Now()
+	s.launchAt = s.lastProgress
 	s.everReached = false
 	s.runtimeSetup = false
 	s.startupError = ""
@@ -309,6 +313,9 @@ func (s *Sidecar) startLocked() {
 		// Close waitDone only after the exit has been handled, so Stop (and the
 		// Start behind it) cannot overtake the failure this launch reports.
 		defer close(waitDone)
+		// Wait closes StdoutPipe. Drain short-lived children's startup errors
+		// before reaping so the UI can identify the conflicting installation.
+		<-stdoutDone
 		s.handleExit(gen, cmd.Wait())
 	}()
 
@@ -387,8 +394,15 @@ func (s *Sidecar) handleStartupLine(gen uint64, line string) {
 
 	switch ev.Event {
 	case "ffmpeg_setup":
-		if ev.Message == "" {
-			return
+		message := ev.Message
+		if message == "" {
+			if !ev.Failed {
+				return
+			}
+			// A failed step always names itself on the failure screen, even if
+			// the backend could not supply a message (as with an instance-lock
+			// conflict detected before any setup output).
+			message = "接收器無法啟動"
 		}
 		s.mu.Lock()
 		if s.stopped || s.closed || s.gen != gen || s.everReached {
@@ -397,25 +411,30 @@ func (s *Sidecar) handleStartupLine(gen uint64, line string) {
 		}
 		report := false
 		if ev.Failed {
-			s.startupError = ev.Message
+			s.startupError = message
 			if !s.failureReported {
 				s.failureReported = true
 				report = true
 			}
 			s.mu.Unlock()
 			if report {
-				s.emitFor(gen, Snapshot{Phase: PhaseFailed, Error: ev.Message})
+				s.emitFor(gen, Snapshot{Phase: PhaseFailed, Error: message})
 			}
 			return
 		}
+		// Every progress line is a sign of life: a long FFmpeg download must
+		// extend the idle deadline rather than trip it after 11 minutes.
+		// Once a terminal failure was shown, a stray line must not replace it
+		// with a booting screen for the process that is about to exit.
 		s.runtimeSetup = !ev.Done
-		if !s.runtimeSetup {
-			s.lastProgress = time.Now()
-		}
+		s.lastProgress = time.Now()
+		show := !s.failureReported
 		trigger := s.pollTrigger
 		s.mu.Unlock()
 
-		s.emitFor(gen, Snapshot{Phase: PhaseBooting, Message: ev.Message})
+		if show {
+			s.emitFor(gen, Snapshot{Phase: PhaseBooting, Message: message})
+		}
 		signalPoll(trigger)
 
 	case "api_ready":
@@ -548,21 +567,35 @@ func (s *Sidecar) tickFor(ctx context.Context, gen uint64) {
 	})
 }
 
+// Startup deadlines. The backend provisions FFmpeg under a 30-minute cap and
+// reports progress while it downloads; the UI mirrors that cap instead of
+// failing a working download after a fixed 11 minutes.
+const (
+	startupIdleDeadline  = 11 * time.Minute // no setup progress for this long
+	startupTotalDeadline = 30 * time.Minute // whole provisioning step
+	apiReadyDeadline     = 8 * time.Second  // after setup hands over to the API
+)
+
 func (s *Sidecar) handlePollError(gen uint64) {
 	s.mu.Lock()
-	deadline := 8 * time.Second
+	deadline := apiReadyDeadline
 	if !s.everReached && s.runtimeSetup {
-		deadline = 11 * time.Minute
+		deadline = startupIdleDeadline
 	}
-	if s.stopped || s.closed || s.gen != gen || s.failureReported || time.Since(s.lastProgress) <= deadline {
+	stalled := time.Since(s.lastProgress) > deadline
+	timedOut := !s.everReached && time.Since(s.launchAt) > startupTotalDeadline
+	if s.stopped || s.closed || s.gen != gen || s.failureReported || (!stalled && !timedOut) {
 		s.mu.Unlock()
 		return
 	}
 	s.failureReported = true
 	msg := s.startupError
-	if s.everReached {
+	switch {
+	case s.everReached:
 		msg = "接收器已停止回應，正在重新連線…"
-	} else if msg == "" {
+	case msg == "" && timedOut && !stalled:
+		msg = "接收器啟動逾時（30 分鐘）"
+	case msg == "":
 		msg = "接收器沒有回應"
 	}
 	s.mu.Unlock()

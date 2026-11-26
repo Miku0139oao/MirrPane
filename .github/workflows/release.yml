@@ -7,12 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (must match VERSION)'
+        description: 'Version to rebuild; the v<version> tag must already exist'
         required: true
         type: string
 
 permissions:
   contents: write
+
+# Serialize every release run. Two publishes must never interleave their asset
+# uploads or race each other over the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CGO_ENABLED: '0'
@@ -23,21 +29,65 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Resolve and verify version
+      - name: Resolve and build the tag commit
         id: ver
         shell: pwsh
         env:
           RAW_RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # Inspect native exit codes ourselves instead of turning them into
+          # terminating errors.
+          $PSNativeCommandUseErrorActionPreference = $false
           $raw = $env:RAW_RELEASE_VERSION
           $clean = $raw.Trim().TrimStart('v', 'V')
-          if ($clean -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'invalid release version' }
-          if (-not (Test-Path -LiteralPath 'VERSION')) { throw 'VERSION file missing' }
+          if ($clean -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw "invalid release version: $raw" }
+          $tag = "v$clean"
+          # workflow_dispatch may select any ref, so never trust it: resolve the
+          # tag and build exactly the commit it names. A manual run can only
+          # rebuild an existing tag, never manufacture a release for a branch.
+          $commit = (@(& git rev-parse --verify --quiet "refs/tags/$tag^{commit}") -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $commit) {
+            throw "tag $tag does not exist. Push the tag first; workflow_dispatch only rebuilds an existing tag so that published assets always match the tagged source."
+          }
+          & git checkout --detach --quiet $commit
+          if ($LASTEXITCODE -ne 0) { throw "could not check out $tag ($commit)" }
+          $head = (@(& git rev-parse HEAD) -join "`n").Trim()
+          if ($head -cne $commit) { throw "checkout did not land on $commit" }
+          if (@(& git status --porcelain).Count -ne 0) { throw "working tree is not clean at $tag" }
+          if (-not (Test-Path -LiteralPath 'VERSION')) { throw 'VERSION file missing at the tag commit' }
           $declared = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
-          if ($clean -cne $declared) { throw "release version $clean does not match VERSION ($declared)" }
+          if ($clean -cne $declared) { throw "release version $clean does not match VERSION at $tag ($declared)" }
           "version=$clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Refuse to replace a published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $api = "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag"
+          $out = & gh api $api 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            if (($out | Out-String) -notmatch 'HTTP 404') { throw "could not query release $tag`: $out" }
+            Write-Host "no existing release for $tag"
+            exit 0
+          }
+          $release = ($out | Out-String) | ConvertFrom-Json
+          if ($release.draft) {
+            "DRAFT_RELEASE_ID=$($release.id)" >> $env:GITHUB_ENV
+            exit 0
+          }
+          $names = @($release.assets | ForEach-Object { $_.name }) -join ', '
+          throw "release $tag is already published (assets: $names). Published assets are immutable; bump VERSION and push a new tag, or delete this release deliberately before retrying."
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -84,14 +134,49 @@ jobs:
           $recorded = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split '\s+')[0]
           if ($recorded -cne $expected) { throw "SHA256 file does not match $zipName" }
 
-      - name: Publish GitHub Release
-        # TODO: Add Authenticode signing with a release certificate and verify
-        # Windows SmartScreen behavior before distributing signed artifacts.
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: 鏡屏 MirrPane v${{ steps.ver.outputs.version }}
-          generate_release_notes: true
-          files: |
-            dist/MirrPane-${{ steps.ver.outputs.version }}-win64.zip
-            dist/MirrPane-${{ steps.ver.outputs.version }}-win64.zip.sha256
+      - name: Verify draft assets and publish the tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.ver.outputs.commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = $env:RELEASE_TAG
+          $repoApi = "repos/$env:GITHUB_REPOSITORY"
+          if ((gh api "$repoApi/commits/$tag" --jq .sha) -cne $env:RELEASE_COMMIT) { throw "tag $tag moved after checkout" }
+          if ($env:DRAFT_RELEASE_ID) {
+            $release = gh api "$repoApi/releases/$env:DRAFT_RELEASE_ID" | ConvertFrom-Json
+          } else {
+            $release = gh api -X POST "$repoApi/releases" -f "tag_name=$tag" -f "target_commitish=$env:RELEASE_COMMIT" -f "name=鏡屏 MirrPane $tag" -F draft=true -F generate_release_notes=true | ConvertFrom-Json
+          }
+          if (-not $release.draft -or $release.tag_name -cne $tag) { throw "expected an unpublished draft for $tag" }
+          $releaseApi = "$repoApi/releases/$($release.id)"
+          $zipName = "MirrPane-$($tag.Substring(1))-win64.zip"
+          foreach ($name in @($zipName, "$zipName.sha256")) {
+            $file = Join-Path dist $name
+            $expected = 'sha256:' + (Get-FileHash -LiteralPath $file).Hash.ToLowerInvariant()
+            $assets = @($release.assets | Where-Object { $_.name -ceq $name })
+            if ($assets.Count -eq 0) {
+              gh release upload $tag $file
+              $release = gh api $releaseApi | ConvertFrom-Json
+              $assets = @($release.assets | Where-Object { $_.name -ceq $name })
+            }
+            if ($assets.Count -ne 1) { throw "expected one $name on the draft" }
+            $digest = $assets[0].digest
+            if (-not $digest) {
+              $downloadDir = [IO.Directory]::CreateTempSubdirectory('MirrPane-verify').FullName
+              try {
+                gh release download $tag --pattern $name --dir $downloadDir
+                $digest = 'sha256:' + (Get-FileHash -LiteralPath (Join-Path $downloadDir $name)).Hash.ToLowerInvariant()
+              } finally {
+                [IO.File]::Delete((Join-Path $downloadDir $name))
+                [IO.Directory]::Delete($downloadDir)
+              }
+            }
+            if ($digest -cne $expected) { throw "draft asset $name differs from this tagged build" }
+          }
+          if ((gh api "$repoApi/commits/$tag" --jq .sha) -cne $env:RELEASE_COMMIT) { throw "tag $tag moved during upload" }
+          $published = gh api -X PATCH $releaseApi -F draft=false | ConvertFrom-Json
+          if ($published.draft -or $published.tag_name -cne $tag) { throw "release $tag was not published" }

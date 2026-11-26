@@ -1,4 +1,4 @@
-﻿# Builds the portable release folder, its zip, and its SHA256 checksum.
+# Builds the portable release folder, its zip, and its SHA256 checksum.
 #
 # The deliverable is a folder that runs where it is unzipped: no installer, no
 # registry keys, no system-wide runtimes. Everything the program needs travels
@@ -8,17 +8,20 @@
 # The default version comes from the repository's VERSION file. An explicit
 # -Version is allowed for CI and for uniquely named test builds.
 #
-# Usage:  .\package.ps1 [-Version 0.4.0] [-SkipBuild]
+# Usage:  .\package.ps1 [-Version 0.4.1] [-SkipBuild]
 #
 # Every build runs inside a unique dist\.staging folder, so no shared
 # backend\*.exe or backend\*.dll is overwritten. Go's content-addressed build
 # cache already reuses unchanged work; -SkipBuild is accepted for compatibility
 # with older command lines but no longer skips the (cached) builds.
 #
-# The zip is written from the clean staging tree. An existing unpacked install
-# is moved aside (never deleted when it holds user data), the clean stage is
-# renamed into place, and its config, logs, screenshots, and unknown files
-# (including additions inside backend\) are carried over.
+# The zip is written from the clean staging tree. The archive, its checksum,
+# and the unpacked folder are prepared aside and then published as one set: if
+# any step fails (including a locked existing .sha256 or .zip), the previous
+# complete set is restored. A lock file serializes concurrent runs. An existing
+# unpacked install is moved aside (never deleted when it holds user data), the
+# clean stage is renamed into place, and its config, logs, screenshots, and
+# unknown files (including additions inside backend\) are carried over.
 
 param(
     [string]$Version = "",
@@ -47,6 +50,9 @@ $stageBackend = Join-Path $stage 'backend'
 $sidecarExe = Join-Path $stageBackend 'airplayd.exe'
 $stageCopying = Join-Path $stageBackend 'COPYING'
 $ffmpegDlls = 'avutil-61.dll', 'swresample-7.dll', 'swscale-10.dll', 'avcodec-63.dll'
+
+if (-not (Test-Path -LiteralPath $distRoot)) { New-Item -ItemType Directory -Path $distRoot -Force | Out-Null }
+$lockPath = Join-Path $distRoot '.package.lock'
 
 Write-Host "packaging $appName $Version"
 if ($SkipBuild) {
@@ -89,7 +95,7 @@ function Copy-UserContent([string]$Source, [string]$Destination) {
     # staged tree. Release files are replaced; everything else is preserved.
     $preserved = $false
     $knownTop = @('MirrPane.exe', 'backend', 'config', 'logs', 'screenshots', 'LICENSE', 'COPYING', 'README.txt', 'SOURCE.txt', 'THIRD_PARTY_LICENSES.txt')
-    $knownBackend = @('airplayd.exe', 'COPYING') + $ffmpegDlls
+    $knownBackend = @('airplayd.exe', 'COPYING', 'SHA256SUMS') + $ffmpegDlls
 
     foreach ($name in @('config', 'logs', 'screenshots')) {
         $sourceItem = Join-Path $Source $name
@@ -127,8 +133,19 @@ function Copy-UserContent([string]$Source, [string]$Destination) {
 
 Assert-NoRunningInstall $finalDir
 
+# One packaging run at a time per dist folder. Two runs for the same version
+# must never interleave their zip/checksum/folder swaps.
+$packageLock = $null
+try {
+    $packageLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+}
+catch {
+    throw "another package.ps1 run is publishing to $distRoot; wait for it to finish (lock: $lockPath)"
+}
+
 $published = $false
 $tempZip = $null
+$tempSha = $null
 try {
     # --- build into the clean stage ------------------------------------------
 
@@ -161,7 +178,7 @@ try {
     }
     finally { Pop-Location }
 
-    $required = @($uiExe, $sidecarExe, $stageCopying)
+    $required = @($uiExe, $sidecarExe, $stageCopying, (Join-Path $stageBackend 'SHA256SUMS'))
     foreach ($dll in $ffmpegDlls) { $required += Join-Path $stageBackend $dll }
     foreach ($file in $required) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing build output $file" }
@@ -250,53 +267,141 @@ Release distributors must provide the complete corresponding source for their co
 '@
     Set-Content -Path (Join-Path $stage 'README.txt') -Value $readme -Encoding utf8
 
-    # --- zip -----------------------------------------------------------------
+    # --- stage the zip and checksum privately ---------------------------------
 
     $size = (Get-ChildItem $stage -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB
     Write-Host ("staged {0:N0} MB in {1}" -f $size, $stage)
 
-    # Write the archive from the clean staging tree, before any existing
-    # install's user data is carried over into the unpacked folder.
+    # Build both outputs beside the staging tree. Nothing under dist\ is
+    # replaced until every piece exists, so a failure here leaves the previous
+    # complete output set untouched.
     $tempZip = Join-Path $stagingParent ("MirrPane-$Version-win64-{0}.zip" -f [guid]::NewGuid().ToString('N'))
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $tempZip -CompressionLevel Optimal
     $hash = (Get-FileHash -LiteralPath $tempZip -Algorithm SHA256).Hash.ToLowerInvariant()
     $zipSize = (Get-Item -LiteralPath $tempZip).Length / 1MB
-    if (-not (Test-Path -LiteralPath $distRoot)) { New-Item -ItemType Directory -Path $distRoot -Force | Out-Null }
-    Move-Item -LiteralPath $tempZip -Destination $zip -Force
-    "$hash  $(Split-Path -Leaf $zip)" | Set-Content -LiteralPath $shaFile -Encoding ascii
+    $tempSha = Join-Path $stagingParent ("MirrPane-$Version-win64-{0}.sha256" -f [guid]::NewGuid().ToString('N'))
+    "$hash  $(Split-Path -Leaf $zip)" | Set-Content -LiteralPath $tempSha -Encoding ascii
 
-    # --- publish the unpacked, runnable folder -------------------------------
+    # --- publish one complete, verified output set ---------------------------
 
-    # Re-check immediately before touching the folder; a launched copy must
+    # Re-check immediately before touching anything; a launched copy must
     # never be replaced under the running process.
     Assert-NoRunningInstall $finalDir
 
+    # The archive is written from the clean staging tree, before any existing
+    # install's user data is carried over into the unpacked folder.
+    $hasUserData = $false
     if (Test-Path -LiteralPath $finalDir) {
         $hasUserData = Copy-UserContent $finalDir $stage
-        $backup = Join-Path $stagingParent ("previous-{0}-{1}-{2}" -f $Version, (Get-Date -Format 'yyyyMMddHHmmss'), [guid]::NewGuid().ToString('N'))
-        Move-Item -LiteralPath $finalDir -Destination $backup
-        try {
-            Move-Item -LiteralPath $stage -Destination $finalDir
-        }
-        catch {
-            # Never leave the install path absent because the swap failed.
-            try {
-                Move-Item -LiteralPath $backup -Destination $finalDir
-            }
-            catch {
-                throw "could not move the staged build into $finalDir, and restoring the previous folder also failed. Previous install: $backup. $($_.Exception.Message)"
-            }
-            throw
-        }
-        if ($hasUserData) {
-            Write-Warning "kept the previous installation, including its user files, at $backup"
+    }
+
+    $oldDirMoved = $false
+    $dirSwapped = $false
+    $zipReplaced = $false
+    $shaReplaced = $false
+    $stageBackup = $null
+    $zipBackup = $null
+    $shaBackup = $null
+
+    try {
+        # Replace the archive and checksum first. A locked target (for example
+        # an open .sha256) fails here, before the unpacked install is touched.
+        if (Test-Path -LiteralPath $zip) {
+            $zipBackup = Join-Path $stagingParent ("previous-zip-{0}-{1}" -f $Version, [guid]::NewGuid().ToString('N'))
+            [IO.File]::Replace($tempZip, $zip, $zipBackup)
         }
         else {
-            Remove-Item -LiteralPath $backup -Recurse -Force
+            [IO.File]::Move($tempZip, $zip)
+        }
+        $tempZip = $null
+        $zipReplaced = $true
+
+        if (Test-Path -LiteralPath $shaFile) {
+            $shaBackup = Join-Path $stagingParent ("previous-sha-{0}-{1}" -f $Version, [guid]::NewGuid().ToString('N'))
+            [IO.File]::Replace($tempSha, $shaFile, $shaBackup)
+        }
+        else {
+            [IO.File]::Move($tempSha, $shaFile)
+        }
+        $tempSha = $null
+        $shaReplaced = $true
+
+        # Swap the unpacked build last.
+        if (Test-Path -LiteralPath $finalDir) {
+            $stageBackup = Join-Path $stagingParent ("previous-{0}-{1}-{2}" -f $Version, (Get-Date -Format 'yyyyMMddHHmmss'), [guid]::NewGuid().ToString('N'))
+            Move-Item -LiteralPath $finalDir -Destination $stageBackup
+            $oldDirMoved = $true
+        }
+        Move-Item -LiteralPath $stage -Destination $finalDir
+        $dirSwapped = $true
+
+        # The visible set must belong to this one build.
+        $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        $recorded = ((Get-Content -LiteralPath $shaFile -Raw).Trim() -split '\s+')[0]
+        if ($actual -cne $hash -or $recorded -cne $hash) {
+            throw 'published archive and checksum disagree'
+        }
+        foreach ($required in @((Join-Path $finalDir 'MirrPane.exe'), (Join-Path $finalDir 'backend\airplayd.exe'))) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "published folder is incomplete: $required missing" }
         }
     }
-    else {
-        Move-Item -LiteralPath $stage -Destination $finalDir
+    catch {
+        # Restore the previous complete set in reverse order. Any partially
+        # published piece is removed so the restore targets are free.
+        $failure = $_
+        $rollbackProblems = @()
+        $folderRestored = $true
+        try {
+            if (($dirSwapped -or $oldDirMoved) -and (Test-Path -LiteralPath $finalDir)) {
+                Remove-Item -LiteralPath $finalDir -Recurse -Force
+            }
+            if ($oldDirMoved -and (Test-Path -LiteralPath $stageBackup)) {
+                Move-Item -LiteralPath $stageBackup -Destination $finalDir
+            }
+        }
+        catch {
+            # The unpacked folder could not be rolled back. Keep the new archive
+            # and checksum rather than pairing them with an older folder.
+            $folderRestored = $false
+            $rollbackProblems += "install folder: $($_.Exception.Message); previous install: $stageBackup"
+        }
+        if ($folderRestored) {
+            try {
+                if ($shaReplaced) {
+                    if (Test-Path -LiteralPath $shaFile) { Remove-Item -LiteralPath $shaFile -Force }
+                    if ($shaBackup -and (Test-Path -LiteralPath $shaBackup)) { Move-Item -LiteralPath $shaBackup -Destination $shaFile }
+                }
+            }
+            catch { $rollbackProblems += "checksum: $($_.Exception.Message); previous checksum: $shaBackup" }
+            try {
+                if ($zipReplaced) {
+                    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+                    if ($zipBackup -and (Test-Path -LiteralPath $zipBackup)) { Move-Item -LiteralPath $zipBackup -Destination $zip }
+                }
+            }
+            catch { $rollbackProblems += "archive: $($_.Exception.Message); previous archive: $zipBackup" }
+        }
+        $message = "packaging failed; the previous output set was restored: $($failure.Exception.Message)"
+        if ($rollbackProblems.Count -gt 0) {
+            $message = "packaging failed and restoring the previous output set was incomplete: $($failure.Exception.Message). $($rollbackProblems -join '; ')"
+        }
+        throw $message
+    }
+
+    # The new set is visible and verified. Discard the old pair; keep the old
+    # install when it holds user data so nothing is lost.
+    foreach ($old in @($zipBackup, $shaBackup)) {
+        if ($old -and (Test-Path -LiteralPath $old)) {
+            Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($stageBackup) {
+        if ($hasUserData) {
+            Write-Warning "kept the previous installation, including its user files, at $stageBackup"
+        }
+        else {
+            Remove-Item -LiteralPath $stageBackup -Recurse -Force
+        }
     }
 
     $published = $true
@@ -307,11 +412,21 @@ finally {
     if ($tempZip -and (Test-Path -LiteralPath $tempZip)) {
         Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
     }
+    if ($tempSha -and (Test-Path -LiteralPath $tempSha)) {
+        Remove-Item -LiteralPath $tempSha -Force -ErrorAction SilentlyContinue
+    }
     if (-not $published -and (Test-Path -LiteralPath $stage)) {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ((Test-Path -LiteralPath $stagingParent) -and -not (Get-ChildItem -LiteralPath $stagingParent -Force)) {
         Remove-Item -LiteralPath $stagingParent -Force
+    }
+    if ($packageLock) {
+        $packageLock.Dispose()
+        $packageLock = $null
+    }
+    if (Test-Path -LiteralPath $lockPath) {
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
     }
 }
 

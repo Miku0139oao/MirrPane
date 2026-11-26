@@ -25,7 +25,7 @@ type queuedBuf struct {
 	endTime time.Duration
 }
 
-func (d *fakeDevice) submit(b *buffer, frames int) {
+func (d *fakeDevice) submit(b *buffer, frames int) error {
 	dur := time.Duration(frames) * time.Second / SampleRate
 	start := d.now
 	if len(d.queue) > 0 {
@@ -43,6 +43,7 @@ func (d *fakeDevice) submit(b *buffer, frames int) {
 		buf:     b,
 		endTime: start + dur,
 	})
+	return nil
 }
 
 func (d *fakeDevice) advanceTo(t time.Duration) {

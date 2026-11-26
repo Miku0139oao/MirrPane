@@ -451,6 +451,7 @@ func TestInjectedHardwareFailuresFallBackToSoftware(t *testing.T) {
 	}
 	defer d.Close()
 	t.Logf("initial: %s", d.Status())
+	hadHardware := d.Hardware()
 	if _, err := d.DecodeAccessUnit(units[0]); err != nil && !errors.Is(err, ErrNoFrame) {
 		t.Fatalf("first access unit: %v", err)
 	}
@@ -480,4 +481,19 @@ func TestInjectedHardwareFailuresFallBackToSoftware(t *testing.T) {
 		t.Fatal("Hardware() = true after software fallback")
 	}
 	t.Logf("final: %s", d.Status())
+	if err := d.ResetStream(); err != nil {
+		t.Fatal(err)
+	}
+	if d.LastImage() != nil || len(d.params) != 0 || d.replayParams || d.frameReady {
+		t.Fatal("new sender inherited a picture or H.264 parameter sets")
+	}
+	if hadHardware && !d.Hardware() {
+		t.Fatalf("new sender did not recover the initially available hardware decoder: %s", d.Status())
+	}
+	if d.Hardware() && d.health != newHWFailureTracker() {
+		t.Fatalf("new hardware session inherited a depleted retry budget: %+v", d.health)
+	}
+	if _, err := firstPicture(d, units); err != nil {
+		t.Fatalf("second sender: %v", err)
+	}
 }

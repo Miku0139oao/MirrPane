@@ -6,7 +6,7 @@
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Latest release**: `v0.4.0`
+- **Latest release**: `v0.4.1`
 
 ---
 
@@ -92,7 +92,7 @@ MirrPane/
 
 ## Quick Start
 
-1. Download the latest release, such as `v0.4.0`, from [Releases](https://github.com/Miku0139oao/MirrPane/releases). Extract it and run `MirrPane.exe`. No installation or registry changes are required.
+1. Download the latest release, such as `v0.4.1`, from [Releases](https://github.com/Miku0139oao/MirrPane/releases). Extract it and run `MirrPane.exe`. No installation or registry changes are required.
 2. Connect the Windows PC and your iPhone or iPad to the same local network. Allow the receiver on private networks when Windows Firewall prompts you.
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
 4. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
@@ -103,7 +103,7 @@ MirrPane/
 
 ### Requirements
 
-- **Go**: `1.27.3+` (with the patched standard library; `go.mod` selects it via `GOTOOLCHAIN=auto`)
+- **Go**: `1.27.4+` (`go.mod` selects the toolchain via `GOTOOLCHAIN=auto`)
 - **Build tools**: PowerShell. The shipped UI and backend build with `CGO_ENABLED=0`; Flutter, Visual Studio C++, and CMake are not required.
 - **Legacy Flutter UI (optional)**: Maintaining `frontend/` still needs Flutter `3.47+` (Dart SDK `^3.13.5`) and the Visual Studio C++ Build Tools.
 
@@ -134,7 +134,7 @@ The desktop application targets Windows x64.
 
    ```powershell
    cd backend
-   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.0
+   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.1
    ```
 
 3. **Build and package the complete application** from the repository root:
@@ -143,7 +143,7 @@ The desktop application targets Windows x64.
    .\package.ps1
    ```
 
-   The version defaults to `VERSION`; `-Version 0.4.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
+   The version defaults to `VERSION`; `-Version 0.4.1-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
 
 ### Validation
 

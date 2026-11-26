@@ -88,6 +88,10 @@ type Frame struct {
 	// Valid is false when the payload failed its integrity checks, which in
 	// practice means the AES key was wrong.
 	Valid bool
+	// Session is the connection generation that produced this access unit.
+	// Consumers must ignore pictures whose generation no longer owns the
+	// stream, so a stopped session cannot publish stale media.
+	Session uint64
 }
 
 // Size is the source display geometry announced in unencrypted packets.
@@ -110,10 +114,14 @@ type Handlers struct {
 	OnResume func()
 	// OnReport is called with each streaming-report plist payload.
 	OnReport func([]byte)
-	// OnConnected is called when a sender opens the stream connection.
-	OnConnected func(remote string)
-	// OnDisconnected is called when the sender closes it.
-	OnDisconnected func()
+	// OnConnected is called when a sender opens the stream connection. The
+	// session generation identifies the connection; later connect, frame and
+	// disconnect callbacks carry the same value so an out-of-order callback
+	// can never change state owned by a newer connection.
+	OnConnected func(session uint64, remote string)
+	// OnDisconnected is called when the sender closes the session that still
+	// owns the stream. A superseded connection closing is not reported.
+	OnDisconnected func(session uint64)
 	// OnStats collects byte counts for the UI.
 	OnStats func(received uint64, frames uint64)
 }
@@ -137,9 +145,12 @@ type resolvedKey struct {
 
 // pendingStream binds the keys and stream ID to one authenticated /setup.
 // A TCP peer cannot supply its own stream ID; it must use these derived keys.
+// generation is the token /setup handed to the receiver; the connection that
+// commits this setup reports that token in its callbacks.
 type pendingStream struct {
 	sender     netip.Addr
 	streamID   uint64
+	generation uint64
 	expires    time.Time
 	candidates []resolvedKey
 }
@@ -165,6 +176,8 @@ type Server struct {
 	sender      netip.Addr
 	setupSender netip.Addr
 	streamID    uint64
+	session     uint64 // generation owning conn; 0 when idle
+	nextSession uint64
 	connectedAt time.Time
 	lastFrame   time.Time
 
@@ -225,6 +238,7 @@ func (s *Server) DropClient() {
 	s.sender = netip.Addr{}
 	s.setupSender = netip.Addr{}
 	s.streamID = 0
+	s.session = 0
 	s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
 	s.mu.Unlock()
 	if c != nil {
@@ -272,18 +286,19 @@ func DeriveStreamKey(streamConnectionID uint64, audioKey []byte) (key, iv [16]by
 	return key, iv
 }
 
-// Prepare sets the key material for the next stream connection. It must be
-// called before /setup replies with this server's port, because the sender
-// connects as soon as it has the reply.
+// Prepare sets the key material for the next stream connection and returns the
+// session generation that connection will report. It must be called before
+// /setup replies with this server's port, because the sender connects as soon
+// as it has the reply.
 //
 // The first candidate is the one the protocol calls for; the rest are fallbacks
 // the stream tests against the first encrypted packet.
 // It refuses a different sender while a live stream or fresh setup owns the
 // receiver. The same sender can always prepare a legitimate reconnect.
-func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...KeyCandidate) bool {
+func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...KeyCandidate) (uint64, bool) {
 	sender, err := netip.ParseAddr(remote)
 	if err != nil || len(audioKeys) == 0 {
-		return false
+		return 0, false
 	}
 	pending := &pendingStream{sender: sender.Unmap(), streamID: streamConnectionID}
 	for _, c := range audioKeys {
@@ -299,8 +314,10 @@ func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...
 	if (s.conn != nil && s.setupSender != pending.sender && !s.staleLocked(now)) ||
 		(s.pending != nil && s.pending.sender != pending.sender && now.Before(s.pending.expires)) {
 		s.mu.Unlock()
-		return false
+		return 0, false
 	}
+	s.nextSession++
+	pending.generation = s.nextSession
 	oldAttempts := s.attempts
 	s.attempts = nil
 	pending.expires = now.Add(pendingLifetime)
@@ -309,7 +326,7 @@ func (s *Server) Prepare(remote string, streamConnectionID uint64, audioKeys ...
 	for peer := range oldAttempts {
 		_ = peer.Close()
 	}
-	return true
+	return pending.generation, true
 }
 
 // ResetKey forgets the key so a stale stream cannot be decrypted with it.
@@ -429,6 +446,8 @@ func (s *Server) acceptFrame(st *streamState, valid bool) (accepted, connected b
 	attempts := s.attempts
 	s.attempts, s.pending = nil, nil
 	s.conn, s.sender, s.setupSender, s.streamID = st.conn, sender, st.pending.sender, st.pending.streamID
+	s.session = st.pending.generation
+	st.session = s.session
 	s.connectedAt, s.lastFrame = now, now
 	s.received, s.frames = st.received, 0
 	// Established streams may suspend video when the phone locks its screen.
@@ -478,15 +497,18 @@ func (s *Server) serve(conn net.Conn) {
 		return
 	}
 	s.logf("mirror: checking stream key from %s", remote)
+	st := &streamState{srv: s, conn: conn, pending: pending, active: -1}
 	defer func() {
 		s.mu.Lock()
 		current := s.conn == conn
+		session := st.session
 		delete(s.attempts, conn)
 		if current {
 			s.conn = nil
 			s.sender = netip.Addr{}
 			s.setupSender = netip.Addr{}
 			s.streamID = 0
+			s.session = 0
 			s.connectedAt, s.lastFrame = time.Time{}, time.Time{}
 			if s.pending == pending {
 				s.pending = nil
@@ -495,11 +517,12 @@ func (s *Server) serve(conn net.Conn) {
 		s.mu.Unlock()
 		s.logf("mirror: sender disconnected (%s)", remote)
 		if current && s.handlers.OnDisconnected != nil {
-			s.handlers.OnDisconnected()
+			// Only the generation that still owned the stream reports its end.
+			// A superseded connection must not interrupt the new session.
+			s.handlers.OnDisconnected(session)
 		}
 	}()
 
-	st := &streamState{srv: s, conn: conn, pending: pending, active: -1}
 	for _, c := range pending.candidates {
 		block, err := aes.NewCipher(c.Key)
 		if err != nil {
@@ -522,6 +545,7 @@ type streamState struct {
 	conn         net.Conn
 	pending      *pendingStream
 	received     uint64
+	session      uint64 // generation of this connection once committed; guarded by srv.mu
 	paramsHeader []byte
 
 	// cands are the key candidates in preference order. active is the index of
@@ -651,38 +675,60 @@ func (st *streamState) handleVideo(payload []byte, ntp, duration uint64) {
 		st.spsPPS = nil
 		st.haveSPS = false
 	}
+	connected := false
 	if st.conn != nil {
-		accepted, connected := st.srv.acceptFrame(st, valid)
+		accepted, came := st.srv.acceptFrame(st, valid)
 		if !accepted {
 			return
 		}
-		if connected {
-			remote := st.conn.RemoteAddr().String()
-			st.srv.logf("mirror: sender connected from %s", remote)
-			if st.srv.handlers.OnConnected != nil {
-				st.srv.handlers.OnConnected(remote)
-			}
-			st.publishParams()
+		connected = came
+	}
+	st.srv.deliver(st, frame, valid, connected)
+}
+
+// deliver reports a committed access unit to the handlers. The generation is
+// re-checked immediately before each callback, so a callback delayed past a
+// stop or a newer session is dropped instead of reviving a stopped connection.
+// Connect always precedes the first frame of its generation because both are
+// delivered from this one goroutine; consumers pair the generation with their
+// own reset/ownership checks to order media against resets.
+func (s *Server) deliver(st *streamState, frame *Frame, valid, connected bool) {
+	if st.conn != nil {
+		s.mu.Lock()
+		current := s.conn == st.conn && st.session != 0 && st.session == s.session
+		frame.Session = st.session
+		s.mu.Unlock()
+		if !current {
+			return
 		}
 	}
-	st.srv.mu.Lock()
-	if st.conn != nil && st.srv.conn != st.conn {
-		st.srv.mu.Unlock()
+	if connected {
+		remote := st.conn.RemoteAddr().String()
+		s.logf("mirror: sender connected from %s", remote)
+		if s.handlers.OnConnected != nil {
+			s.handlers.OnConnected(frame.Session, remote)
+		}
+		st.publishIfCurrent()
+	}
+
+	s.mu.Lock()
+	if st.conn != nil && s.conn != st.conn {
+		s.mu.Unlock()
 		return
 	}
 	if valid {
-		st.srv.lastFrame = time.Now()
-		if st.srv.pending == st.pending {
-			st.srv.pending = nil
+		s.lastFrame = time.Now()
+		if s.pending == st.pending {
+			s.pending = nil
 		}
 		if st.conn != nil {
 			_ = st.conn.SetReadDeadline(time.Time{})
 		}
 	}
-	st.srv.frames++
-	st.srv.mu.Unlock()
-	if st.srv.handlers.OnFrame != nil {
-		st.srv.handlers.OnFrame(frame)
+	s.frames++
+	s.mu.Unlock()
+	if s.handlers.OnFrame != nil {
+		s.handlers.OnFrame(frame)
 	}
 }
 
@@ -767,15 +813,21 @@ func (st *streamState) handleParams(header, payload []byte, ntp uint64) {
 	st.spsNTP = ntp
 	st.haveSPS = true
 	st.paramsHeader = append(st.paramsHeader[:0], header...)
-	if st.current() {
-		st.publishParams()
-	}
+	st.publishIfCurrent()
 }
 
 func (st *streamState) current() bool {
 	st.srv.mu.Lock()
 	defer st.srv.mu.Unlock()
-	return st.conn == nil || st.srv.conn == st.conn
+	return st.conn == nil || (st.srv.conn == st.conn && st.session != 0 && st.session == st.srv.session)
+}
+
+// publishIfCurrent reports geometry and pause/resume only for the generation
+// that still owns the stream.
+func (st *streamState) publishIfCurrent() {
+	if st.current() {
+		st.publishParams()
+	}
 }
 
 // Speculative peers may provide codec parameters, but cannot publish geometry

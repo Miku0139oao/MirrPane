@@ -14,10 +14,18 @@ import (
 
 func main() {
 	output := flag.String("output", "../third_party/ffmpeg", "portable cache directory")
+	force := flag.Bool("force", false, "re-download and replace the runtime even if a complete cache exists")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	dir, err := ffmpeg.DownloadLatest(ctx, *output, func(s string) { fmt.Fprintln(os.Stderr, s) })
+	progress := func(s string) { fmt.Fprintln(os.Stderr, s) }
+	var dir string
+	var err error
+	if *force {
+		dir, err = ffmpeg.DownloadForced(ctx, *output, progress)
+	} else {
+		dir, err = ffmpeg.DownloadLatest(ctx, *output, progress)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

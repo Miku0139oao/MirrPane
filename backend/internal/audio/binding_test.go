@@ -54,7 +54,7 @@ func TestAudioOwnershipRequiresDecodedFrames(t *testing.T) {
 	if r.Busy() || len(r.keys) != 0 || len(r.iv) != 0 {
 		t.Fatal("full cleanup retained audio keys or ownership")
 	}
-	if _, ok := r.decrypt([]byte{0x8c}); ok {
+	if f, err := r.decodePacket(3, 0, []byte{0x8c}); f != nil || err != nil {
 		t.Fatal("audio could still be decrypted after full cleanup")
 	}
 }
