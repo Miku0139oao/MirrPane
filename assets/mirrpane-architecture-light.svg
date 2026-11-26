@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 1184 1250" role="img" lang="zh-TW" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-node-ui="" data-reader-fit="intrinsic-height" data-reader-min-text="7.5" data-reader-primary-text="14" style="--flow-cycle: 8.876s; width: 1184px; height: 1250px; min-width: 0px;" width="1184" height="1250" xmlns="http://www.w3.org/2000/svg" data-theme="light"><style>
+<svg viewBox="0 0 1177 1250" role="img" lang="zh-TW" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-node-ui="" data-reader-fit="intrinsic-height" data-reader-min-text="7.5" data-reader-primary-text="14" style="--flow-cycle: 8.876s; width: 1177px; height: 1250px; min-width: 0px;" width="1177" height="1250" xmlns="http://www.w3.org/2000/svg" data-theme="light"><style>
 /*
 JetBrains Mono variable WOFF2 subsets from Google Fonts service revision v24.
 These fixed bytes are shared by the viewer and its SVG/raster exports.
@@ -470,13 +470,13 @@ svg[data-preset="editorial"] { --flow-halo-peak: 0.07; --flow-glow-peak: 0.28; -
 @keyframes archify-relay-comet-2 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
   1.352% { opacity: var(--flow-peak, 0.9); }
-  10.522% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  12.324%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  11.085% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  12.888%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-2 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  10.522% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  20.662%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  11.085% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  21.225%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-3 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
@@ -579,25 +579,25 @@ svg[data-preset="editorial"] { --flow-halo-peak: 0.07; --flow-glow-peak: 0.28; -
 }
 @keyframes archify-relay-comet-12 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  1.352% { opacity: var(--flow-peak, 0.9); }
-  7.846% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  9.649%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  0.946% { opacity: var(--flow-peak, 0.9); }
+  4.732% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  6.535%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-12 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  7.846% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  17.986%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  4.732% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  14.872%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-13 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
   1.352% { opacity: var(--flow-peak, 0.9); }
-  12.473% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
-  14.276%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
+  8.912% { stroke-dashoffset: var(--flow-shift, 0px); opacity: var(--flow-peak, 0.9); }
+  10.715%, 100% { stroke-dashoffset: var(--flow-shift, 0px); opacity: 0; }
 }
 @keyframes archify-relay-wake-13 { 
   0% { stroke-dashoffset: var(--flow-len, 0px); opacity: var(--flow-peak, 0.3); animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
-  12.473% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
-  22.613%, 100% { stroke-dashoffset: 0px; opacity: 0; }
+  8.912% { stroke-dashoffset: 0px; opacity: var(--flow-peak, 0.3); }
+  19.052%, 100% { stroke-dashoffset: 0px; opacity: 0; }
 }
 @keyframes archify-relay-comet-14 { 
   0% { stroke-dashoffset: calc(var(--flow-len, 0px) + var(--flow-shift, 0px)); opacity: 0; animation-timing-function: cubic-bezier(0.45, 0.05, 0.35, 1); }
@@ -767,9 +767,9 @@ svg[data-preset="editorial"] { --flow-halo-peak: 0.07; --flow-glow-peak: 0.28; -
 }
 @keyframes archify-relay-node-13 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  40.418% { filter: var(--ambient-node-base-filter, none); }
-  41.77%, 45.15% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  53.938% { filter: var(--ambient-node-base-filter, none); }
+  40.982% { filter: var(--ambient-node-base-filter, none); }
+  42.334%, 45.714% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  54.502% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-14 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
@@ -779,9 +779,9 @@ svg[data-preset="editorial"] { --flow-halo-peak: 0.07; --flow-glow-peak: 0.28; -
 }
 @keyframes archify-relay-node-15 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
-  49.15% { filter: var(--ambient-node-base-filter, none); }
-  50.502%, 53.882% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
-  62.67% { filter: var(--ambient-node-base-filter, none); }
+  49.713% { filter: var(--ambient-node-base-filter, none); }
+  51.065%, 54.445% { filter: var(--ambient-node-base-filter,) drop-shadow(0 0 10px var(--arrow-emphasis)); }
+  63.233% { filter: var(--ambient-node-base-filter, none); }
 }
 @keyframes archify-relay-node-16 { 
   0%, 100% { filter: var(--ambient-node-base-filter, none); }
@@ -809,7 +809,7 @@ svg[data-node-ui] g[data-edge-from] &gt; rect.c-mask { rx: 7px; stroke: var(--la
 svg[data-node-ui][data-preset="blueprint"] :is([data-graph-role="structural-frame-label-mask"], g[data-edge-from] &gt; rect.c-mask, .phase-chip) { rx: 2px; }
 svg[data-node-ui][data-preset="editorial"] :is([data-graph-role="structural-frame-label-mask"], g[data-edge-from] &gt; rect.c-mask, .phase-chip) { rx: 3px; }
 :root, svg { --bg: #f4f5f7; --grid: #e9edf2; --canvas-dot: #e2e7ec; --text: #111827; --text-muted: #5b6474; --text-dim: #9aa3b2; --text-faint: #6b7280; --panel: #ffffff; --panel-border: #e5e7eb; --lane-fill: rgba(248, 250, 252, 0.65); --lane-stroke: #cbd5e1; --arrow: #64748b; --arrow-emphasis: #059669; --arrow-security: #b43b57; --arrow-dashed: #6d4fc2; --edge-label: #5b6474; --mask: #ffffff; --frontend-fill: rgba(34, 211, 238, 0.15); --frontend-stroke: #0891b2; --backend-fill: rgba(52, 211, 153, 0.18); --backend-stroke: #059669; --database-fill: rgba(167, 139, 250, 0.2); --database-stroke: #7c3aed; --cloud-fill: rgba(251, 191, 36, 0.18); --cloud-stroke: #d97706; --security-fill: rgba(251, 113, 133, 0.15); --security-stroke: #e11d48; --messagebus-fill: rgba(251, 146, 60, 0.15); --messagebus-stroke: #ea580c; --external-fill: rgba(148, 163, 184, 0.18); --external-stroke: #64748b; --toolbar-bg: rgba(255, 255, 255, 0.92); --toolbar-border: #cbd5e1; --toolbar-text: #334155; --toolbar-hover: #ffffff; --toolbar-menu-bg: #ffffff; --reader-accent: #077f9c; --flow-cycle: ; --flow-halo-peak: ; --flow-glow-peak: ; --flow-tail-peak: ; --flow-head-peak: ; --flow-wake-peak: ; --flow-ripple-peak: ; --flow-peak: ; }
-</style><rect x="0" y="0" width="1184" height="1250" fill="#f4f5f7"/><metadata id="archify-software-notices">NOTICE
+</style><rect x="0" y="0" width="1177" height="1250" fill="#f4f5f7"/><metadata id="archify-software-notices">NOTICE
 Archify
 Copyright (c) 2026 tt-a1i (Archify)
 Copyright (c) 2025 Cocoon AI
@@ -1221,9 +1221,9 @@ opened. The complete license is preserved in
         <rect width="100%" height="100%" fill="url(#grid)"/>
 
         <!-- Boundaries (behind everything) -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="airplayd.exe · 接收器行程（CGO_ENABLED=0）" x="240" y="48" width="877" height="926" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="MirrPane.exe --airplayd · 接收器行程（self re-exec）" x="240" y="48" width="877" height="926" rx="12" class="c-region" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="mirrpane.exe · MyGo UI 行程" x="254" y="1072" width="890" height="110" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="MirrPane.exe · MyGo UI 行程" x="254" y="1072" width="883" height="110" rx="12" class="c-region" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
         <g data-graph-role="automatic-crossover" style="--step:0">
@@ -1231,12 +1231,12 @@ opened. The complete license is preserved in
           <path data-edge-from="mdns" data-edge-to="iphone" data-edge-label="Bonjour 廣播" data-edge-key="0" data-edge-id="mdns-advertise" data-composition-points="270,938;174,938;174,1112" data-composition-crossover="halo" data-composition-independent="true" d="M 270 938 L 182 938 Q 174 938 174 946 L 174 1112" class="a-default" data-animate="edge" style="--step: 0;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:1">
-          <path data-graph-role="automatic-crossover-underlay" d="M 105 1112 L 105 230 Q 105 222 113 222 L 270 222" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="iphone" data-edge-to="rtsp" data-edge-label="RTSP/HTTP 控制連線" data-edge-key="1" data-edge-id="sender-control" data-composition-points="105,1112;105,222;270,222" data-composition-crossover="halo" data-composition-independent="true" d="M 105 1112 L 105 230 Q 105 222 113 222 L 270 222" class="a-default" data-animate="edge" style="--step: 1;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 105 1112 L 105 244 Q 105 236 113 236 L 270 236" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="iphone" data-edge-to="rtsp" data-edge-label="RTSP/HTTP 控制連線" data-edge-key="1" data-edge-id="sender-control" data-composition-points="105,1112;105,236;270,236" data-composition-crossover="halo" data-composition-independent="true" d="M 105 1112 L 105 244 Q 105 236 113 236 L 270 236" class="a-default" data-animate="edge" style="--step: 1;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:2">
-          <path data-graph-role="automatic-crossover-underlay" d="M 391.5 252 L 391.5 314 Q 391.5 322 399.5 322 L 586 322" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="rtsp" data-edge-to="receiver" data-edge-label="配對與 /setup 委派" data-edge-key="2" data-edge-id="rtsp-delegate" data-composition-points="391.5,252;391.5,322;586,322" data-composition-crossover="halo" data-composition-independent="true" d="M 391.5 252 L 391.5 314 Q 391.5 322 399.5 322 L 586 322" class="a-default" data-animate="edge" style="--step: 2;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 391.5 252 L 391.5 328 Q 391.5 336 399.5 336 L 586 336" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="rtsp" data-edge-to="receiver" data-edge-label="配對與 /setup 委派" data-edge-key="2" data-edge-id="rtsp-delegate" data-composition-points="391.5,252;391.5,336;586,336" data-composition-crossover="halo" data-composition-independent="true" d="M 391.5 252 L 391.5 328 Q 391.5 336 399.5 336 L 586 336" class="a-default" data-animate="edge" style="--step: 2;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:3">
           <path data-graph-role="automatic-crossover-underlay" d="M 669 306 L 669 252" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1247,8 +1247,8 @@ opened. The complete license is preserved in
           <path data-edge-from="receiver" data-edge-to="trustfile" data-edge-label="核准指紋（未核准 → 403）" data-edge-key="4" data-edge-id="trust-gate" data-composition-points="752,322;874,322;874,252" data-composition-crossover="halo" data-composition-independent="true" d="M 752 322 L 866 322 Q 874 322 874 314 L 874 252" class="a-security" data-animate="edge" style="--step: 4;" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:5">
-          <path data-graph-role="automatic-crossover-underlay" d="M 669 366 L 669 534" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="receiver" data-edge-to="mirror" data-edge-label="Prepare(streamID, keys)" data-edge-key="5" data-edge-id="setup-mirror" data-composition-points="669,366;669,534" data-composition-crossover="halo" data-composition-independent="true" d="M 669 366 L 669 534" class="a-default" data-animate="edge" style="--step: 5;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 676 366 L 676 534" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="receiver" data-edge-to="mirror" data-edge-label="Prepare(streamID, keys)" data-edge-key="5" data-edge-id="setup-mirror" data-composition-points="676,366;676,534" data-composition-crossover="halo" data-composition-independent="true" d="M 676 366 L 676 534" class="a-default" data-animate="edge" style="--step: 5;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:6">
           <path data-graph-role="automatic-crossover-underlay" d="M 133 1112 L 133 572 Q 133 564 141 564 L 580 564" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1271,28 +1271,28 @@ opened. The complete license is preserved in
           <path data-edge-from="feed" data-edge-to="ui" data-edge-label="最新影格（零拷貝）" data-edge-key="10" data-edge-id="feed-ui" data-composition-points="448,1132;572,1132" data-composition-crossover="halo" data-composition-independent="true" d="M 448 1132 L 572 1132" class="a-default" data-animate="edge" style="--step: 10;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:11">
-          <path data-graph-role="automatic-crossover-underlay" d="M 119 1112 L 119 458 Q 119 450 127 450 L 295 450" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="iphone" data-edge-to="audio" data-edge-label="UDP RTP · AAC-ELD" data-edge-key="11" data-edge-id="sender-audio" data-composition-points="119,1112;119,450;295,450" data-composition-crossover="halo" data-composition-independent="true" d="M 119 1112 L 119 458 Q 119 450 127 450 L 295 450" class="a-default" data-animate="edge" style="--step: 11;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 119 1112 L 119 472 Q 119 464 127 464 L 470 464" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="iphone" data-edge-to="audio" data-edge-label="UDP RTP · AAC-ELD" data-edge-key="11" data-edge-id="sender-audio" data-composition-points="119,1112;119,464;470,464" data-composition-crossover="halo" data-composition-independent="true" d="M 119 1112 L 119 472 Q 119 464 127 464 L 470 464" class="a-default" data-animate="edge" style="--step: 11;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:12">
-          <path data-graph-role="automatic-crossover-underlay" d="M 602 366 L 602 428 Q 602 436 594 436 L 474 436" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="receiver" data-edge-to="audio" data-edge-label="ConfigurePeer(keys, iv)" data-edge-key="12" data-edge-id="setup-audio" data-composition-points="602,366;602,436;474,436" data-composition-crossover="halo" data-composition-independent="true" d="M 602 366 L 602 428 Q 602 436 594 436 L 474 436" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 633 366 L 633 420" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="receiver" data-edge-to="audio" data-edge-label="ConfigurePeer(keys, iv)" data-edge-key="12" data-edge-id="setup-audio" data-composition-points="633,366;633,420" data-composition-crossover="halo" data-composition-independent="true" d="M 633 366 L 633 420" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:13">
-          <path data-graph-role="automatic-crossover-underlay" d="M 458 480 L 458 650 Q 458 658 466 658 L 593 658" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="audio" data-edge-to="decoder" data-edge-label="AAC-ELD 解碼" data-edge-key="13" data-edge-id="audio-decode" data-composition-points="458,480;458,658;593,658" data-composition-crossover="halo" data-composition-independent="true" d="M 458 480 L 458 650 Q 458 658 466 658 L 593 658" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 566.5 480 L 566.5 670 Q 566.5 678 574.5 678 L 593 678" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="audio" data-edge-to="decoder" data-edge-label="AAC-ELD 解碼" data-edge-key="13" data-edge-id="audio-decode" data-composition-points="566.5,480;566.5,678;593,678" data-composition-crossover="halo" data-composition-independent="true" d="M 566.5 480 L 566.5 670 Q 566.5 678 574.5 678 L 593 678" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:14">
           <path data-graph-role="automatic-crossover-underlay" d="M 746 678 L 865.5 678 Q 873.5 678 873.5 670 L 873.5 594" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
           <path data-edge-from="decoder" data-edge-to="audioout" data-edge-label="PCM 48 kHz" data-edge-key="14" data-edge-id="decode-speaker" data-composition-points="746,678;873.5,678;873.5,594" data-composition-crossover="halo" data-composition-independent="true" d="M 746 678 L 865.5 678 Q 873.5 678 873.5 670 L 873.5 594" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:15">
-          <path data-graph-role="automatic-crossover-underlay" d="M 1012 1102 L 1012 480" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="sidecar" data-edge-to="api" data-edge-label="GET /api/state · POST 控制" data-edge-key="15" data-edge-id="sidecar-api" data-composition-points="1012,1102;1012,480" data-composition-crossover="halo" data-composition-independent="true" d="M 1012 1102 L 1012 480" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 1008.5 1102 L 1008.5 480" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="sidecar" data-edge-to="api" data-edge-label="GET /api/state · POST 控制" data-edge-key="15" data-edge-id="sidecar-api" data-composition-points="1008.5,1102;1008.5,480" data-composition-crossover="halo" data-composition-independent="true" d="M 1008.5 1102 L 1008.5 480" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:16">
-          <path data-graph-role="automatic-crossover-underlay" d="M 940 436 L 744 436 Q 736 436 736 428 L 736 366" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="api" data-edge-to="receiver" data-edge-label="核准 · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver" data-composition-points="940,436;736,436;736,366" data-composition-crossover="halo" data-composition-independent="true" d="M 940 436 L 744 436 Q 736 436 736 428 L 736 366" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 956 420 L 956 358 Q 956 350 948 350 L 752 350" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="api" data-edge-to="receiver" data-edge-label="核准 · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver" data-composition-points="956,420;956,350;752,350" data-composition-crossover="halo" data-composition-independent="true" d="M 956 420 L 956 358 Q 956 350 948 350 L 752 350" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:17">
           <path data-graph-role="automatic-crossover-underlay" d="M 940 457 L 881.5 457 Q 873.5 457 873.5 465 L 873.5 534" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1328,8 +1328,8 @@ opened. The complete license is preserved in
         <text x="119" y="1156" class="t-muted" font-size="10.5" text-anchor="middle">AirPlay 傳送端</text>
         </g>
 
-        <g id="node-mdns" data-node-id="mdns" data-node-label="mDNS 廣播" tabindex="0" role="button" aria-label="聚焦mDNS 廣播，_airplay._tcp · _raop._tcp, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="_airplay._tcp · _raop._tcp" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>mDNS 廣播 · _airplay._tcp · _raop._tcp · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-mdns" data-node-id="mdns" data-node-label="mDNS 廣播" tabindex="0" role="button" aria-label="聚焦mDNS 廣播，_airplay._tcp · _raop._tcp, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="_airplay._tcp · _raop._tcp" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>mDNS 廣播 · _airplay._tcp · _raop._tcp · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="270" y="894" width="172" height="60" rx="8" class="c-mask"/>
           <rect x="270" y="894" width="172" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 0; --flow-node-name: archify-relay-node-0;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(276 900) scale(0.6875)">
@@ -1339,8 +1339,8 @@ opened. The complete license is preserved in
         <text x="356" y="938" class="t-muted" font-size="10.5" text-anchor="middle">_airplay._tcp · _raop._tcp</text>
         </g>
 
-        <g id="node-rtsp" data-node-id="rtsp" data-node-label="RTSP 控制端點" tabindex="0" role="button" aria-label="聚焦RTSP 控制端點，/info · /pair-* · /setup · TEARDOWN, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="/info · /pair-* · /setup · TEARDOWN" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>RTSP 控制端點 · /info · /pair-* · /setup · TEARDOWN · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-rtsp" data-node-id="rtsp" data-node-label="RTSP 控制端點" tabindex="0" role="button" aria-label="聚焦RTSP 控制端點，/info · /pair-* · /setup · TEARDOWN, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="/info · /pair-* · /setup · TEARDOWN" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>RTSP 控制端點 · /info · /pair-* · /setup · TEARDOWN · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="270" y="192" width="229" height="60" rx="8" class="c-mask"/>
           <rect x="270" y="192" width="229" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 2; --flow-node-name: archify-relay-node-9;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(276 198) scale(0.6875)">
@@ -1350,8 +1350,8 @@ opened. The complete license is preserved in
         <text x="384.5" y="236" class="t-muted" font-size="10.5" text-anchor="middle">/info · /pair-* · /setup · TEARDOWN</text>
         </g>
 
-        <g id="node-pairing" data-node-id="pairing" data-node-label="配對與 FairPlay" tabindex="0" role="button" aria-label="聚焦配對與 FairPlay，Ed25519 · X25519 · FairPlay v3, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="security" data-node-sublabel="Ed25519 · X25519 · FairPlay v3" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>配對與 FairPlay · Ed25519 · X25519 · FairPlay v3 · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-pairing" data-node-id="pairing" data-node-label="配對與 FairPlay" tabindex="0" role="button" aria-label="聚焦配對與 FairPlay，Ed25519 · X25519 · FairPlay v3, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="security" data-node-sublabel="Ed25519 · X25519 · FairPlay v3" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>配對與 FairPlay · Ed25519 · X25519 · FairPlay v3 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="571" y="192" width="197" height="60" rx="8" class="c-mask"/>
           <rect x="571" y="192" width="197" height="60" rx="8" class="c-security" data-animate="node" style="--step: 4; --flow-node-name: archify-relay-node-5;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(577 198) scale(0.6875)">
@@ -1362,8 +1362,8 @@ opened. The complete license is preserved in
         <text x="669.5" y="236" class="t-muted" font-size="10.5" text-anchor="middle">Ed25519 · X25519 · FairPlay v3</text>
         </g>
 
-        <g id="node-receiver" data-node-id="receiver" data-node-label="接收器核心" tabindex="0" role="button" aria-label="聚焦接收器核心，session 狀態機 · 核准閘門, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="session 狀態機 · 核准閘門" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>接收器核心 · session 狀態機 · 核准閘門 · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-receiver" data-node-id="receiver" data-node-label="接收器核心" tabindex="0" role="button" aria-label="聚焦接收器核心，session 狀態機 · 核准閘門, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="session 狀態機 · 核准閘門" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>接收器核心 · session 狀態機 · 核准閘門 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="586" y="306" width="166" height="60" rx="8" class="c-mask"/>
           <rect x="586" y="306" width="166" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 3; --flow-node-name: archify-relay-node-13;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(592 312) scale(0.6875)">
@@ -1373,8 +1373,8 @@ opened. The complete license is preserved in
         <text x="669" y="350" class="t-muted" font-size="10.5" text-anchor="middle">session 狀態機 · 核准閘門</text>
         </g>
 
-        <g id="node-mirror" data-node-id="mirror" data-node-label="鏡像串流接收" tabindex="0" role="button" aria-label="聚焦鏡像串流接收，TCP · AES-128-CTR · Annex-B, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="TCP · AES-128-CTR · Annex-B" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>鏡像串流接收 · TCP · AES-128-CTR · Annex-B · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-mirror" data-node-id="mirror" data-node-label="鏡像串流接收" tabindex="0" role="button" aria-label="聚焦鏡像串流接收，TCP · AES-128-CTR · Annex-B, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="TCP · AES-128-CTR · Annex-B" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>鏡像串流接收 · TCP · AES-128-CTR · Annex-B · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="580" y="534" width="179" height="60" rx="8" class="c-mask"/>
           <rect x="580" y="534" width="179" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 6; --flow-node-name: archify-relay-node-10;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(586 540) scale(0.6875)">
@@ -1384,8 +1384,8 @@ opened. The complete license is preserved in
         <text x="669.5" y="578" class="t-muted" font-size="10.5" text-anchor="middle">TCP · AES-128-CTR · Annex-B</text>
         </g>
 
-        <g id="node-decoder" data-node-id="decoder" data-node-label="FFmpeg 解碼層" tabindex="0" role="button" aria-label="聚焦FFmpeg 解碼層，H.264 D3D11VA · AAC-ELD, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="H.264 D3D11VA · AAC-ELD" data-node-tag="purego · CGO=0" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>FFmpeg 解碼層 · H.264 D3D11VA · AAC-ELD · airplayd.exe · 接收器行程（CGO_ENABLED=0） · purego · CGO=0</title>
+        <g id="node-decoder" data-node-id="decoder" data-node-label="FFmpeg 解碼層" tabindex="0" role="button" aria-label="聚焦FFmpeg 解碼層，H.264 D3D11VA · AAC-ELD, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="H.264 D3D11VA · AAC-ELD" data-node-tag="purego · CGO=0" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>FFmpeg 解碼層 · H.264 D3D11VA · AAC-ELD · MirrPane.exe --airplayd · 接收器行程（self re-exec） · purego · CGO=0</title>
           <rect x="593" y="642" width="153" height="72" rx="8" class="c-mask"/>
           <rect x="593" y="642" width="153" height="72" rx="8" class="c-backend" data-animate="node" style="--step: 8; --flow-node-name: archify-relay-node-4;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(599 648) scale(0.6875)">
@@ -1396,8 +1396,8 @@ opened. The complete license is preserved in
         <text x="669.5" y="706" class="t-backend" font-size="7" text-anchor="middle">purego · CGO=0</text>
         </g>
 
-        <g id="node-publisher" data-node-id="publisher" data-node-label="共享記憶體發佈" tabindex="0" role="button" aria-label="聚焦共享記憶體發佈，3-slot mailbox · QPC 心跳, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="3-slot mailbox · QPC 心跳" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>共享記憶體發佈 · 3-slot mailbox · QPC 心跳 · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-publisher" data-node-id="publisher" data-node-label="共享記憶體發佈" tabindex="0" role="button" aria-label="聚焦共享記憶體發佈，3-slot mailbox · QPC 心跳, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="3-slot mailbox · QPC 心跳" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>共享記憶體發佈 · 3-slot mailbox · QPC 心跳 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="586" y="762" width="166" height="60" rx="8" class="c-mask"/>
           <rect x="586" y="762" width="166" height="60" rx="8" class="c-messagebus" data-animate="node" style="--step: 9; --flow-node-name: archify-relay-node-6;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(592 768) scale(0.6875)">
@@ -1410,19 +1410,19 @@ opened. The complete license is preserved in
         <text x="669" y="806" class="t-muted" font-size="10.5" text-anchor="middle">3-slot mailbox · QPC 心跳</text>
         </g>
 
-        <g id="node-audio" data-node-id="audio" data-node-label="音訊接收" tabindex="0" role="button" aria-label="聚焦音訊接收，UDP RTP · AES-CBC · AAC-ELD, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="UDP RTP · AES-CBC · AAC-ELD" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>音訊接收 · UDP RTP · AES-CBC · AAC-ELD · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
-          <rect x="295" y="420" width="179" height="60" rx="8" class="c-mask"/>
-          <rect x="295" y="420" width="179" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-11;" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(301 426) scale(0.6875)">
+        <g id="node-audio" data-node-id="audio" data-node-label="音訊接收" tabindex="0" role="button" aria-label="聚焦音訊接收，UDP RTP · AES-CBC · AAC-ELD, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="UDP RTP · AES-CBC · AAC-ELD" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>音訊接收 · UDP RTP · AES-CBC · AAC-ELD · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
+          <rect x="470" y="420" width="179" height="60" rx="8" class="c-mask"/>
+          <rect x="470" y="420" width="179" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-11;" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(476 426) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="384.5" y="448" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">音訊接收</text>
-        <text x="384.5" y="464" class="t-muted" font-size="10.5" text-anchor="middle">UDP RTP · AES-CBC · AAC-ELD</text>
+          <text data-node-label="" x="559.5" y="448" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">音訊接收</text>
+        <text x="559.5" y="464" class="t-muted" font-size="10.5" text-anchor="middle">UDP RTP · AES-CBC · AAC-ELD</text>
         </g>
 
-        <g id="node-audioout" data-node-id="audioout" data-node-label="音訊輸出" tabindex="0" role="button" aria-label="聚焦音訊輸出，winmm waveOut · 48 kHz, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="winmm waveOut · 48 kHz" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>音訊輸出 · winmm waveOut · 48 kHz · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-audioout" data-node-id="audioout" data-node-label="音訊輸出" tabindex="0" role="button" aria-label="聚焦音訊輸出，winmm waveOut · 48 kHz, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="winmm waveOut · 48 kHz" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>音訊輸出 · winmm waveOut · 48 kHz · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="800" y="534" width="147" height="60" rx="8" class="c-mask"/>
           <rect x="800" y="534" width="147" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-7;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(806 540) scale(0.6875)">
@@ -1432,8 +1432,8 @@ opened. The complete license is preserved in
         <text x="873.5" y="578" class="t-muted" font-size="10.5" text-anchor="middle">winmm waveOut · 48 kHz</text>
         </g>
 
-        <g id="node-api" data-node-id="api" data-node-label="本機 HTTP API" tabindex="0" role="button" aria-label="聚焦本機 HTTP API，127.0.0.1 · /api/state, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="127.0.0.1 · /api/state" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>本機 HTTP API · 127.0.0.1 · /api/state · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-api" data-node-id="api" data-node-label="本機 HTTP API" tabindex="0" role="button" aria-label="聚焦本機 HTTP API，127.0.0.1 · /api/state, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="127.0.0.1 · /api/state" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>本機 HTTP API · 127.0.0.1 · /api/state · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="940" y="420" width="147" height="60" rx="8" class="c-mask"/>
           <rect x="940" y="420" width="147" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-16;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(946 426) scale(0.6875)">
@@ -1443,19 +1443,19 @@ opened. The complete license is preserved in
         <text x="1013.5" y="464" class="t-muted" font-size="10.5" text-anchor="middle">127.0.0.1 · /api/state</text>
         </g>
 
-        <g id="node-ffmgr" data-node-id="ffmgr" data-node-label="FFmpeg 執行期管理" tabindex="0" role="button" aria-label="聚焦FFmpeg 執行期管理，固定版 BtbN · SHA-256 驗證, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="固定版 BtbN · SHA-256 驗證" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>FFmpeg 執行期管理 · 固定版 BtbN · SHA-256 驗證 · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
-          <rect x="780" y="762" width="172" height="60" rx="8" class="c-mask"/>
-          <rect x="780" y="762" width="172" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-1;" stroke-width="1.5"/>
+        <g id="node-ffmgr" data-node-id="ffmgr" data-node-label="FFmpeg 執行期管理" tabindex="0" role="button" aria-label="聚焦FFmpeg 執行期管理，ffmpeg\ 目錄 · SHA-256 驗證, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="ffmpeg\ 目錄 · SHA-256 驗證" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>FFmpeg 執行期管理 · ffmpeg\ 目錄 · SHA-256 驗證 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
+          <rect x="780" y="762" width="179" height="60" rx="8" class="c-mask"/>
+          <rect x="780" y="762" width="179" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-1;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(786 768) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="866" y="790" class="t-primary" font-size="12.1" font-weight="600" text-anchor="middle">FFmpeg 執行期管理</text>
-        <text x="866" y="806" class="t-muted" font-size="10.5" text-anchor="middle">固定版 BtbN · SHA-256 驗證</text>
+          <text data-node-label="" x="869.5" y="790" class="t-primary" font-size="12.8" font-weight="600" text-anchor="middle">FFmpeg 執行期管理</text>
+        <text x="869.5" y="806" class="t-muted" font-size="10.5" text-anchor="middle">ffmpeg\ 目錄 · SHA-256 驗證</text>
         </g>
 
-        <g id="node-trustfile" data-node-id="trustfile" data-node-label="trusted_senders.json" tabindex="0" role="button" aria-label="聚焦trusted_senders.json，核准指紋 · 原子寫入, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="database" data-node-sublabel="核准指紋 · 原子寫入" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>trusted_senders.json · 核准指紋 · 原子寫入 · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-trustfile" data-node-id="trustfile" data-node-label="trusted_senders.json" tabindex="0" role="button" aria-label="聚焦trusted_senders.json，核准指紋 · 原子寫入, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="database" data-node-sublabel="核准指紋 · 原子寫入" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>trusted_senders.json · 核准指紋 · 原子寫入 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="858" y="192" width="192" height="60" rx="8" class="c-mask"/>
           <rect x="858" y="192" width="192" height="60" rx="8" class="c-database" data-animate="node" style="--step: 5; --flow-node-name: archify-relay-node-15;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(864 198) scale(0.6875)">
@@ -1466,8 +1466,8 @@ opened. The complete license is preserved in
         <text x="954" y="236" class="t-muted" font-size="10.5" text-anchor="middle">核准指紋 · 原子寫入</text>
         </g>
 
-        <g id="node-config" data-node-id="config" data-node-label="config.json" tabindex="0" role="button" aria-label="聚焦config.json，設定 · DPAPI keySeed, airplayd.exe · 接收器行程（CGO_ENABLED=0）" aria-pressed="false" data-node-kind="database" data-node-sublabel="設定 · DPAPI keySeed" data-node-context="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <title>config.json · 設定 · DPAPI keySeed · airplayd.exe · 接收器行程（CGO_ENABLED=0）</title>
+        <g id="node-config" data-node-id="config" data-node-label="config.json" tabindex="0" role="button" aria-label="聚焦config.json，設定 · DPAPI keySeed, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="database" data-node-sublabel="設定 · DPAPI keySeed" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>config.json · 設定 · DPAPI keySeed · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="602" y="78" width="134" height="60" rx="8" class="c-mask"/>
           <rect x="602" y="78" width="134" height="60" rx="8" class="c-database" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-2;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(608 84) scale(0.6875)">
@@ -1478,8 +1478,8 @@ opened. The complete license is preserved in
         <text x="669" y="122" class="t-muted" font-size="10.5" text-anchor="middle">設定 · DPAPI keySeed</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="MyGo 桌面 UI" tabindex="0" role="button" aria-label="聚焦MyGo 桌面 UI，ui.View · 核准對話框, mirrpane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="ui.View · 核准對話框" data-node-context="mirrpane.exe · MyGo UI 行程">
-          <title>MyGo 桌面 UI · ui.View · 核准對話框 · mirrpane.exe · MyGo UI 行程</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="MyGo 桌面 UI" tabindex="0" role="button" aria-label="聚焦MyGo 桌面 UI，ui.View · 核准對話框, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="ui.View · 核准對話框" data-node-context="MirrPane.exe · MyGo UI 行程">
+          <title>MyGo 桌面 UI · ui.View · 核准對話框 · MirrPane.exe · MyGo UI 行程</title>
           <rect x="572" y="1102" width="135" height="60" rx="8" class="c-mask"/>
           <rect x="572" y="1102" width="135" height="60" rx="8" class="c-frontend" data-animate="node" style="--step: 11; --flow-node-name: archify-relay-node-12;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(578 1108) scale(0.6875)">
@@ -1492,22 +1492,22 @@ opened. The complete license is preserved in
         <text x="639.5" y="1146" class="t-muted" font-size="10.5" text-anchor="middle">ui.View · 核准對話框</text>
         </g>
 
-        <g id="node-sidecar" data-node-id="sidecar" data-node-label="Sidecar 監督器" tabindex="0" role="button" aria-label="聚焦Sidecar 監督器，啟動 airplayd · 輪詢 /api/state, mirrpane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="啟動 airplayd · 輪詢 /api/state" data-node-context="mirrpane.exe · MyGo UI 行程">
-          <title>Sidecar 監督器 · 啟動 airplayd · 輪詢 /api/state · mirrpane.exe · MyGo UI 行程</title>
-          <rect x="910" y="1102" width="204" height="60" rx="8" class="c-mask"/>
-          <rect x="910" y="1102" width="204" height="60" rx="8" class="c-frontend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-14;" stroke-width="1.5"/>
+        <g id="node-sidecar" data-node-id="sidecar" data-node-label="Sidecar 監督器" tabindex="0" role="button" aria-label="聚焦Sidecar 監督器，self re-exec · 輪詢 /api/state, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="self re-exec · 輪詢 /api/state" data-node-context="MirrPane.exe · MyGo UI 行程">
+          <title>Sidecar 監督器 · self re-exec · 輪詢 /api/state · MirrPane.exe · MyGo UI 行程</title>
+          <rect x="910" y="1102" width="197" height="60" rx="8" class="c-mask"/>
+          <rect x="910" y="1102" width="197" height="60" rx="8" class="c-frontend" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-14;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(916 1108) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" x="1012" y="1130" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">Sidecar 監督器</text>
-        <text x="1012" y="1146" class="t-muted" font-size="10.5" text-anchor="middle">啟動 airplayd · 輪詢 /api/state</text>
+          <text data-node-label="" x="1008.5" y="1130" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">Sidecar 監督器</text>
+        <text x="1008.5" y="1146" class="t-muted" font-size="10.5" text-anchor="middle">self re-exec · 輪詢 /api/state</text>
         </g>
 
-        <g id="node-feed" data-node-id="feed" data-node-label="framefeed 讀取器" tabindex="0" role="button" aria-label="聚焦framefeed 讀取器，共用記憶體 → 影格, mirrpane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="共用記憶體 → 影格" data-node-context="mirrpane.exe · MyGo UI 行程">
-          <title>framefeed 讀取器 · 共用記憶體 → 影格 · mirrpane.exe · MyGo UI 行程</title>
+        <g id="node-feed" data-node-id="feed" data-node-label="framefeed 讀取器" tabindex="0" role="button" aria-label="聚焦framefeed 讀取器，共用記憶體 → 影格, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="共用記憶體 → 影格" data-node-context="MirrPane.exe · MyGo UI 行程">
+          <title>framefeed 讀取器 · 共用記憶體 → 影格 · MirrPane.exe · MyGo UI 行程</title>
           <rect x="284" y="1102" width="164" height="60" rx="8" class="c-mask"/>
           <rect x="284" y="1102" width="164" height="60" rx="8" class="c-frontend" data-animate="node" style="--step: 10; --flow-node-name: archify-relay-node-8;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(290 1108) scale(0.6875)">
@@ -1526,12 +1526,12 @@ opened. The complete license is preserved in
           <text x="174" y="1015" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">Bonjour 廣播</text>
         </g>
         <g data-edge-from="iphone" data-edge-to="rtsp" data-edge-label="RTSP/HTTP 控制連線" data-edge-key="1" data-edge-id="sender-control">
-          <rect x="139.3" y="202" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="187.5" y="212" class="t-edge-default" font-size="8.8" font-weight="500" text-anchor="middle">RTSP/HTTP 控制連線</text>
+          <rect x="139.3" y="216" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="187.5" y="226" class="t-edge-default" font-size="8.8" font-weight="500" text-anchor="middle">RTSP/HTTP 控制連線</text>
         </g>
         <g data-edge-from="rtsp" data-edge-to="receiver" data-edge-label="配對與 /setup 委派" data-edge-key="2" data-edge-id="rtsp-delegate">
-          <rect x="440.55" y="302" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="488.75" y="312" class="t-edge-default" font-size="8.9" font-weight="500" text-anchor="middle">配對與 /setup 委派</text>
+          <rect x="440.55" y="316" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="488.75" y="326" class="t-edge-default" font-size="8.9" font-weight="500" text-anchor="middle">配對與 /setup 委派</text>
         </g>
         <g data-edge-from="receiver" data-edge-to="pairing" data-edge-label="pair-setup · pair-verify" data-edge-key="3" data-edge-id="pairing-keys">
           <rect x="606.4" y="286" width="125.19999999999999" height="14" rx="3" class="c-mask"/>
@@ -1542,16 +1542,16 @@ opened. The complete license is preserved in
           <text x="874" y="277" class="t-edge-security" font-size="8" text-anchor="middle">核准指紋（未核准 → 403）</text>
         </g>
         <g data-edge-from="receiver" data-edge-to="mirror" data-edge-label="Prepare(streamID, keys)" data-edge-key="5" data-edge-id="setup-mirror">
-          <rect x="542.5999999999999" y="485" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="602.8" y="495" class="t-edge-default" font-size="10" font-weight="500" textLength="116.39999999999999" lengthAdjust="spacingAndGlyphs" text-anchor="middle">Prepare(streamID, keys)</text>
+          <rect x="682" y="443" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="742.2" y="453" class="t-edge-default" font-size="10" font-weight="500" textLength="116.39999999999999" lengthAdjust="spacingAndGlyphs" text-anchor="middle">Prepare(streamID, keys)</text>
         </g>
         <g data-edge-from="iphone" data-edge-to="mirror" data-edge-label="TCP 鏡像串流 · AES-128-CTR" data-edge-key="6" data-edge-id="sender-mirror">
           <rect x="289.1" y="544" width="134.8" height="14" rx="3" class="c-mask"/>
           <text x="356.5" y="554" class="t-edge-default" font-size="8.6" font-weight="500" text-anchor="middle">TCP 鏡像串流 · AES-128-CTR</text>
         </g>
         <g data-edge-from="mirror" data-edge-to="decoder" data-edge-label="Annex-B access units" data-edge-key="7" data-edge-id="mirror-decode">
-          <rect x="564.5" y="611" width="106" height="14" rx="3" class="c-mask"/>
-          <text x="617.5" y="621" class="t-edge-default" font-size="10" font-weight="500" textLength="102" lengthAdjust="spacingAndGlyphs" text-anchor="middle">Annex-B access units</text>
+          <rect x="682.5" y="611" width="106" height="14" rx="3" class="c-mask"/>
+          <text x="735.5" y="621" class="t-edge-default" font-size="10" font-weight="500" textLength="102" lengthAdjust="spacingAndGlyphs" text-anchor="middle">Annex-B access units</text>
         </g>
         <g data-edge-from="decoder" data-edge-to="publisher" data-edge-label="RGBA／DXGI 影格" data-edge-key="8" data-edge-id="decode-publish">
           <rect x="574.5" y="731" width="82" height="14" rx="3" class="c-mask"/>
@@ -1566,28 +1566,28 @@ opened. The complete license is preserved in
           <text x="510" y="1122" class="t-edge-default" font-size="8" text-anchor="middle">最新影格（零拷貝）</text>
         </g>
         <g data-edge-from="iphone" data-edge-to="audio" data-edge-label="UDP RTP · AAC-ELD" data-edge-key="11" data-edge-id="sender-audio">
-          <rect x="161.2" y="430" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="207" y="440" class="t-edge-default" font-size="10" font-weight="500" textLength="87.6" lengthAdjust="spacingAndGlyphs" text-anchor="middle">UDP RTP · AAC-ELD</text>
+          <rect x="248.7" y="444" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="294.5" y="454" class="t-edge-default" font-size="10" font-weight="500" textLength="87.6" lengthAdjust="spacingAndGlyphs" text-anchor="middle">UDP RTP · AAC-ELD</text>
         </g>
         <g data-edge-from="receiver" data-edge-to="audio" data-edge-label="ConfigurePeer(keys, iv)" data-edge-key="12" data-edge-id="setup-audio">
-          <rect x="477.8" y="416" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="538" y="426" class="t-edge-default" font-size="10" font-weight="500" textLength="116.39999999999999" lengthAdjust="spacingAndGlyphs" text-anchor="middle">ConfigurePeer(keys, iv)</text>
+          <rect x="506.59999999999997" y="386" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="566.8" y="396" class="t-edge-default" font-size="10" font-weight="500" textLength="116.39999999999999" lengthAdjust="spacingAndGlyphs" text-anchor="middle">ConfigurePeer(keys, iv)</text>
         </g>
         <g data-edge-from="audio" data-edge-to="decoder" data-edge-label="AAC-ELD 解碼" data-edge-key="13" data-edge-id="audio-decode">
-          <rect x="491.7" y="638" width="67.6" height="14" rx="3" class="c-mask"/>
-          <text x="525.5" y="648" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">AAC-ELD 解碼</text>
+          <rect x="492.90000000000003" y="522.5" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="526.7" y="532.5" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">AAC-ELD 解碼</text>
         </g>
         <g data-edge-from="decoder" data-edge-to="audioout" data-edge-label="PCM 48 kHz" data-edge-key="14" data-edge-id="decode-speaker">
           <rect x="844.5" y="616" width="58" height="14" rx="3" class="c-mask"/>
           <text x="873.5" y="626" class="t-edge-default" font-size="10" font-weight="500" textLength="54" lengthAdjust="spacingAndGlyphs" text-anchor="middle">PCM 48 kHz</text>
         </g>
         <g data-edge-from="sidecar" data-edge-to="api" data-edge-label="GET /api/state · POST 控制" data-edge-key="15" data-edge-id="sidecar-api">
-          <rect x="944.6" y="1082" width="134.8" height="14" rx="3" class="c-mask"/>
-          <text x="1012" y="1092" class="t-edge-default" font-size="8.4" font-weight="500" text-anchor="middle">GET /api/state · POST 控制</text>
+          <rect x="941.1" y="1082" width="134.8" height="14" rx="3" class="c-mask"/>
+          <text x="1008.5" y="1092" class="t-edge-default" font-size="8.4" font-weight="500" text-anchor="middle">GET /api/state · POST 控制</text>
         </g>
         <g data-edge-from="api" data-edge-to="receiver" data-edge-label="核准 · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver">
-          <rect x="678.2" y="381" width="115.6" height="14" rx="3" class="c-mask"/>
-          <text x="736" y="391" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">核准 · 中斷 · 重設信任</text>
+          <rect x="834.4000000000001" y="378" width="115.6" height="14" rx="3" class="c-mask"/>
+          <text x="892.2" y="388" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">核准 · 中斷 · 重設信任</text>
         </g>
         <g data-edge-from="api" data-edge-to="audioout" data-edge-label="音量／靜音" data-edge-key="17" data-edge-id="api-volume">
           <rect x="844.5" y="475.5" width="58" height="14" rx="3" class="c-mask"/>
@@ -1611,14 +1611,14 @@ opened. The complete license is preserved in
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="airplayd.exe · 接收器行程（CGO_ENABLED=0）">
-          <rect data-graph-role="structural-frame-label-mask" x="244" y="58" width="236.79999999999998" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="248" y="71" class="t-cloud" font-size="9" font-weight="600">airplayd.exe · 接收器行程（CGO_ENABLED=0）</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <rect data-graph-role="structural-frame-label-mask" x="244" y="58" width="290.8" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="248" y="71" class="t-cloud" font-size="9" font-weight="600">MirrPane.exe --airplayd · 接收器行程（self re-exec）</text>
         </g>
 
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="mirrpane.exe · MyGo UI 行程">
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="MirrPane.exe · MyGo UI 行程">
           <rect data-graph-role="structural-frame-label-mask" x="374" y="1082" width="155.79999999999998" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="378" y="1095" class="t-cloud" font-size="9" font-weight="600">mirrpane.exe · MyGo UI 行程</text>
+          <text data-boundary-label="" x="378" y="1095" class="t-cloud" font-size="9" font-weight="600">MirrPane.exe · MyGo UI 行程</text>
         </g>
 
         <!-- Legend -->
