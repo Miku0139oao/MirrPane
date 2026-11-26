@@ -79,6 +79,7 @@ MirrPane/
 ├── assets/                     # Project logo and Windows icon
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # Detect or download the pinned Windows x64 shared build (SHA256)
+│   ├── generate-app-icon.ps1   # Generate the Windows ICO and executable icon resource from assets/logo.png
 │   ├── generate-ffmpeg-abi.ps1 # Generate FFmpeg ABI definitions
 │   └── third-party-notices.ps1 # Collect the licences of bundled Go modules
 ├── third_party/                # Local third-party dependencies, such as FFmpeg

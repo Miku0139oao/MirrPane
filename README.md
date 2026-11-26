@@ -78,6 +78,7 @@ MirrPane/
 ├── assets/                     # 專案標誌與 Windows 圖示
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # 偵測或下載固定版本 Windows x64 FFmpeg shared build (SHA256)
+│   ├── generate-app-icon.ps1   # 從 assets/logo.png 產生多尺寸 ICO 與執行檔圖示資源
 │   ├── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
 │   └── third-party-notices.ps1 # 收集隨附 Go 模組的授權文件
 ├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
