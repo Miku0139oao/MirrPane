@@ -85,6 +85,7 @@ func (a *testAudio) ResetStream()                    { a.resets++; a.busy = fals
 func (a *testAudio) ResetKey()                       { a.keys, a.iv = nil, nil; a.busy = false; a.clears++ }
 func (a *testAudio) Stats() (uint64, uint64, uint64) { return 0, 0, 0 }
 func (a *testAudio) LateDropped() uint64             { return 0 }
+func (a *testAudio) Diagnostics() audio.Diagnostics  { return audio.Diagnostics{} }
 func (a *testAudio) Close()                          {}
 
 func bindingReceiver(t *testing.T) (*Receiver, *testMirror, *testAudio) {

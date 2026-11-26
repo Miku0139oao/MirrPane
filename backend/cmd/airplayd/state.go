@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miku0139/airplay-go/backend/internal/audio"
 	"github.com/miku0139/airplay-go/backend/internal/audioout"
 	"github.com/miku0139/airplay-go/backend/internal/config"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
@@ -111,6 +112,16 @@ type apiState struct {
 	AudioLateDrop      uint64  `json:"audioLateDropped"`
 	AudioDeviceErrors  uint64  `json:"audioDeviceErrors"`
 	AudioDeviceReopens uint64  `json:"audioDeviceReopens"`
+
+	// Audio UDP socket counters: what each socket carried and why the data
+	// path rejected packets. They distinguish "the sender streamed nothing"
+	// from "packets arrived and were dropped".
+	AudioDataRx          uint64 `json:"audioDataRx"`
+	AudioControlRx       uint64 `json:"audioControlRx"`
+	AudioPeerDrops       uint64 `json:"audioPeerDrops"`
+	AudioShortDrops      uint64 `json:"audioShortDrops"`
+	AudioSourceDrops     uint64 `json:"audioSourceDrops"`
+	AudioControlRTPDrops uint64 `json:"audioControlRtpDrops"`
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -134,6 +145,7 @@ type receiverControl interface {
 	ApproveSender(string) error
 	RejectSender(string) error
 	AudioLateDropped() uint64
+	AudioDiagnostics() audio.Diagnostics
 }
 
 // apiHandler serves the localhost endpoints the app polls and calls. It is
@@ -225,6 +237,13 @@ func apiHandler(
 		}
 		if recv != nil {
 			body.AudioLateDrop = recv.AudioLateDropped()
+			diag := recv.AudioDiagnostics()
+			body.AudioDataRx = diag.DataRx
+			body.AudioControlRx = diag.ControlRx
+			body.AudioPeerDrops = diag.PeerDrops
+			body.AudioShortDrops = diag.ShortDrops
+			body.AudioSourceDrops = diag.SourceDrops
+			body.AudioControlRTPDrops = diag.ControlRTPDrops
 			if pending := recv.PendingSenders(); len(pending) > 0 {
 				body.PendingSender = &pending[0]
 			}

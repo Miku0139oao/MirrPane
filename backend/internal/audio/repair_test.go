@@ -28,6 +28,23 @@ func bindFixture(t *testing.T, f *jitterFixture, from netip.AddrPort) {
 	t.Cleanup(f.r.ResetKey)
 }
 
+func TestDiagnosticsCountRejectedDatagrams(t *testing.T) {
+	f := newJitterFixture(t)
+	peer := netip.MustParseAddr("127.0.0.1")
+	f.r.ConfigurePeer(peer, 1234, f.r.keys, f.r.iv)
+	t.Cleanup(f.r.ResetKey)
+
+	// A datagram from an address other than the authenticated peer is counted
+	// as a peer drop; a runt from the right peer as a short drop.
+	f.r.receiveDatagram(netip.MustParseAddrPort("192.0.2.9:9000"), wireAudio(1), false)
+	f.r.receiveDatagram(netip.AddrPortFrom(peer, 5555), []byte{0x80}, false)
+
+	d := f.r.Diagnostics()
+	if d.PeerDrops != 1 || d.ShortDrops != 1 || d.DataRx != 0 {
+		t.Fatalf("diagnostics = %+v, want one peer drop and one short drop", d)
+	}
+}
+
 func TestPeerBindingAndOrderedResend(t *testing.T) {
 	control, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

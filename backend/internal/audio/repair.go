@@ -44,7 +44,19 @@ func (r *Receiver) clearIngress() {
 func (r *Receiver) receiveDatagram(from netip.AddrPort, pkt []byte, control bool) {
 	r.decMu.Lock()
 	from = netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
-	if r.closed || !r.peer.IsValid() || from.Addr() != r.peer || len(pkt) < 2 {
+	if r.closed {
+		r.decMu.Unlock()
+		return
+	}
+	if !r.peer.IsValid() || from.Addr() != r.peer {
+		if c := r.diag.peerDrops.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+			r.log.Printf("audio: debug drop peer #%d from=%v peer=%v len=%d type=%#x", c, from, r.peer, len(pkt), packetType(pkt))
+		}
+		r.decMu.Unlock()
+		return
+	}
+	if len(pkt) < 2 {
+		r.diag.shortDrops.Add(1)
 		r.decMu.Unlock()
 		return
 	}
@@ -76,14 +88,25 @@ func (r *Receiver) receiveDatagram(from netip.AddrPort, pkt []byte, control bool
 			}
 			pkt = pkt[4:]
 		default:
+			if pkt[0]>>6 == 2 {
+				if c := r.diag.controlRTPDrops.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+					r.log.Printf("audio: debug RTP on control socket #%d from=%v len=%d type=%#x", c, from, len(pkt), packetType(pkt))
+				}
+			}
 			r.decMu.Unlock()
 			return
 		}
 	} else if r.dataSource.IsValid() && from != r.dataSource {
+		if c := r.diag.sourceDrops.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+			r.log.Printf("audio: debug drop source #%d from=%v chosen=%v", c, from, r.dataSource)
+		}
 		r.decMu.Unlock()
 		return
 	}
 	if len(pkt) <= HeaderLen || pkt[0]>>6 != 2 {
+		if c := r.diag.shortDrops.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+			r.log.Printf("audio: debug drop runt #%d from=%v len=%d first=%#x", c, from, len(pkt), pkt[0])
+		}
 		r.decMu.Unlock()
 		return
 	}

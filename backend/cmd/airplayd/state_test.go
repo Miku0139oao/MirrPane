@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/miku0139/airplay-go/backend/internal/audio"
 	"github.com/miku0139/airplay-go/backend/internal/config"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 	"github.com/miku0139/airplay-go/backend/internal/receiver"
@@ -54,6 +55,8 @@ func (c *trustResetControl) PendingSenders() []receiver.PendingSender {
 }
 
 func (c *trustResetControl) AudioLateDropped() uint64 { return 0 }
+
+func (c *trustResetControl) AudioDiagnostics() audio.Diagnostics { return audio.Diagnostics{} }
 
 func (c *trustResetControl) ApproveSender(fingerprint string) error {
 	if c.approvalErr != nil {

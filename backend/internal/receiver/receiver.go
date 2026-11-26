@@ -73,6 +73,7 @@ type audioReceiver interface {
 	ResetKey()
 	Stats() (uint64, uint64, uint64)
 	LateDropped() uint64
+	Diagnostics() audio.Diagnostics
 	Close()
 }
 
@@ -289,6 +290,15 @@ func (r *Receiver) AudioLateDropped() uint64 {
 		return 0
 	}
 	return r.audioRx.LateDropped()
+}
+
+// AudioDiagnostics reports the audio UDP socket counters, which tell "the
+// sender streamed nothing" apart from "packets arrived and were rejected".
+func (r *Receiver) AudioDiagnostics() audio.Diagnostics {
+	if r.audioRx == nil {
+		return audio.Diagnostics{}
+	}
+	return r.audioRx.Diagnostics()
 }
 
 // Close releases every listener.

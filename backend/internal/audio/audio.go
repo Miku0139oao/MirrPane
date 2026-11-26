@@ -20,7 +20,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miku0139/airplay-go/backend/internal/decode"
@@ -63,6 +65,47 @@ type audioDecoder interface {
 	Close()
 }
 
+// diagCounters are the socket-level audio counters. They are read without the
+// receiver lock (atomics), so /api/state never waits behind decoding.
+type diagCounters struct {
+	dataRx          atomic.Uint64
+	controlRx       atomic.Uint64
+	peerDrops       atomic.Uint64 // source address is not the authenticated peer
+	shortDrops      atomic.Uint64 // runt or non-RTP packet
+	sourceDrops     atomic.Uint64 // data from a port other than the chosen source
+	controlRTPDrops atomic.Uint64 // RTP audio sent to the control socket
+}
+
+// Diagnostics is one snapshot of the socket counters.
+type Diagnostics struct {
+	DataRx          uint64
+	ControlRx       uint64
+	PeerDrops       uint64
+	ShortDrops      uint64
+	SourceDrops     uint64
+	ControlRTPDrops uint64
+}
+
+// Diagnostics reports the audio UDP socket counters.
+func (r *Receiver) Diagnostics() Diagnostics {
+	return Diagnostics{
+		DataRx:          r.diag.dataRx.Load(),
+		ControlRx:       r.diag.controlRx.Load(),
+		PeerDrops:       r.diag.peerDrops.Load(),
+		ShortDrops:      r.diag.shortDrops.Load(),
+		SourceDrops:     r.diag.sourceDrops.Load(),
+		ControlRTPDrops: r.diag.controlRTPDrops.Load(),
+	}
+}
+
+// packetType reports an RTP/control payload type for logging, 0 for runts.
+func packetType(pkt []byte) byte {
+	if len(pkt) < 2 {
+		return 0
+	}
+	return pkt[1] & 0x7f
+}
+
 // Receiver owns the two UDP sockets the sender streams to.
 type Receiver struct {
 	log      *log.Logger
@@ -102,6 +145,13 @@ type Receiver struct {
 	lastLateLog time.Time
 	now         func() time.Time // nil uses the monotonic local clock; test seam
 
+	// debug enables MIRRPANE_AUDIO_DEBUG datagram and drop logging.
+	debug bool
+	// diag counts every datagram each socket carried and why the data path
+	// rejected it, so "nothing arrived" can be told apart from "arrived and
+	// was dropped" from /api/state alone.
+	diag diagCounters
+
 	// decMu serializes packet processing and all decoder calls/replacement.
 	// Lock order is decMu before mu; never hold mu while calling the decoder.
 	// Frame callbacks run after both locks are released.
@@ -135,6 +185,7 @@ func New(logger *log.Logger, handlers Handlers) (*Receiver, error) {
 		dataPort:    data.LocalAddr().(*net.UDPAddr).Port,
 		controlPort: control.LocalAddr().(*net.UDPAddr).Port,
 		chosen:      -1,
+		debug:       os.Getenv("MIRRPANE_AUDIO_DEBUG") == "1",
 	}
 
 	dec, err := decode.NewAudioDecoder(nil)
@@ -289,6 +340,9 @@ func (r *Receiver) readData() {
 		if err != nil {
 			return
 		}
+		if c := r.diag.dataRx.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+			r.log.Printf("audio: debug data rx #%d from=%v len=%d type=%#x", c, from, n, packetType(buf[:n]))
+		}
 		r.receiveDatagram(from, buf[:n], false)
 	}
 }
@@ -299,6 +353,9 @@ func (r *Receiver) readControl() {
 		n, from, err := r.control.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return
+		}
+		if c := r.diag.controlRx.Add(1); r.debug && (c <= 5 || c%100 == 0) {
+			r.log.Printf("audio: debug control rx #%d from=%v len=%d type=%#x", c, from, n, packetType(buf[:n]))
 		}
 		r.receiveDatagram(from, buf[:n], true)
 	}
