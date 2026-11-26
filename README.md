@@ -4,11 +4,11 @@
 
 **繁體中文** | [English](README.en.md)
 
-**Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + MyGo** 打造，以原生桌面介面將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
+**Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + MyGo** 打造，以原生桌面介面將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。提供免管理員的使用者安裝檔，以及整包解壓即用的便攜版；便攜版不寫入系統登錄檔、無需額外安裝執行期環境。
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **v0.4.3 正式版** · [下載 Windows x64 便攜包][win64] · [SHA-256 校驗檔][checksum] · [版本說明][release] · [標籤原始碼][source-tag]
+- **v0.4.4 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
 
 ---
 
@@ -22,7 +22,8 @@
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
 - **自動化 FFmpeg 管理**：固定上游建置版本（含 SHA256 驗證與 ABI 檢查），首次啟動可自動偵測、續傳下載並安裝；DLL 只從明確的信任位置載入，不搜尋 `PATH` 或工作目錄。
 - 鏡像與音訊串流使用核准裝置的配對身分，並綁定傳送端。本機管理 API 檢查 `Host` 與 `Origin`，防護細節見[安全性](#安全性)。
-- **綠色免安裝**：設定檔（`config.json`）、UI 偏好與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔，也不需要系統管理員權限；唯一例外是 MyGo 於首次啟動在 `%LOCALAPPDATA%\MyGo\ShaderCache` 建立的著色器快取。
+- **綠色免安裝**：便攜版的設定檔（`config.json`）、UI 偏好與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔，也不需要系統管理員權限；安裝版安裝於 `%LOCALAPPDATA%\Programs\MirrPane`，僅新增標準的使用者層級解除安裝項目。唯一例外是 MyGo 於首次啟動在 `%LOCALAPPDATA%\MyGo\ShaderCache` 建立的著色器快取。
+- **單一實例與精簡包**：同一登入工作階段只允許一個接收器，重複啟動會把既有視窗帶回前景，避免兩個實例搶用 AirPlay 連接埠並重複廣播名稱；另提供不含 FFmpeg 的精簡包（約 10 MB），首次啟動自動下載並以 SHA-256 驗證固定版 runtime。
 
 ---
 
@@ -94,7 +95,7 @@ MirrPane/
 
 ## 快速使用
 
-1. 下載 [Windows x64 便攜包][win64]，解壓到可寫入的資料夾，再執行 `MirrPane.exe`。若要驗證下載，可將 `Get-FileHash` 算出的 SHA-256 與[校驗檔][checksum]中的值比對。
+1. 下載 [Windows 安裝檔][setup] 直接執行（免管理員，安裝到 `%LOCALAPPDATA%\Programs\MirrPane`，含開始功能表捷徑與解除安裝），或解壓[便攜完整版][win64]／[便攜精簡版][lite] 後執行 `MirrPane.exe`。驗證下載時，可將 `Get-FileHash` 算出的 SHA-256 與各檔旁 `.sha256` 校驗檔的值比對；精簡版首次啟動需連網下載並驗證 FFmpeg runtime。
 2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
 4. 首次連線時，在電腦上確認裝置名稱並按「允許連線」，再回到 iPhone 或 iPad 選一次「鏡屏」。之後使用相同配對身分即可直接連線。
@@ -144,7 +145,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   版本預設讀取 `VERSION`；`-Version 0.0.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
+   版本預設讀取 `VERSION`；`-Version 0.0.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。加上 `-Lite` 可另產不含 FFmpeg 的精簡包（`MirrPane-<version>-win64-lite.zip`，首次啟動自動下載 runtime）；`installer\build-installer.ps1 -Version <version>` 以 Inno Setup 6 產生 `MirrPane-<version>-setup.exe`（需要 `winget install --id JRSoftware.InnoSetup -e` 或 CI 的 Chocolatey 安裝）。
 
 ### 驗證與測試項目
 
@@ -228,7 +229,9 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.3
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip.sha256
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.4
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
 [source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.3

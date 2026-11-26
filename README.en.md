@@ -4,11 +4,11 @@
 
 [繁體中文](README.md) | **English**
 
-**An AirPlay screen mirroring receiver for Windows**, built with **Go + FFmpeg D3D11VA + MyGo**. Turn your Windows PC into a wireless display for an iPhone or iPad with a native desktop UI. Extract the release archive and run the app, with no installer, registry writes, or additional runtime installation required.
+**An AirPlay screen mirroring receiver for Windows**, built with **Go + FFmpeg D3D11VA + MyGo**. Turn your Windows PC into a wireless display for an iPhone or iPad with a native desktop UI. Ships as a per-user installer (no administrator rights) and as portable archives that run where they are extracted; the portable builds write no registry keys and need no extra runtime installed.
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Stable release v0.4.3** · [Download for Windows x64][win64] · [SHA-256 checksum][checksum] · [Release notes][release] · [Tagged source][source-tag]
+- **Stable release v0.4.4** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
 
 ---
 
@@ -22,7 +22,8 @@
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
 - **Automatic FFmpeg management**: Pins a dated upstream build (SHA256 and ABI checked), detects existing runtimes, and supports resumable first-run downloads. DLLs are resolved only from explicit trusted locations — never `PATH` or the working directory.
 - Mirroring and audio streams use the approved device’s pairing identity and are bound to the sender. The local management API validates `Host` and `Origin`. See [Security](#security).
-- **Portable distribution**: Settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
+- **Portable distribution**: In the portable builds, settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The installer places the app under `%LOCALAPPDATA%\Programs\MirrPane` and adds only the standard per-user uninstall entry. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
+- **Single instance and a lite package**: One receiver per logon session; launching again brings the running window to the front instead of starting a second sidecar that would fight over the AirPlay port and advertise a duplicate name. A lite archive without FFmpeg is available too (about 10 MB); it downloads and SHA-256-verifies the pinned runtime on first launch.
 
 ---
 
@@ -95,7 +96,7 @@ MirrPane/
 
 ## Quick Start
 
-1. Download the [Windows x64 archive][win64], extract it to a writable folder, and run `MirrPane.exe`. To verify the download, compare its SHA-256 from `Get-FileHash` with the [published checksum][checksum].
+1. Run the [Windows installer][setup] (per-user, no administrator rights; installs to `%LOCALAPPDATA%\Programs\MirrPane` with a Start Menu shortcut and an uninstall entry), or extract the [portable archive][win64] / [lite archive][lite] to a writable folder and run `MirrPane.exe`. To verify a download, compare its SHA-256 from `Get-FileHash` with the `.sha256` file next to it. The lite build downloads and verifies the FFmpeg runtime on first launch, so it needs a network connection once.
 2. Connect the Windows PC and your iPhone or iPad to the same local network. Allow the receiver on private networks when Windows Firewall prompts you.
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
 4. On the first connection, check the device name on the PC and click **允許連線** (Allow connection). Select the receiver again on the iPhone or iPad. Later connections use the approved pairing identity.
@@ -145,7 +146,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   The version defaults to `VERSION`; `-Version 0.0.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
+   The version defaults to `VERSION`; `-Version 0.0.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup. Add `-Lite` for a package without FFmpeg (`MirrPane-<version>-win64-lite.zip`; the runtime downloads on first launch). `installer\build-installer.ps1 -Version <version>` builds `MirrPane-<version>-setup.exe` with Inno Setup 6 (install it with `winget install --id JRSoftware.InnoSetup -e`, or let CI install it via Chocolatey).
 
 ### Validation
 
@@ -229,7 +230,9 @@ This project draws from and benefits from the following open-source projects:
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.3
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip.sha256
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.4
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
 [source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.3
