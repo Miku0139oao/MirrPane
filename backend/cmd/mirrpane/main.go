@@ -9,6 +9,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/miku0139/airplay-go/backend/internal/airplayd"
 )
 
 // appVersion is stamped by the packaging script with
@@ -16,7 +18,16 @@ import (
 var appVersion = "dev"
 
 func main() {
-	installDirFlag := flag.String("install-dir", "", "override the MirrPane installation directory containing backend\\airplayd.exe")
+	// Self re-exec: the receiver is this same executable with SelfExecArg as
+	// its first argument. Dispatch before the UI registers flags or takes the
+	// single-instance mutex, so the child never opens a window and never
+	// competes with its own UI.
+	if len(os.Args) > 1 && os.Args[1] == airplayd.SelfExecArg {
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+		airplayd.Main()
+		return
+	}
+	installDirFlag := flag.String("install-dir", "", "override the installation directory holding config\\ and logs\\ (default: the executable's folder)")
 	shmFlag := flag.String("shm", fmt.Sprintf(`Local\MirrPaneFrames-%d`, os.Getpid()), "shared-memory section for this receiver and its viewer")
 	demoFlag := flag.Bool("demo", false, "render a synthetic test picture instead of the receiver's frames (no sidecar)")
 	demoSettings := flag.Bool("demo-settings", false, "open the settings dialog at startup (UI testing)")
@@ -72,9 +83,10 @@ func main() {
 	app.shutdown()
 }
 
-// resolveInstallDir finds the root folder holding backend\airplayd.exe.
-// Development launches can point -install-dir at a staged build. A damaged
-// portable installation must report its missing sidecar at its own location.
+// resolveInstallDir finds the folder that holds config\ and logs\. Release
+// builds run MirrPane.exe from that folder; development launches can point
+// -install-dir at a staged build. A damaged portable installation must report
+// its own location.
 func resolveInstallDir(explicit string) string {
 	if explicit != "" {
 		if abs, err := filepath.Abs(explicit); err == nil {

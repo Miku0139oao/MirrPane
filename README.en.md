@@ -15,15 +15,16 @@
 ## Features
 
 - **Low-latency hardware decoding**: FFmpeg **D3D11VA** provides H.264 hardware acceleration. Complete Annex-B access units go directly to the decoder. Software decoding is available when hardware acceleration is unavailable and can also be selected in settings.
-- **No CGO in the UI or backend**: Both the desktop UI (MyGo) and `airplayd` are built with `CGO_ENABLED=0`. The backend binds FFmpeg at runtime through `purego` and calls Windows system APIs from Go. No Visual Studio C++ compiler, MinGW, or FFmpeg development headers are needed.
-- **Shared-memory frame rendering**: The backend publishes RGBA frames to a Windows shared-memory section unique to each UI instance (`Local\MirrPaneFrames-<pid>`). A three-slot mailbox and Windows event notifications deliver frames to the native MyGo UI (`internal/framefeed`), which maps the section directly and uploads it as a texture. This avoids image serialization between processes and keeps two instances from fighting over one section; a standalone `airplayd` still defaults to `Local\YingpingFrames`.
+- **One CGO-free executable**: The desktop UI (MyGo) and the AirPlay receiver are the same `MirrPane.exe`, built with `CGO_ENABLED=0`. The UI re-executes itself with the internal `--airplayd` argument to start the receiver. FFmpeg is bound at runtime through `purego` and Windows system APIs are called from Go. No Visual Studio C++ compiler, MinGW, or FFmpeg development headers are needed.
+- **One executable, two processes**: The release ships only `MirrPane.exe`. The UI self-re-executes with `--airplayd` to start the receiver child; the two communicate through shared memory and a loopback HTTP API, and the receiver exits with the UI.
+- **Shared-memory frame rendering**: The backend publishes RGBA frames to a Windows shared-memory section unique to each UI instance (`Local\MirrPaneFrames-<pid>`). A three-slot mailbox and Windows event notifications deliver frames to the native MyGo UI (`internal/framefeed`), which maps the section directly and uploads it as a texture. This avoids image serialization between processes and keeps two instances from fighting over one section; a manually launched `MirrPane.exe --airplayd` still defaults to `Local\YingpingFrames`.
 - **Direct-to-slot conversion with idle gating**: `sws_scale` writes straight into the claimed shared-memory slot (no full-frame copy per picture). When the UI is minimised or stops adopting frames for a second, the download, conversion and publish are skipped while decoding continues (reference frames), with a 1 Hz probe so the UI can re-adopt instantly on restore.
 - **Low-latency audio playback**: AAC-ELD audio is decoded and played through Windows `winmm waveOut`. Supports live volume control, mute, and three latency/jitter profiles (low, balanced, stable) backed by a larger ring that absorbs Wi-Fi bursts. The ring gently catches up when a burst raises occupancy, so latency does not stay elevated for the rest of the session.
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
 - **Automatic FFmpeg management**: Pins a dated upstream build (SHA256 and ABI checked), detects existing runtimes, and supports resumable first-run downloads. DLLs are resolved only from explicit trusted locations — never `PATH` or the working directory.
 - Mirroring and audio streams use the approved device’s pairing identity and are bound to the sender. The local management API validates `Host` and `Origin`. See [Security](#security).
 - **Portable distribution**: In the portable builds, settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The installer places the app under `%LOCALAPPDATA%\Programs\MirrPane` and adds only the standard per-user uninstall entry. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
-- **Single instance and a lite package**: One receiver per logon session; launching again brings the running window to the front instead of starting a second sidecar that would fight over the AirPlay port and advertise a duplicate name. A lite archive without FFmpeg is available too (about 10 MB); it downloads and SHA-256-verifies the pinned runtime on first launch.
+- **Single instance and a lite package**: One receiver per logon session; launching again brings the running window to the front instead of starting a second receiver that would fight over the AirPlay port and advertise a duplicate name. A lite archive without FFmpeg is available too (about 10 MB); it downloads and SHA-256-verifies the pinned runtime on first launch.
 
 ---
 
@@ -31,14 +32,14 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/mirrpane-architecture-dark.svg">
-  <img src="assets/mirrpane-architecture-light.svg" alt="MirrPane system architecture: the iPhone reaches airplayd over RTSP control and a TCP mirror stream; decoded pictures reach the MyGo UI through shared memory, audio arrives as UDP RTP and plays through waveOut, and the UI talks to the receiver over a loopback HTTP API" width="100%">
+  <img src="assets/mirrpane-architecture-light.svg" alt="MirrPane system architecture: the iPhone reaches the MirrPane.exe receiver process (--airplayd) over RTSP control and a TCP mirror stream; decoded pictures reach the MyGo UI process of the same executable through shared memory, audio arrives as UDP RTP and plays through waveOut, and the UI talks to the receiver over a loopback HTTP API" width="100%">
 </picture>
 
 ```text
 iPhone / iPad (AirPlay / mDNS)
         │
         ▼
-airplayd (Go sidecar, CGO_ENABLED=0)
+Receiver process: MirrPane.exe --airplayd (self re-exec, CGO_ENABLED=0)
   ├── mDNS / Bonjour advertisements (zeroconf)
   ├── FairPlay key exchange and AirPlay pairing (pair-setup / pair-verify)
   ├── Video: purego bindings to FFmpeg D3D11VA (H.264 Annex-B)
@@ -48,9 +49,11 @@ airplayd (Go sidecar, CGO_ENABLED=0)
         │         + Windows event notifications
         │  State and controls: local HTTP API (IPC)
         ▼
-MyGo native desktop UI (backend/cmd/mirrpane, CGO_ENABLED=0)
+UI process: the same MirrPane.exe (MyGo native window, CGO_ENABLED=0)
   └── framefeed shared-memory reader → ui.Bitmap texture
 ```
+
+The UI and the receiver are one executable: on launch the UI re-executes itself with `--airplayd`, and the receiver child exits with the UI.
 
 ---
 
@@ -61,10 +64,10 @@ MirrPane/
 ├── .github/workflows/          # CI and release workflows
 ├── backend/                    # Go module: github.com/miku0139/airplay-go/backend
 │   ├── cmd/
-│   │   ├── airplayd/           # Main sidecar and local HTTP API
 │   │   ├── ffmpeg-setup/       # Shared FFmpeg DLL download, verification, and installation
-│   │   └── mirrpane/           # Native MyGo desktop UI (main.go, app.go, sidecar.go, prefs.go, …)
+│   │   └── mirrpane/           # Native MyGo desktop UI and self re-exec (main.go, app.go, sidecar.go, prefs.go, …)
 │   ├── internal/
+│   │   ├── airplayd/           # Receiver process entry point (--airplayd mode; main.go, sink.go, state.go, record.go, …)
 │   │   ├── audio/              # Audio stream reception, decryption, and AAC-ELD decoding flow
 │   │   ├── audioout/           # Windows waveOut playback and jitter buffering
 │   │   ├── config/             # config.json persistence
@@ -79,7 +82,6 @@ MirrPane/
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify
 │   │   ├── protocol/           # Device information, feature flags, and LAN interface selection
 │   │   └── receiver/           # Receiver coordination
-│   ├── build.ps1               # Backend build script
 │   ├── go.mod
 │   └── go.sum
 ├── assets/                     # Project logo, Windows icon, and system architecture diagrams
@@ -136,7 +138,7 @@ MirrPane/
    cd ..
    ```
 
-   For UI development, run the native app and point it at any packaged folder that contains `backend\airplayd.exe`:
+   For UI development, run the native app and point it at any packaged folder that contains a source-built `MirrPane.exe`:
 
    ```powershell
    cd backend
@@ -150,7 +152,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   The version defaults to `VERSION`; `-Version 0.0.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup. Add `-Lite` for a package without FFmpeg (`MirrPane-<version>-win64-lite.zip`; the runtime downloads on first launch). `installer\build-installer.ps1 -Version <version>` builds `MirrPane-<version>-setup.exe` with Inno Setup 6 (install it with `winget install --id JRSoftware.InnoSetup -e`, or let CI install it via Chocolatey).
+   The version defaults to `VERSION`; `-Version 0.0.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared build outputs are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under a legacy `backend\` folder), and keeps the old install as a `dist\.staging\previous-*` backup. Add `-Lite` for a package without FFmpeg (`MirrPane-<version>-win64-lite.zip`; the runtime downloads into `ffmpeg\` on first launch). `installer\build-installer.ps1 -Version <version>` builds `MirrPane-<version>-setup.exe` with Inno Setup 6 (install it with `winget install --id JRSoftware.InnoSetup -e`, or let CI install it via Chocolatey).
 
 ### Validation
 
@@ -159,9 +161,9 @@ MirrPane/
 
 ---
 
-## `airplayd` Command-Line Options
+## Receiver Mode (`--airplayd`) Command-Line Options
 
-The native MyGo UI normally starts and manages `airplayd` as a sidecar. It can also run independently for testing or recording a stream for offline replay and debugging.
+The UI starts the receiver by re-executing `MirrPane.exe --airplayd`, using the same executable. You can also run it by hand for testing or recording a stream for offline replay and debugging (for example `MirrPane.exe --airplayd -v -record C:\temp\capture`):
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
@@ -182,8 +184,8 @@ The native MyGo UI normally starts and manages `airplayd` as a sidecar. It can a
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `-install-dir` | The executable's directory | Override the installation root (must contain `backend\airplayd.exe`). Required when running `go run ./cmd/mirrpane`. |
-| `-shm` | `Local\MirrPaneFrames-<pid>` | Shared-memory section shared with the sidecar; the UI passes the same name to its child. |
+| `-install-dir` | The executable's directory | Override the installation root (provides `config\` and `logs\`). Required when running `go run ./cmd/mirrpane`. |
+| `-shm` | `Local\MirrPaneFrames-<pid>` | Shared-memory section shared with the receiver child; the UI passes the same name to its child. |
 | `-demo` | `false` | Show a synthetic test picture without starting the sidecar (UI development). |
 | `-demo-settings` | `false` | Open the settings window at startup (UI testing). |
 
@@ -193,10 +195,10 @@ The native MyGo UI normally starts and manages `airplayd` as a sidecar. It can a
 
 ### FFmpeg Search Order
 
-The backend resolves shared FFmpeg DLLs only from explicit trusted locations. It **never** searches `PATH` or the current working directory (DLL-planting defence). If no runtime is found, first-run setup downloads and verifies one; you can also use `backend/cmd/ffmpeg-setup` or `scripts/fetch-ffmpeg.ps1 -Pinned`.
+The receiver resolves shared FFmpeg DLLs only from explicit trusted locations. It **never** searches `PATH` or the current working directory (DLL-planting defence). If no runtime is found, first-run setup downloads and verifies one; you can also use `backend/cmd/ffmpeg-setup` or `scripts/fetch-ffmpeg.ps1 -Pinned`.
 
 1. The directory named by `MIRRPANE_FFMPEG_DIR` (authoritative — a bad path is an error, never a silent fallback).
-2. The executable's directory, its `ffmpeg/` subdirectory, and the verified cache inside that `ffmpeg/` directory.
+2. The executable's directory, its `ffmpeg/` subdirectory (where releases place the runtime), and the verified cache inside that `ffmpeg/` directory.
 3. (Development) point `MIRRPANE_FFMPEG_DIR` explicitly at the repository's `third_party/ffmpeg/`; tests and CI do exactly this.
 
 A compatible Windows x64 **shared build** is required. A statically linked `ffmpeg.exe` alone does not provide the DLLs the backend needs. Portable releases include the shared libraries and can start offline. See the [third-party runtime guide](third_party/README.md) for supported DLL versions and ABI maintenance.
@@ -206,7 +208,7 @@ A compatible Windows x64 **shared build** is required. A statically linked `ffmp
 If an iPhone or iPad cannot find the receiver, check the local network and firewall settings. TUN mode or VPN adapters can also affect the interface used for mDNS advertisements.
 
 - MirrPane prefers an Ethernet or Wi-Fi LAN interface with an IPv4 gateway, including Hyper-V external switches. It excludes TUN interfaces, the `198.18.0.0/15` benchmarking range, and CGNAT addresses from LAN selection.
-- If discovery still fails, confirm that both devices are on the same LAN and that Windows Firewall allows `airplayd` and local mDNS traffic on UDP port `5353`. Temporarily disabling the VPN's TUN mode can also help isolate routing problems.
+- If discovery still fails, confirm that both devices are on the same LAN and that Windows Firewall allows `MirrPane.exe` and local mDNS traffic on UDP port `5353`. Temporarily disabling the VPN's TUN mode can also help isolate routing problems.
 
 ---
 

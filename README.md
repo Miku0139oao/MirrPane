@@ -15,8 +15,9 @@
 ## 主要特色
 
 - **硬體加速低延遲解碼**：透過 FFmpeg **D3D11VA** 進行 H.264 硬體加速解碼，採用直通式 Annex-B access unit 管線；不支援硬解的環境可退回 CPU 軟體解碼，也可在設定中指定軟解。
-- **零 CGO 的 UI 與後端**：桌面介面（MyGo）與 `airplayd` 皆以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 Visual Studio C++、MinGW 或 C 開發標頭檔。
-- **共享記憶體影格渲染**：後端將 RGBA 影格發布至每個 UI 實例專屬的 Windows 共享記憶體（`Local\MirrPaneFrames-<pid>`），透過 3-slot mailbox 與事件喚醒機制，由原生 MyGo UI（`internal/framefeed`）直接映射讀取並上傳紋理，省去跨程序影像序列化，也避免多個實例互搶同一區段；獨立執行 `airplayd` 時仍預設 `Local\YingpingFrames`。
+- **零 CGO 的單一執行檔**：桌面介面（MyGo）與 AirPlay 接收器是同一個 `MirrPane.exe`，皆以 `CGO_ENABLED=0` 建置；UI 以內部參數 `--airplayd` 重新執行自身來啟動接收器行程。FFmpeg 透過 `purego` 在執行時動態綁定，Windows 系統 API 也由 Go 直接呼叫，無需 Visual Studio C++、MinGW 或 C 開發標頭檔。
+- **單一執行檔、兩個行程**：發行版只有 `MirrPane.exe`；UI 以 `--airplayd` 自我重新執行（self re-exec）啟動接收器子行程，兩者以共享記憶體與回環 HTTP API 溝通，接收器會隨 UI 結束自動退出。
+- **共享記憶體影格渲染**：後端將 RGBA 影格發布至每個 UI 實例專屬的 Windows 共享記憶體（`Local\MirrPaneFrames-<pid>`），透過 3-slot mailbox 與事件喚醒機制，由原生 MyGo UI（`internal/framefeed`）直接映射讀取並上傳紋理，省去跨程序影像序列化，也避免多個實例互搶同一區段；手動以 `MirrPane.exe --airplayd` 執行接收器時仍預設 `Local\YingpingFrames`。
 - **直寫共享記憶體與閒置節流**：色彩轉換（swscale）直接寫入已取得的共享記憶體 slot，免去每幀一次整幀複製；當 UI 最小化或停止取幀超過一秒時，暫停下載、轉換與發佈（仍持續解碼參考幀），並以每秒一次的探測幀保留喚醒能力。
 - **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔延遲／抗抖動設定（低延遲、平衡、穩定），並以較大的環形緩衝吸收 Wi-Fi 爆量；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
@@ -31,14 +32,14 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/mirrpane-architecture-dark.svg">
-  <img src="assets/mirrpane-architecture-light.svg" alt="鏡屏 MirrPane 系統架構圖：iPhone 經 RTSP 控制與 TCP 鏡像串流進入 airplayd，解碼後經共享記憶體交給 MyGo UI，音訊則由 UDP RTP 接收後以 waveOut 播放；UI 與接收器另以本機 HTTP API 溝通" width="100%">
+  <img src="assets/mirrpane-architecture-light.svg" alt="鏡屏 MirrPane 系統架構圖：iPhone 經 RTSP 控制與 TCP 鏡像串流進入 MirrPane.exe 的接收器行程（--airplayd），解碼後經共享記憶體交給同一個執行檔的 MyGo UI 行程，音訊則由 UDP RTP 接收後以 waveOut 播放；UI 與接收器另以本機 HTTP API 溝通" width="100%">
 </picture>
 
 ```text
 iPhone / iPad (AirPlay / mDNS)
         │
         ▼
-airplayd (Go Sidecar, CGO_ENABLED=0)
+接收器行程：MirrPane.exe --airplayd（self re-exec，CGO_ENABLED=0）
   ├── mDNS / Bonjour 廣播 (zeroconf)
   ├── FairPlay 金鑰交換與 AirPlay 配對 (pair-setup / pair-verify)
   ├── 視訊解碼：purego 綁定 FFmpeg D3D11VA (H.264 Annex-B)
@@ -47,9 +48,11 @@ airplayd (Go Sidecar, CGO_ENABLED=0)
         ▼  視訊：3-slot mailbox 共享記憶體 (Local\MirrPaneFrames-<pid>) + Windows 事件喚醒
         │  狀態與控制：本機 HTTP API (IPC)
         ▼
-MyGo 原生桌面 UI (backend/cmd/mirrpane, CGO_ENABLED=0)
+UI 行程：同一個 MirrPane.exe（MyGo 原生視窗，CGO_ENABLED=0）
   └── framefeed 共享記憶體讀取器 → ui.Bitmap 紋理
 ```
+
+UI 與接收器是同一個執行檔：UI 啟動時以 `--airplayd` 重新執行自身，接收器子行程會隨 UI 結束而退出。
 
 ---
 
@@ -60,10 +63,10 @@ MirrPane/
 ├── .github/workflows/          # CI 與 Release 自動化工作流程
 ├── backend/                    # Go 後端 (module: github.com/miku0139/airplay-go/backend)
 │   ├── cmd/
-│   │   ├── airplayd/           # 主後端 sidecar 與本機 HTTP API (main.go, sink.go, state.go, record.go 等)
 │   │   ├── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
-│   │   └── mirrpane/           # 原生 MyGo 桌面 UI (main.go, app.go, sidecar.go, prefs.go 等)
+│   │   └── mirrpane/           # 原生 MyGo 桌面 UI 與 self re-exec (main.go, app.go, sidecar.go, prefs.go 等)
 │   ├── internal/
+│   │   ├── airplayd/           # 接收器行程主程式（--airplayd 模式；main.go, sink.go, state.go, record.go 等）
 │   │   ├── audio/              # 音訊串流接收、解密與 AAC-ELD 解碼調度
 │   │   ├── audioout/           # Windows winmm waveOut 音訊輸出與抗抖動緩衝
 │   │   ├── config/             # config.json 讀寫管理
@@ -78,7 +81,6 @@ MirrPane/
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify 配對協定
 │   │   ├── protocol/           # AirPlay 裝置資訊、功能宣告與區網介面選擇
 │   │   └── receiver/           # 接收器核心調度
-│   ├── build.ps1               # 後端建置腳本
 │   ├── go.mod
 │   └── go.sum
 ├── assets/                     # 專案標誌、Windows 圖示與系統架構圖
@@ -135,7 +137,7 @@ MirrPane/
    cd ..
    ```
 
-   開發時可直接啟動 UI，並以 `-install-dir` 指向任一已打包的資料夾（需含 `backend\airplayd.exe`）：
+   開發時可直接啟動 UI，並以 `-install-dir` 指向任一已打包的資料夾（需含以本原始碼打包的 `MirrPane.exe`）：
 
    ```powershell
    cd backend
@@ -149,7 +151,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   版本預設讀取 `VERSION`；`-Version 0.0.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。加上 `-Lite` 可另產不含 FFmpeg 的精簡包（`MirrPane-<version>-win64-lite.zip`，首次啟動自動下載 runtime）；`installer\build-installer.ps1 -Version <version>` 以 Inno Setup 6 產生 `MirrPane-<version>-setup.exe`（需要 `winget install --id JRSoftware.InnoSetup -e` 或 CI 的 Chocolatey 安裝）。
+   版本預設讀取 `VERSION`；`-Version 0.0.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的建置輸出；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含舊版 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。加上 `-Lite` 可另產不含 FFmpeg 的精簡包（`MirrPane-<version>-win64-lite.zip`，首次啟動自動下載 runtime 到 `ffmpeg\`）；`installer\build-installer.ps1 -Version <version>` 以 Inno Setup 6 產生 `MirrPane-<version>-setup.exe`（需要 `winget install --id JRSoftware.InnoSetup -e` 或 CI 的 Chocolatey 安裝）。
 
 ### 驗證與測試項目
 
@@ -158,9 +160,9 @@ MirrPane/
 
 ---
 
-## `airplayd` 後端 CLI 參數
+## 接收器模式（`--airplayd`）CLI 參數
 
-`airplayd` 通常由原生 MyGo UI 作為 sidecar 自動啟動與管理，亦可獨立執行以進行測試或離線錄製除錯：
+接收器由 UI 以 `MirrPane.exe --airplayd` 重新執行同一支執行檔啟動，也可手動執行以進行測試或離線錄製除錯（例如 `MirrPane.exe --airplayd -v -record C:\temp\capture`）：
 
 | 參數 | 預設值 | 說明 |
 | :--- | :--- | :--- |
@@ -181,8 +183,8 @@ MirrPane/
 
 | 參數 | 預設值 | 說明 |
 | :--- | :--- | :--- |
-| `-install-dir` | 執行檔所在資料夾 | 覆寫安裝根目錄（需含 `backend\airplayd.exe`）；以 `go run ./cmd/mirrpane` 開發時必須指定 |
-| `-shm` | `Local\MirrPaneFrames-<pid>` | 與 sidecar 共用的共享記憶體區段；UI 會把同一個名稱傳給子行程 |
+| `-install-dir` | 執行檔所在資料夾 | 覆寫安裝根目錄（提供 `config\` 與 `logs\`）；以 `go run ./cmd/mirrpane` 開發時必須指定 |
+| `-shm` | `Local\MirrPaneFrames-<pid>` | 與接收器子行程共用的共享記憶體區段；UI 會把同一個名稱傳給子行程 |
 | `-demo` | `false` | 顯示合成測試畫面，不啟動 sidecar（UI 開發用） |
 | `-demo-settings` | `false` | 啟動時直接開啟設定視窗（UI 測試用） |
 
@@ -192,10 +194,10 @@ MirrPane/
 
 ### FFmpeg 搜尋順序
 
-後端只從明確的信任位置尋找固定版 FFmpeg 共享函式庫（`.dll`），**不會**搜尋 `PATH` 或目前工作目錄（避免 DLL 劫持）。若未找到，首次啟動會自動下載並驗證；也可透過 `backend/cmd/ffmpeg-setup` 或 `scripts/fetch-ffmpeg.ps1 -Pinned` 預先取得：
+接收器只從明確的信任位置尋找固定版 FFmpeg 共享函式庫（`.dll`），**不會**搜尋 `PATH` 或目前工作目錄（避免 DLL 劫持）。若未找到，首次啟動會自動下載並驗證；也可透過 `backend/cmd/ffmpeg-setup` 或 `scripts/fetch-ffmpeg.ps1 -Pinned` 預先取得：
 
 1. 環境變數 `MIRRPANE_FFMPEG_DIR` 指定路徑（權威來源；路徑錯誤會直接報錯，不會退回其他安裝）
-2. 執行檔所在目錄、其下的 `ffmpeg/` 資料夾，以及該 `ffmpeg/` 內的已驗證快取
+2. 執行檔所在目錄、其下的 `ffmpeg/` 資料夾（發行版放置 runtime 的位置），以及該 `ffmpeg/` 內的已驗證快取
 3. （開發用）以 `MIRRPANE_FFMPEG_DIR` 明確指向 repo 的 `third_party/ffmpeg/`；測試與 CI 皆採此方式
 
 需使用相容的 Windows x64 shared build；僅有靜態連結的 `ffmpeg.exe` 無法提供所需 DLL。可攜版已附帶共享函式庫，可離線啟動。支援的 DLL 版本與 ABI 維護方式，請見 [第三方函式庫說明](third_party/README.md)。
@@ -205,7 +207,7 @@ MirrPane/
 若 iPhone / iPad 找不到接收器，除了網路與防火牆設定，也可能與 TUN 模式或 VPN 虛擬網卡的 mDNS 廣播路由有關：
 
 - MirrPane 會優先選擇具備 IPv4 Gateway 的 Ethernet / Wi-Fi 區網介面（包含 Hyper-V 外部交換器），並主動避開 TUN 介面、`198.18.0.0/15` 保留網段與 CGNAT 網段。
-- 若仍無法發現裝置，請確認電腦與手機位於同一區網、Windows 防火牆允許 `airplayd` 與區域網路 mDNS（UDP 5353）通訊；亦可暫時停用 VPN 的 TUN 模式協助排錯。
+- 若仍無法發現裝置，請確認電腦與手機位於同一區網、Windows 防火牆允許 `MirrPane.exe` 與區域網路 mDNS（UDP 5353）通訊；亦可暫時停用 VPN 的 TUN 模式協助排錯。
 
 ---
 
