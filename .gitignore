@@ -22,3 +22,6 @@ third_party/*.zip
 .DS_Store
 Thumbs.db
 legacy/
+
+# Local working notes kept out of the published tree
+/analysis/
