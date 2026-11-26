@@ -22,6 +22,15 @@ func main() {
 	demoSettings := flag.Bool("demo-settings", false, "open the settings dialog at startup (UI testing)")
 	flag.Parse()
 
+	// One receiver per logon session: a second launch focuses the running
+	// window instead of starting another sidecar that would fight over the
+	// AirPlay port and advertise a duplicate name.
+	releaseInstance, ok := acquireSingleInstance()
+	if !ok {
+		return
+	}
+	defer releaseInstance()
+
 	installDir := resolveInstallDir(*installDirFlag)
 	var frameSrc FrameSource
 	if *demoFlag {
