@@ -44,14 +44,7 @@ func (c *snapshots) count() int {
 
 func newFakeInstallDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "backend"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "backend", "airplayd.exe"), []byte("fake"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return t.TempDir()
 }
 
 func installFakeSidecar(t *testing.T, dir string) *fakeSidecar {

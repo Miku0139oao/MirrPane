@@ -2,8 +2,9 @@
 #
 # The deliverable is a folder that runs where it is unzipped: no installer, no
 # registry keys, no system-wide runtimes. Everything the program needs travels
-# with it. The UI is the native CGO-free MyGo application; only the sidecar
-# ships FFmpeg's shared libraries.
+# with it. The MyGo UI and the AirPlay receiver are one executable: the UI
+# re-executes itself with --airplayd, so only FFmpeg's shared libraries ship
+# beside it in ffmpeg\.
 #
 # The default version comes from the repository's VERSION file. An explicit
 # -Version is allowed for CI and for uniquely named test builds.
@@ -12,11 +13,11 @@
 #
 # -Lite stages a portable build without FFmpeg's shared libraries (about 20 MB
 # instead of 58 MB); the receiver downloads the pinned, SHA-256-verified runtime
-# into backend\ffmpeg on first launch, so that build needs a network connection
+# into ffmpeg\ on first launch, so that build needs a network connection
 # once. Both editions install side by side in differently named folders.
 #
 # Every build runs inside a unique dist\.staging folder, so no shared
-# backend\*.exe or backend\*.dll is overwritten. Go's content-addressed build
+# backend\*.exe is overwritten. Go's content-addressed build
 # cache already reuses unchanged work; -SkipBuild is accepted for compatibility
 # with older command lines but no longer skips the (cached) builds.
 #
@@ -26,7 +27,8 @@
 # complete set is restored. A lock file serializes concurrent runs. An existing
 # unpacked install is moved aside (never deleted when it holds user data), the
 # clean stage is renamed into place, and its config, logs, screenshots, and
-# unknown files (including additions inside backend\) are carried over.
+# unknown files (including additions inside a pre-merge backend\ folder) are
+# carried over.
 
 param(
     [string]$Version = "",
@@ -53,9 +55,8 @@ $stagingParent = Join-Path $distRoot '.staging'
 $stage = Join-Path $stagingParent ("{0}-{1}{2}-{3}" -f $appName, $Version, $edition, [guid]::NewGuid().ToString('N'))
 
 $uiExe = Join-Path $stage 'MirrPane.exe'
-$stageBackend = Join-Path $stage 'backend'
-$sidecarExe = Join-Path $stageBackend 'airplayd.exe'
-$stageCopying = Join-Path $stageBackend 'COPYING'
+$stageFfmpeg = Join-Path $stage 'ffmpeg'
+$stageCopying = Join-Path $stage 'COPYING'
 $ffmpegDlls = 'avutil-61.dll', 'swresample-7.dll', 'swscale-10.dll', 'avcodec-63.dll'
 
 if (-not (Test-Path -LiteralPath $distRoot)) { New-Item -ItemType Directory -Path $distRoot -Force | Out-Null }
@@ -68,7 +69,7 @@ if ($SkipBuild) {
 
 function Get-RunningUnder([string]$Directory) {
     # Matches processes whose executable lives anywhere below $Directory, so a
-    # running UI or its airplayd child both protect the folder they use.
+    # running UI and its self-re-executed receiver both protect the folder.
     $prefix = [IO.Path]::GetFullPath($Directory).TrimEnd('\', '/') + '\'
     $cimPaths = @{}
     try {
@@ -101,7 +102,7 @@ function Copy-UserContent([string]$Source, [string]$Destination) {
     # Carries every user-owned item from an existing install into the freshly
     # staged tree. Release files are replaced; everything else is preserved.
     $preserved = $false
-    $knownTop = @('MirrPane.exe', 'backend', 'config', 'logs', 'screenshots', 'LICENSE', 'COPYING', 'README.txt', 'SOURCE.txt', 'THIRD_PARTY_LICENSES.txt')
+    $knownTop = @('MirrPane.exe', 'ffmpeg', 'backend', 'config', 'logs', 'screenshots', 'LICENSE', 'COPYING', 'README.txt', 'SOURCE.txt', 'THIRD_PARTY_LICENSES.txt')
     $knownBackend = @('airplayd.exe', 'COPYING', 'SHA256SUMS') + $ffmpegDlls
 
     foreach ($name in @('config', 'logs', 'screenshots')) {
@@ -129,9 +130,25 @@ function Copy-UserContent([string]$Source, [string]$Destination) {
 
     $sourceBackend = Join-Path $Source 'backend'
     if (Test-Path -LiteralPath $sourceBackend) {
+        # Pre-merge installs kept the receiver and its runtime in backend\. The
+        # downloaded lite runtime moves to the new root-level ffmpeg\ folder;
+        # every other known release file there is obsolete.
+        $legacyFfmpeg = Join-Path $sourceBackend 'ffmpeg'
+        if (Test-Path -LiteralPath $legacyFfmpeg) {
+            $destinationFfmpeg = Join-Path $Destination 'ffmpeg'
+            New-Item -ItemType Directory -Path $destinationFfmpeg -Force | Out-Null
+            foreach ($item in @(Get-ChildItem -LiteralPath $legacyFfmpeg -Force)) {
+                $target = Join-Path $destinationFfmpeg $item.Name
+                if (-not (Test-Path -LiteralPath $target)) {
+                    Copy-Item -LiteralPath $item.FullName -Destination $target -Recurse -Force
+                }
+            }
+        }
         foreach ($item in @(Get-ChildItem -LiteralPath $sourceBackend -Force)) {
-            if ($knownBackend -contains $item.Name) { continue }
-            Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $Destination 'backend' $item.Name) -Recurse -Force
+            if ($item.Name -eq 'ffmpeg' -or $knownBackend -contains $item.Name) { continue }
+            $destinationBackend = Join-Path $Destination 'backend'
+            New-Item -ItemType Directory -Path $destinationBackend -Force | Out-Null
+            Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $destinationBackend $item.Name) -Recurse -Force
             $preserved = $true
         }
     }
@@ -158,7 +175,6 @@ try {
 
     if (-not (Test-Path -LiteralPath $stagingParent)) { New-Item -ItemType Directory -Path $stagingParent -Force | Out-Null }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    New-Item -ItemType Directory -Path $stageBackend -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $stage 'logs') -Force | Out-Null
 
     Push-Location (Join-Path $root 'backend')
@@ -170,13 +186,9 @@ try {
         $env:GOFLAGS = '-mod=readonly'
         try {
             # One value drives the UI's version footer, the exe stamp, and the
-            # zip name.
+            # zip name. The same executable runs the receiver via --airplayd.
             go build -trimpath -ldflags "-s -w -H windowsgui -X main.appVersion=$Version" -o $uiExe ./cmd/mirrpane
-            if ($LASTEXITCODE -ne 0) { throw 'MirrPane UI build failed' }
-
-            # The sidecar and the FFmpeg libraries it loads from its own folder.
-            & (Join-Path $root 'backend\build.ps1') -Output $sidecarExe
-            if ($LASTEXITCODE -ne 0) { throw 'sidecar build failed' }
+            if ($LASTEXITCODE -ne 0) { throw 'MirrPane build failed' }
         }
         finally {
             $env:CGO_ENABLED = $previousCGO
@@ -185,26 +197,31 @@ try {
     }
     finally { Pop-Location }
 
-    $required = @($uiExe, $sidecarExe, $stageCopying)
+    # Stage the FFmpeg runtime the receiver loads. Full editions put the pinned
+    # DLLs in ffmpeg\; the lite edition leaves that folder to the first launch.
+    $ffmpegBin = & (Join-Path $root 'scripts\fetch-ffmpeg.ps1') -Pinned -PassThru
+    if (-not $ffmpegBin) { throw 'FFmpeg runtime path was not reported' }
+    $ffmpegBin = [string]$ffmpegBin
+    Copy-Item -LiteralPath (Join-Path $ffmpegBin 'COPYING') -Destination $stageCopying -Force
     if (-not $Lite) {
-        $required += (Join-Path $stageBackend 'SHA256SUMS')
-        foreach ($dll in $ffmpegDlls) { $required += Join-Path $stageBackend $dll }
+        New-Item -ItemType Directory -Path $stageFfmpeg -Force | Out-Null
+        foreach ($dll in $ffmpegDlls) {
+            Copy-Item -LiteralPath (Join-Path $ffmpegBin $dll) -Destination (Join-Path $stageFfmpeg $dll) -Force
+        }
+        Copy-Item -LiteralPath (Join-Path $root 'backend\internal\ffmpeg\pinned-files.sha256') -Destination (Join-Path $stageFfmpeg 'SHA256SUMS') -Force
+        Copy-Item -LiteralPath (Join-Path $ffmpegBin 'COPYING') -Destination (Join-Path $stageFfmpeg 'COPYING') -Force
+    }
+
+    $required = @($uiExe, $stageCopying)
+    if (-not $Lite) {
+        $required += (Join-Path $stageFfmpeg 'SHA256SUMS')
+        foreach ($dll in $ffmpegDlls) { $required += Join-Path $stageFfmpeg $dll }
     }
     foreach ($file in $required) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing build output $file" }
     }
 
-    if ($Lite) {
-        # The sidecar's build stages the FFmpeg runtime beside airplayd.exe;
-        # the lite edition downloads the pinned runtime on first launch instead.
-        foreach ($dll in $ffmpegDlls) {
-            Remove-Item -LiteralPath (Join-Path $stageBackend $dll) -Force -ErrorAction SilentlyContinue
-        }
-        Remove-Item -LiteralPath (Join-Path $stageBackend 'SHA256SUMS') -Force -ErrorAction SilentlyContinue
-    }
-
     # Ship both GPL texts and exact upstream/source/build pointers with the DLLs.
-    Copy-Item -LiteralPath $stageCopying -Destination (Join-Path $stage 'COPYING') -Force
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $stage 'LICENSE') -Force
 
     # Every Go module linked into the two executables, including transitive
@@ -248,7 +265,7 @@ try {
     $sourceNotice = @"
 MirrPane ${Version}: GNU GPL version 3; see LICENSE.
 Application source: https://github.com/Miku0139oao/MirrPane
-Go modules compiled into MirrPane.exe and airplayd.exe: see THIRD_PARTY_LICENSES.txt.
+Go modules compiled into MirrPane.exe: see THIRD_PARTY_LICENSES.txt.
 FFmpeg shared runtime: $ffmpegBuildID; GNU GPL version 3; see COPYING.
 Pinned binary asset: $ffmpegAsset
 Pinned binary/build release: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/$ffmpegTag
@@ -367,7 +384,9 @@ MyGo 的著色器快取位於 %LOCALAPPDATA%\MyGo\ShaderCache。
         if ($actual -cne $hash -or $recorded -cne $hash) {
             throw 'published archive and checksum disagree'
         }
-        foreach ($required in @((Join-Path $finalDir 'MirrPane.exe'), (Join-Path $finalDir 'backend\airplayd.exe'))) {
+        $requiredPublished = @((Join-Path $finalDir 'MirrPane.exe'))
+        if (-not $Lite) { $requiredPublished += (Join-Path $finalDir 'ffmpeg\avcodec-63.dll') }
+        foreach ($required in $requiredPublished) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "published folder is incomplete: $required missing" }
         }
     }

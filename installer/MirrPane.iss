@@ -61,4 +61,8 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 Type: filesandordirs; Name: "{app}\config"
 Type: filesandordirs; Name: "{app}\logs"
 Type: filesandordirs; Name: "{app}\screenshots"
+Type: filesandordirs; Name: "{app}\ffmpeg"
+; Pre-merge layout: the receiver and its runtime lived under backend\.
 Type: filesandordirs; Name: "{app}\backend\ffmpeg"
+Type: files; Name: "{app}\backend\airplayd.exe"
+Type: files; Name: "{app}\backend\*.dll"

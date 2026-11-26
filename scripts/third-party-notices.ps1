@@ -1,10 +1,9 @@
-# Collects the licences of every Go module linked into the shipped binaries.
+# Collects the licences of every Go module linked into the shipped binary.
 #
-# package.ps1 calls this after building backend\mirrpane.exe and
-# backend\airplayd.exe. The notice lists the exact module versions reported by
-# `go list -deps` plus a licence file from the module root or from each
-# compiled package directory, so a module that bundles separate terms (for
-# example MyGo's shader code) is covered as well.
+# package.ps1 calls this after building MirrPane.exe. The notice lists the
+# exact module versions reported by `go list -deps` plus a licence file from
+# the module root or from each compiled package directory, so a module that
+# bundles separate terms (for example MyGo's shader code) is covered as well.
 #
 # Usage:  .\scripts\third-party-notices.ps1 -Output <path> [-Version <app version>]
 param(
@@ -32,7 +31,7 @@ try {
     $env:CGO_ENABLED = '0'
     $env:GOFLAGS = '-mod=readonly'
     try {
-        $rows = @(& go list -deps -f '{{.ImportPath}}|{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}|{{.Main}}{{end}}|{{.Dir}}' ./cmd/mirrpane ./cmd/airplayd)
+        $rows = @(& go list -deps -f '{{.ImportPath}}|{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}|{{.Main}}{{end}}|{{.Dir}}' ./cmd/mirrpane)
         if ($LASTEXITCODE -ne 0) { throw 'go list failed while collecting dependency licences' }
         # Resolve the toolchain from the module, not from whatever `go` the
         # caller's working directory happens to select.
@@ -80,7 +79,7 @@ $lines.Add('MirrPane itself is licensed under GPL-3.0 (see LICENSE). The portabl
 $lines.Add('archive also contains FFmpeg shared libraries under GPL-3.0 (see COPYING)')
 $lines.Add('and the source/build pointers in SOURCE.txt.')
 $lines.Add('')
-$lines.Add('The Go modules below are linked into MirrPane.exe and airplayd.exe.')
+$lines.Add('The Go modules below are linked into MirrPane.exe.')
 $lines.Add('Each entry names the module version and reproduces the licence files')
 $lines.Add('that ship with the module, including notices inside compiled packages.')
 $lines.Add('')

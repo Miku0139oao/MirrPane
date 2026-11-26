@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package airplayd
 
 // watchParent is a no-op where the UI does not run the sidecar as a child.
 func watchParent(pid int) error { return nil }

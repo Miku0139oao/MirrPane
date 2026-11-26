@@ -30,7 +30,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// Emit the absolute DLL directory for build.ps1 and CI.
+	// Emit the absolute DLL directory for packaging scripts and CI.
 	dir, _ = filepath.Abs(dir)
 	fmt.Println(dir)
 }

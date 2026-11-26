@@ -15,14 +15,14 @@ installing the runtime. Use `-Force` to fetch the pinned build again and
 `-PassThru` to return the DLL directory to a build script.
 
 The application performs the same setup automatically if no shared runtime can
-be found beside the sidecar or in its portable cache. Set
+be found beside the executable or in its `ffmpeg/` cache. Set
 `MIRRPANE_FFMPEG_DIR` to an explicit directory to override discovery. `PATH`
 and the current working directory are never consulted. An invalid override is
 reported as an error so it cannot silently use another installation. A static
 `ffmpeg.exe` alone does not provide the required DLLs.
 
-Normal release archives include the four DLLs beside `backend/airplayd.exe` and
-work offline. First-run downloads, when needed, stay under `backend/ffmpeg/`.
+Normal release archives include the four DLLs in `ffmpeg/` beside `MirrPane.exe`
+and work offline. First-run downloads, when needed, stay under `ffmpeg/`.
 Existing installations are reused without an automatic update on each launch.
 
 ## Supported ABI

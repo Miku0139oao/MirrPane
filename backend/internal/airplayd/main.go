@@ -1,7 +1,11 @@
-// airplayd is the Go sidecar process. It advertises this machine as an AirPlay
-// receiver, answers the control endpoints, receives screen-mirroring streams and
-// decodes them.
-package main
+// Package airplayd is the receiver process: it advertises this machine as an
+// AirPlay receiver, answers the control endpoints, receives screen-mirroring
+// streams and decodes them.
+//
+// Release builds ship one MirrPane.exe. The UI runs the receiver by
+// re-executing that same executable with SelfExecArg, so the receiver code is
+// an importable package instead of a second binary.
+package airplayd
 
 import (
 	"context"
@@ -49,7 +53,14 @@ func note(format string, args ...any) {
 	noteLog.Printf(format, args...)
 }
 
-func main() {
+// SelfExecArg is the first argument that turns MirrPane.exe into the receiver
+// process. The UI passes it when it re-executes itself; Main strips it before
+// parsing the receiver's own flags.
+const SelfExecArg = "--airplayd"
+
+// Main runs the receiver process until it is stopped by a signal or by the
+// parent process exiting. It parses its own flags from os.Args.
+func Main() {
 	var (
 		name    = flag.String("name", "鏡屏", "receiver name shown on iPhone/iPad")
 		dataDir = flag.String("data", "", "folder for settings and keys (default: config beside the executable)")
@@ -81,7 +92,7 @@ func main() {
 	}
 	defer owner.Close()
 
-	// The shipped build has no console (see build.ps1), so a log file is the only
+	// The shipped build has no console (see package.ps1), so a log file is the only
 	// evidence a run leaves behind: it is on by default and -log overrides where
 	// it goes. Naming it on the command line also turns on the chatty lines.
 	chatty := *verbose || *logFile != ""

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/miku0139/airplay-go/backend/internal/airplayd"
 )
 
 // Phase represents the UI state machine derived from the sidecar lifecycle and
@@ -139,8 +141,9 @@ type startupEvent struct {
 	Port    int    `json:"port"`
 }
 
-// Sidecar owns the airplayd.exe child process and communicates over its
-// localhost HTTP API.
+// Sidecar owns the receiver child process — this same executable re-executed
+// with airplayd.SelfExecArg — and communicates with it over its localhost HTTP
+// API.
 type Sidecar struct {
 	installDir string
 	// mapping is the shared-memory section name handed to the child with -shm.
@@ -229,7 +232,7 @@ func (s *Sidecar) emitFor(gen uint64, snap Snapshot) {
 	}
 }
 
-// Start launches airplayd.exe and starts polling /api/state every 350ms.
+// Start launches the receiver child and starts polling /api/state every 350ms.
 func (s *Sidecar) Start() {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -249,9 +252,9 @@ func (s *Sidecar) startLocked() {
 	gen := s.gen
 	s.mu.Unlock()
 
-	exePath := filepath.Join(s.installDir, "backend", "airplayd.exe")
-	if _, err := os.Stat(exePath); err != nil {
-		s.startFailure(gen, fmt.Sprintf("找不到 backend\\airplayd.exe（%s）", exePath))
+	exePath, err := sidecarExecutable(s.installDir)
+	if err != nil {
+		s.startFailure(gen, fmt.Sprintf("找不到接收器程式：%v", err))
 		return
 	}
 
@@ -337,13 +340,35 @@ func (s *Sidecar) startFailure(gen uint64, msg string) {
 	s.emitFor(gen, Snapshot{Phase: PhaseFailed, Error: msg})
 }
 
-// sidecarArgs builds the child command line. The API port is left to the child
-// (0) and learned from its api_ready line, so there is no window where the UI
-// probes a port another process can take before the receiver binds. -shm is
-// only passed when the UI names a mapping, so an empty mapping keeps the
-// receiver's own default.
+// sidecarExecutable reports the binary to re-execute as the receiver. In a
+// packaged install that is this process's own executable. A development build
+// launched with -install-dir pointing at an unpacked folder uses the packaged
+// MirrPane.exe there instead, so the receiver and its FFmpeg runtime match the
+// installation under test.
+func sidecarExecutable(installDir string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(filepath.Dir(self), installDir) {
+		return self, nil
+	}
+	installed := filepath.Join(installDir, "MirrPane.exe")
+	if info, err := os.Stat(installed); err == nil && info.Mode().IsRegular() {
+		return installed, nil
+	}
+	return self, nil
+}
+
+// sidecarArgs builds the child command line. The first argument re-executes
+// this same executable in receiver mode; the rest are the receiver's own
+// flags. The API port is left to the child (0) and learned from its api_ready
+// line, so there is no window where the UI probes a port another process can
+// take before the receiver binds. -shm is only passed when the UI names a
+// mapping, so an empty mapping keeps the receiver's own default.
 func sidecarArgs(installDir, mapping string) []string {
 	args := []string{
+		airplayd.SelfExecArg,
 		"-api-port", "0",
 		"-data", filepath.Join(installDir, "config"),
 		"-log", filepath.Join(installDir, "logs", "airplayd.log"),
@@ -356,7 +381,7 @@ func sidecarArgs(installDir, mapping string) []string {
 }
 
 // newSidecarCmd builds the child process. It is a variable so tests can run a
-// fake receiver in place of backend\airplayd.exe.
+// fake receiver in place of the re-executed executable.
 var newSidecarCmd = func(exePath, dir string, args []string) *exec.Cmd {
 	cmd := exec.Command(exePath, args...)
 	cmd.Dir = dir
@@ -843,7 +868,7 @@ func (s *Sidecar) Restart() {
 	s.startLocked()
 }
 
-// Stop cancels polling, kills airplayd.exe if running, and waits for the
+// Stop cancels polling, kills the receiver child if running, and waits for the
 // launch's goroutines so no snapshot from it can arrive after Stop returns.
 func (s *Sidecar) Stop() {
 	s.lifecycleMu.Lock()

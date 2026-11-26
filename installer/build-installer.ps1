@@ -19,7 +19,7 @@ $root = Split-Path -Parent $PSScriptRoot
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw "invalid release version: $Version" }
 if ([string]::IsNullOrWhiteSpace($SourceDir)) { $SourceDir = Join-Path $root "dist\鏡屏-$Version" }
 $SourceDir = [IO.Path]::GetFullPath($SourceDir)
-foreach ($required in 'MirrPane.exe', 'backend\airplayd.exe') {
+foreach ($required in 'MirrPane.exe', 'ffmpeg\avcodec-63.dll') {
     if (-not (Test-Path -LiteralPath (Join-Path $SourceDir $required) -PathType Leaf)) {
         throw "packaged build missing at ${SourceDir}: run package.ps1 -Version $Version first"
     }
