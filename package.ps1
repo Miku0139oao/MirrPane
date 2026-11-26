@@ -8,7 +8,12 @@
 # The default version comes from the repository's VERSION file. An explicit
 # -Version is allowed for CI and for uniquely named test builds.
 #
-# Usage:  .\package.ps1 [-Version <version>] [-SkipBuild]
+# Usage:  .\package.ps1 [-Version <version>] [-Lite] [-SkipBuild]
+#
+# -Lite stages a portable build without FFmpeg's shared libraries (about 20 MB
+# instead of 58 MB); the receiver downloads the pinned, SHA-256-verified runtime
+# into backend\ffmpeg on first launch, so that build needs a network connection
+# once. Both editions install side by side in differently named folders.
 #
 # Every build runs inside a unique dist\.staging folder, so no shared
 # backend\*.exe or backend\*.dll is overwritten. Go's content-addressed build
@@ -25,6 +30,7 @@
 
 param(
     [string]$Version = "",
+    [switch]$Lite,
     [switch]$SkipBuild
 )
 
@@ -38,12 +44,13 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw "invalid release version: $Version" }
 
 $appName = '鏡屏'
+$edition = if ($Lite) { '-lite' } else { '' }
 $distRoot = Join-Path $root 'dist'
-$finalDir = Join-Path $distRoot "$appName-$Version"
-$zip = Join-Path $distRoot "MirrPane-$Version-win64.zip"
+$finalDir = Join-Path $distRoot "$appName-$Version$edition"
+$zip = Join-Path $distRoot "MirrPane-$Version-win64$edition.zip"
 $shaFile = "$zip.sha256"
 $stagingParent = Join-Path $distRoot '.staging'
-$stage = Join-Path $stagingParent ("{0}-{1}-{2}" -f $appName, $Version, [guid]::NewGuid().ToString('N'))
+$stage = Join-Path $stagingParent ("{0}-{1}{2}-{3}" -f $appName, $Version, $edition, [guid]::NewGuid().ToString('N'))
 
 $uiExe = Join-Path $stage 'MirrPane.exe'
 $stageBackend = Join-Path $stage 'backend'
@@ -54,7 +61,7 @@ $ffmpegDlls = 'avutil-61.dll', 'swresample-7.dll', 'swscale-10.dll', 'avcodec-63
 if (-not (Test-Path -LiteralPath $distRoot)) { New-Item -ItemType Directory -Path $distRoot -Force | Out-Null }
 $lockPath = Join-Path $distRoot '.package.lock'
 
-Write-Host "packaging $appName $Version"
+Write-Host ("packaging {0} {1}{2}" -f $appName, $Version, $(if ($Lite) { ' (lite)' } else { '' }))
 if ($SkipBuild) {
     Write-Warning '-SkipBuild is accepted for compatibility; builds still run in the clean staging folder through Go''s content-addressed cache.'
 }
@@ -178,10 +185,22 @@ try {
     }
     finally { Pop-Location }
 
-    $required = @($uiExe, $sidecarExe, $stageCopying, (Join-Path $stageBackend 'SHA256SUMS'))
-    foreach ($dll in $ffmpegDlls) { $required += Join-Path $stageBackend $dll }
+    $required = @($uiExe, $sidecarExe, $stageCopying)
+    if (-not $Lite) {
+        $required += (Join-Path $stageBackend 'SHA256SUMS')
+        foreach ($dll in $ffmpegDlls) { $required += Join-Path $stageBackend $dll }
+    }
     foreach ($file in $required) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing build output $file" }
+    }
+
+    if ($Lite) {
+        # The sidecar's build stages the FFmpeg runtime beside airplayd.exe;
+        # the lite edition downloads the pinned runtime on first launch instead.
+        foreach ($dll in $ffmpegDlls) {
+            Remove-Item -LiteralPath (Join-Path $stageBackend $dll) -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath (Join-Path $stageBackend 'SHA256SUMS') -Force -ErrorAction SilentlyContinue
     }
 
     # Ship both GPL texts and exact upstream/source/build pointers with the DLLs.
@@ -244,11 +263,15 @@ Release distributors must provide the complete corresponding source for their co
 
     # --- readme --------------------------------------------------------------
 
+    $ffmpegNote = if ($Lite) {
+        "  （精簡版）本包不含 FFmpeg 執行檔；首次啟動會自動下載並以 SHA-256 驗證（約 60 MB），需要網路連線。"
+    } else { '' }
     $readme = @"
 鏡屏 MirrPane $Version — Windows x64 AirPlay 螢幕接收器
 
 用法
   1. 解壓到可寫入的資料夾，執行 MirrPane.exe。
+$ffmpegNote
   2. 將 Windows 電腦與 iPhone 或 iPad 連到同一個區域網路。
   3. 在 iPhone 或 iPad 開啟「控制中心」→「螢幕鏡像輸出」，選擇「鏡屏」。
   4. 首次連線時，在電腦上確認裝置名稱並按「允許連線」，再從手機或平板選取一次「鏡屏」。

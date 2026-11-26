@@ -125,14 +125,35 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $ver = "${{ steps.ver.outputs.version }}"
           .\package.ps1 -Version $ver
-          $zipName = "MirrPane-$ver-win64.zip"
-          $zipPath = Join-Path "dist" $zipName
-          if (-not (Test-Path -LiteralPath $zipPath)) { throw "package.ps1 did not produce $zipPath" }
-          $shaPath = "$zipPath.sha256"
-          if (-not (Test-Path -LiteralPath $shaPath)) { throw "package.ps1 did not produce $shaPath" }
-          $expected = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $recorded = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split '\s+')[0]
-          if ($recorded -cne $expected) { throw "SHA256 file does not match $zipName" }
+          .\package.ps1 -Version $ver -Lite
+
+          # Inno Setup 6 builds the per-user installer. Chocolatey installs it
+          # to Program Files (x86); build-installer.ps1 finds ISCC.exe there.
+          $iscc = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed: $LASTEXITCODE" }
+          }
+          .\installer\build-installer.ps1 -Version $ver
+
+          $artifacts = @(
+            "MirrPane-$ver-win64.zip",
+            "MirrPane-$ver-win64-lite.zip",
+            "MirrPane-$ver-setup.exe"
+          )
+          foreach ($name in $artifacts) {
+            $path = Join-Path 'dist' $name
+            if (-not (Test-Path -LiteralPath $path)) { throw "package step did not produce $path" }
+            $shaPath = "$path.sha256"
+            if (-not (Test-Path -LiteralPath $shaPath)) { throw "package step did not produce $shaPath" }
+            $expected = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $recorded = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split '\s+')[0]
+            if ($recorded -cne $expected) { throw "SHA256 file does not match $name" }
+          }
 
       - name: Verify draft assets and publish the tag
         shell: pwsh
@@ -153,8 +174,16 @@ jobs:
           }
           if (-not $release.draft -or $release.tag_name -cne $tag) { throw "expected an unpublished draft for $tag" }
           $releaseApi = "$repoApi/releases/$($release.id)"
-          $zipName = "MirrPane-$($tag.Substring(1))-win64.zip"
-          foreach ($name in @($zipName, "$zipName.sha256")) {
+          $base = "MirrPane-$($tag.Substring(1))"
+          $names = @(
+            "$base-win64.zip",
+            "$base-win64.zip.sha256",
+            "$base-win64-lite.zip",
+            "$base-win64-lite.zip.sha256",
+            "$base-setup.exe",
+            "$base-setup.exe.sha256"
+          )
+          foreach ($name in $names) {
             $file = Join-Path dist $name
             $expected = 'sha256:' + (Get-FileHash -LiteralPath $file).Hash.ToLowerInvariant()
             $assets = @($release.assets | Where-Object { $_.name -ceq $name })
