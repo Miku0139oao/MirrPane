@@ -8,7 +8,7 @@
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **v0.4.2 正式版** · [下載 Windows x64 便攜包][win64] · [SHA-256 校驗檔][checksum] · [版本說明][release] · [標籤原始碼][source-tag]
+- **v0.4.3 正式版** · [下載 Windows x64 便攜包][win64] · [SHA-256 校驗檔][checksum] · [版本說明][release] · [標籤原始碼][source-tag]
 
 ---
 
@@ -228,7 +228,7 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.2
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip.sha256
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.2
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.3
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.3/MirrPane-0.4.3-win64.zip.sha256
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.3
