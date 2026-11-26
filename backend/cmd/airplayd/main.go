@@ -171,8 +171,7 @@ func main() {
 
 	srv := ipc.New(info, display)
 
-	// First-run setup is reported over stdout while the localhost API is not
-	// ready yet. Flutter keeps the startup screen responsive during a download.
+	// The UI reads setup progress from stdout before the local API is ready.
 	startup("正在偵測 FFmpeg…", false, false)
 	executable, err := os.Executable()
 	if err != nil {
@@ -298,7 +297,7 @@ func main() {
 	note("advertising: %s", info.Name)
 	note("ip: %s", ip)
 
-	// Localhost control API for the Flutter UI. Bound to 127.0.0.1 only.
+	// The native UI connects over loopback.
 	apiLn, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *apiPort))
 	if err != nil {
 		note("error: %v", err)

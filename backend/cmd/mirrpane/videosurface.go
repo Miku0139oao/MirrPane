@@ -7,9 +7,8 @@ import (
 	"github.com/egoist/mygo/ui/shader"
 )
 
-// videoColorEffect applies the brightness/contrast/saturation preferences on
-// the GPU with the same Rec.709 maths as the old Flutter ColorFilter: the
-// luma-weighted saturation mix, then contrast around mid grey plus brightness.
+// videoColorEffect mixes saturation using Rec.709 luma weights, adjusts
+// contrast around mid grey, then adds brightness.
 var videoColorEffect = shader.MustCompile(`package main
 
 var Brightness float
@@ -41,16 +40,11 @@ func max32(a, b float32) float32 {
 	return b
 }
 
-// sharpSampling reports whether a filter quality asks for the old Flutter
-// FilterQuality.none look: each pixel a square, nearest-neighbour sampling,
-// for enlarged pixel content.
+// sharpSampling selects nearest-neighbour sampling for enlarged pixels.
 func sharpSampling(filterQuality string) bool { return filterQuality == "none" }
 
-// samplingChoices are the two sampling modes the native renderer can actually
-// produce: nearest-neighbour (sharp pixels) and smooth interpolation. The
-// stored preference keeps the old Flutter vocabulary so a retained legacy UI
-// and an existing ui_prefs.json stay compatible: "none" means sharp, and every
-// smooth value (low, medium, high) is offered as the one smooth mode.
+// samplingChoices uses the existing preference keys. Saved low, medium and
+// high values all select smooth interpolation.
 var samplingChoices = []string{"銳利（像素）", "平滑（插值）"}
 
 // samplingChoice maps a stored filterQuality, including legacy values, onto

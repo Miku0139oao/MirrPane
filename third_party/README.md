@@ -2,18 +2,17 @@
 
 MirrPane uses FFmpeg for H.264/AAC-ELD decoding, color conversion and resampling.
 The Go backend calls its shared libraries using [purego](https://github.com/ebitengine/purego)
-and the Windows x64 ABI. **CGO is disabled.** Headers, import libraries and a C
-compiler are unnecessary for normal builds. The native MyGo UI and the sidecar
-need no C toolchain; only the legacy Flutter frontend under `frontend/` does.
+and the Windows x64 ABI. The native MyGo UI and the receiver both build with
+`CGO_ENABLED=0`. Packaging needs Go, PowerShell, and the shared runtime DLLs.
 
 ## Detecting and downloading
 
-`scripts/fetch-ffmpeg.ps1` reuses a complete local development runtime, or invokes
-the Go `cmd/ffmpeg-setup` helper to download the latest BtbN Windows x64 GPL shared
-archive. `-Force` checks the latest upstream asset even when a cache exists;
-`-PassThru` returns the DLL directory for build scripts. Downloading verifies the
-asset's size and SHA256 digest from the GitHub release API, extracts only the
-required DLL basenames, and publishes a complete runtime directory atomically.
+`scripts/fetch-ffmpeg.ps1 -Pinned` verifies the four DLLs and their licence
+against the [pinned file hashes](../backend/internal/ffmpeg/pinned-files.sha256).
+When the cache needs repair, the Go `cmd/ffmpeg-setup` helper downloads the
+pinned Windows x64 GPL shared archive and checks its size and SHA-256 before
+installing the runtime. Use `-Force` to fetch the pinned build again and
+`-PassThru` to return the DLL directory to a build script.
 
 The application performs the same setup automatically if no shared runtime can
 be found beside the sidecar or in its portable cache. Set

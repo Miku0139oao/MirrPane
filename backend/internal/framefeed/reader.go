@@ -3,8 +3,7 @@
 // Package framefeed reads decoded RGBA pictures published into a Windows named
 // shared-memory section by internal/frames.
 //
-// The section layout and lock-free claim protocol mirror internal/frames and
-// the C++ consumer (frontend/packages/yingping_frames/windows/frame_reader.cpp).
+// The reader and internal/frames share the section layout and slot claim protocol.
 package framefeed
 
 import (

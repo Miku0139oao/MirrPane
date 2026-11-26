@@ -22,7 +22,7 @@ func TestUIPrefsDefaultsClampsAndPersistence(t *testing.T) {
 		t.Fatalf("LoadUIPrefs(missing) = %+v, want %+v", got, def)
 	}
 
-	// Out-of-range and invalid enum values clamp/fallback identically to Dart UiPrefs.
+	// Older preference files can contain out-of-range values or unknown enum names.
 	raw := `{
   "filterQuality": "ultra",
   "brightness": 0.9,

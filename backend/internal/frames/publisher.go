@@ -1,4 +1,4 @@
-// Package frames publishes decoded pictures to the Flutter process through a
+// Package frames publishes decoded pictures to the desktop UI through a
 // named shared-memory section.
 //
 // The layout and the publish protocol follow a verified design: a 4 KiB control
@@ -8,9 +8,7 @@
 // latest-frame-wins: if the reader is busy the producer drops a frame rather
 // than blocking.
 //
-// The control block is a C-compatible struct with fixed offsets. Both sides
-// assert the offsets; see the test in this package and the static_asserts in
-// frontend/windows/runner/frame_reader.cc.
+// The control block has fixed field offsets shared with internal/framefeed.
 package frames
 
 import (
@@ -44,8 +42,8 @@ const (
 	SlotAlign      = 0x10000
 )
 
-// Pixel formats. The Flutter pixel-buffer path uploads RGBA, while the GPU
-// surface path shares a DXGI B8G8R8A8_UNORM texture handle.
+// The native reader consumes RGBA pixels. GPU-capable consumers can request
+// a shared DXGI B8G8R8A8_UNORM texture handle.
 const (
 	FormatRGBA     uint32 = 1
 	FormatBGRA     uint32 = 2
@@ -111,9 +109,7 @@ type control struct {
 	ConsumerQPC    uint64 // 0x088
 	ConsumerSlot   uint32 // 0x090
 	Reserved2      uint32 // 0x094
-	// ConsumerAdopted is the number of pictures the reader has adopted for
-	// display. The C++ side owns it (frontend/.../frame_reader.cpp writes it as
-	// the first Reserved word at 0x098) and the producer only reads it.
+	// ConsumerAdopted counts pictures adopted for display. The reader owns this field.
 	ConsumerAdopted uint64                    // 0x098
 	Reserved3       [12]uint64                // 0x0A0
 	Slots           [SlotCount]slotEntry      // 0x100
@@ -123,8 +119,7 @@ type control struct {
 // QueryPerformanceCounter bindings. Every timestamp in the control block is a
 // QPC tick, not wall-clock time: the producer and the UI process share one
 // monotonic, high-resolution clock, so the two sides can compare stamps
-// directly. time.Now is deliberately not used — its epoch differs from what
-// the C++ reader can produce.
+// directly across processes.
 var (
 	kernel32                      = windows.NewLazySystemDLL("kernel32.dll")
 	procQueryPerformanceCounter   = kernel32.NewProc("QueryPerformanceCounter")
@@ -308,8 +303,7 @@ func NewPublisher(name string, width, height int) (*Publisher, error) {
 		p.ctrl.ProducerPID = uint32(windows.GetCurrentProcessId())
 	}
 
-	// Wake-up hint for the Flutter side. Failure is not fatal: the consumer also
-	// polls Publish, so a missing event costs latency, not correctness.
+	// Wake the reader promptly. It also polls Publish when the event is unavailable.
 	evName, _ := windows.UTF16PtrFromString(EventName(name))
 	if ev, err := windows.CreateEvent(nil, 0, 0, evName); err == nil || errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 		p.event = ev

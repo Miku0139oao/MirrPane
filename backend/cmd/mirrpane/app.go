@@ -17,7 +17,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// MirrPane warm dark design tokens (aligned with frontend/lib/main.dart).
+// MirrPane's desktop colour palette.
 var (
 	colGround    = ui.Hex("#191817")
 	colSurface   = ui.Hex("#211F1D")
@@ -133,7 +133,7 @@ type toastAction struct {
 	folder string
 }
 
-// resolutionPresets mirrors the resolutions offered by the old Flutter UI.
+// resolutionPresets lists the display sizes offered in settings.
 var resolutionPresets = map[string][2]int{
 	"1280x720":  {1280, 720},
 	"1920x1080": {1920, 1080},
@@ -924,10 +924,8 @@ func (a *mirrpaneApp) buildLiveScreen(c *ui.Context, interrupted bool) {
 	}
 
 	box := ui.Box(c).Fill().Background(ui.RGB(0, 0, 0))
-	// Pointer activity over the picture reveals the auto-hidden top bar and
-	// restarts its idle timer; a double press toggles fullscreen, as the old
-	// Flutter UI did. HandleInput only receives input the controls inside did
-	// not take, so a press on a toolbar button never reaches this.
+	// Pointer activity reveals the toolbar, and a double click toggles fullscreen.
+	// HandleInput receives only events left unhandled by the child controls.
 	box.HandleInput(func(ev ui.InputEvent) bool {
 		switch ev.Kind {
 		case ui.InputPointerMove, ui.InputPointerDown:
@@ -1218,8 +1216,6 @@ func (a *mirrpaneApp) buildLogsModal(c *ui.Context) {
 				a.showLogs = false
 			}
 		})
-		// The path and a copy button match the old Flutter log window, so a
-		// user can attach the file to a report without hunting for it.
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, a.sidecar.LogPath()).Grow(1).Font("Consolas").FontSize(11).
 				TextColor(colMuted).SingleLine()

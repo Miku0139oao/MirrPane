@@ -1,12 +1,14 @@
 # MirrPane (鏡屏)
 
+<img src="assets/logo.png" width="80" alt="">
+
 [繁體中文](README.md) | **English**
 
 **An AirPlay screen mirroring receiver for Windows**, built with **Go + FFmpeg D3D11VA + MyGo**. Turn your Windows PC into a wireless display for an iPhone or iPad with a native desktop UI. Extract the release archive and run the app, with no installer, registry writes, or additional runtime installation required.
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Latest release**: `v0.4.1`
+- **Stable release v0.4.2** · [Download for Windows x64][win64] · [SHA-256 checksum][checksum] · [Release notes][release] · [Tagged source][source-tag]
 
 ---
 
@@ -19,7 +21,7 @@
 - **Low-latency audio playback**: AAC-ELD audio is decoded and played through Windows `winmm waveOut`. Supports live volume control, mute, and three latency/jitter profiles (low, balanced, stable) backed by a larger ring that absorbs Wi-Fi bursts. The ring gently catches up when a burst raises occupancy, so latency does not stay elevated for the rest of the session.
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
 - **Automatic FFmpeg management**: Pins a dated upstream build (SHA256 and ABI checked), detects existing runtimes, and supports resumable first-run downloads. DLLs are resolved only from explicit trusted locations — never `PATH` or the working directory.
-- **Security hardening**: stream setup requires a completed pair-verify, mirror connections are bound to the sender IP and stream ID, AES keys are no longer logged, HEVC parameter parsing is bounds-checked, the local API validates Host/Origin, and `/stop` is loopback-only. Details and residual risk: [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md).
+- Mirroring and audio streams use the approved device’s pairing identity and are bound to the sender. The local management API validates `Host` and `Origin`. See [Security](#security).
 - **Portable distribution**: Settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
 
 ---
@@ -34,7 +36,7 @@ airplayd (Go sidecar, CGO_ENABLED=0)
   ├── mDNS / Bonjour advertisements (zeroconf)
   ├── FairPlay key exchange and AirPlay pairing (pair-setup / pair-verify)
   ├── Video: purego bindings to FFmpeg D3D11VA (H.264 Annex-B)
-  └── Audio: AAC-ELD → Windows winmm waveOut (30 / 40 / 60 ms buffers)
+  └── Audio: AAC-ELD → Windows winmm waveOut (low / balanced / stable)
         │
         ▼  Video: three-slot shared-memory mailbox (Local\MirrPaneFrames-<pid>)
         │         + Windows event notifications
@@ -74,7 +76,7 @@ MirrPane/
 │   ├── build.ps1               # Backend build script
 │   ├── go.mod
 │   └── go.sum
-├── frontend/                   # Legacy Flutter UI (reference only, not shipped)
+├── assets/                     # Project logo and Windows icon
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # Detect or download the pinned Windows x64 shared build (SHA256)
 │   ├── generate-ffmpeg-abi.ps1 # Generate FFmpeg ABI definitions
@@ -92,10 +94,11 @@ MirrPane/
 
 ## Quick Start
 
-1. Download the latest release, such as `v0.4.1`, from [Releases](https://github.com/Miku0139oao/MirrPane/releases). Extract it and run `MirrPane.exe`. No installation or registry changes are required.
+1. Download the [Windows x64 archive][win64], extract it to a writable folder, and run `MirrPane.exe`. To verify the download, compare its SHA-256 from `Get-FileHash` with the [published checksum][checksum].
 2. Connect the Windows PC and your iPhone or iPad to the same local network. Allow the receiver on private networks when Windows Firewall prompts you.
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
-4. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
+4. On the first connection, check the device name on the PC and click **允許連線** (Allow connection). Select the receiver again on the iPhone or iPad. Later connections use the approved pairing identity.
+5. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
 
 ---
 
@@ -104,10 +107,7 @@ MirrPane/
 ### Requirements
 
 - **Go**: `1.27.4+` (`go.mod` selects the toolchain via `GOTOOLCHAIN=auto`)
-- **Build tools**: PowerShell. The shipped UI and backend build with `CGO_ENABLED=0`; Flutter, Visual Studio C++, and CMake are not required.
-- **Legacy Flutter UI (optional)**: Maintaining `frontend/` still needs Flutter `3.47+` (Dart SDK `^3.13.5`) and the Visual Studio C++ Build Tools.
-
-The desktop application targets Windows x64.
+- Use PowerShell on Windows x64 to build the portable package. Both the MyGo UI and the receiver compile with `CGO_ENABLED=0`.
 
 ### Build Steps
 
@@ -134,7 +134,8 @@ The desktop application targets Windows x64.
 
    ```powershell
    cd backend
-   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.1
+   $version = (Get-Content ..\VERSION -Raw).Trim()
+   go run ./cmd/mirrpane -install-dir "..\dist\鏡屏-$version"
    ```
 
 3. **Build and package the complete application** from the repository root:
@@ -143,7 +144,7 @@ The desktop application targets Windows x64.
    .\package.ps1
    ```
 
-   The version defaults to `VERSION`; `-Version 0.4.1-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
+   The version defaults to `VERSION`; `-Version 0.0.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
 
 ### Validation
 
@@ -205,11 +206,9 @@ If an iPhone or iPad cannot find the receiver, check the local network and firew
 
 ## Security
 
-An independent security scan and hardening round completed on 2026-11-22 (five finder classes with per-finding adversarial verification; 44% false-positive rate). This release includes:
+The receiver checks the sender’s pairing public key against the approved devices in `config\trusted_senders.json`. Choosing **清除信任裝置** (Clear trusted devices) in Settings ends the current session and requires senders to obtain approval again. [Trust store implementation](backend/internal/trust/store.go)
 
-- **Fixed**: stream keys are no longer written to logs; short HEVC parameter-set payloads can no longer panic the receiver; Go 1.27.3 includes the fixes that removed 20 reachable standard-library CVEs; FFmpeg DLLs load only from trusted locations; the local API validates `Host`/`Origin` (including rejecting `Origin: null`); `POST /stop` is loopback-only; RTSP request fields are escaped in logs; new installations use a CSPRNG seed and a random `PairingID`, and `config.json` is written with mode 0600.
-- **Hardened, residual risk**: `/setup` requires a completed pair-verify, mirror connections are bound to the sender IP and stream ID, half-open connections are reaped after 4 s, and audio keys belong to the owning sender. Legacy pair-verify proves possession of a self-selected key, not owner approval; a PIN/allowlist trust policy remains a follow-up. See SEC-001 and the follow-up list in [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md).
-- **Reporting**: please report vulnerabilities privately via GitHub *Security → Report a vulnerability* rather than a public issue.
+Windows protects the receiver’s pairing key seed with DPAPI. File permissions restrict access to the configuration and trusted-device list. The management API listens on loopback.
 
 ---
 
@@ -219,7 +218,6 @@ An independent security scan and hardening round completed on 2026-11-22 (five f
 
 - **UI**: `github.com/egoist/mygo` (native Windows UI, with transitive modules such as `github.com/go-text/typesetting` and `golang.org/x/image`; bundled licences are listed in the release's `THIRD_PARTY_LICENSES.txt`).
 - **Backend**: `github.com/ebitengine/purego`, `github.com/grandcat/zeroconf`, `howett.net/plist`, `golang.org/x/sys`, and `github.com/google/uuid`.
-- **Legacy frontend (not shipped)**: the Flutter Windows UI and C++ `yingping_frames` plugin under `frontend/`.
 
 ### Acknowledgements
 
@@ -229,3 +227,8 @@ This project draws from and benefits from the following open-source projects:
 - [FFmpeg](https://ffmpeg.org/)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
+
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.2
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip.sha256
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.2

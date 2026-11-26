@@ -8,7 +8,7 @@
 # The default version comes from the repository's VERSION file. An explicit
 # -Version is allowed for CI and for uniquely named test builds.
 #
-# Usage:  .\package.ps1 [-Version 0.4.1] [-SkipBuild]
+# Usage:  .\package.ps1 [-Version <version>] [-SkipBuild]
 #
 # Every build runs inside a unique dist\.staging folder, so no shared
 # backend\*.exe or backend\*.dll is overwritten. Go's content-addressed build
@@ -244,27 +244,30 @@ Release distributors must provide the complete corresponding source for their co
 
     # --- readme --------------------------------------------------------------
 
-    $readme = @'
-鏡屏 (MirrPane) — AirPlay 螢幕接收器
+    $readme = @"
+鏡屏 MirrPane $Version — Windows x64 AirPlay 螢幕接收器
 
 用法
-  1. 解壓到任何資料夾（不要放在需要系統管理員權限的位置）。
-  2. 執行 MirrPane.exe。
+  1. 解壓到可寫入的資料夾，執行 MirrPane.exe。
+  2. 將 Windows 電腦與 iPhone 或 iPad 連到同一個區域網路。
   3. 在 iPhone 或 iPad 開啟「控制中心」→「螢幕鏡像輸出」，選擇「鏡屏」。
+  4. 首次連線時，在電腦上確認裝置名稱並按「允許連線」，再從手機或平板選取一次「鏡屏」。
 
-第一次啟動時 Windows 會詢問防火牆權限，請選擇「允許存取」。
-沒有允許的話，裝置看得到這台電腦，卻無法連上。
+若 Windows 防火牆詢問權限，請允許接收器在私人網路通訊。
 
-程式不會寫入登錄檔或安裝系統元件，設定、配對金鑰與日誌都在這個資料夾內：
-  config\   裝置設定與配對金鑰（刪除後會重新產生一組新身分）
-  logs\     執行記錄，發生問題時請提供 airplayd.log
-介面框架 MyGo 會在第一次啟動時於 %LOCALAPPDATA%\MyGo\ShaderCache
-建立著色器快取；其餘使用者資料仍只寫入上述資料夾。
+程式資料
+  config\        裝置設定、配對金鑰與信任名單
+  logs\          接收器日誌 airplayd.log
+  screenshots\   儲存的截圖
+MyGo 的著色器快取位於 %LOCALAPPDATA%\MyGo\ShaderCache。
 
 授權
   GPLv3。本程式包含 FFmpeg（GPL，見 COPYING）與 MyGo（MIT）。
   第三方元件授權見 THIRD_PARTY_LICENSES.txt，來源與建置資訊見 SOURCE.txt。
-'@
+
+正式版本、下載及 SHA-256 校驗檔
+  https://github.com/Miku0139oao/MirrPane/releases
+"@
     Set-Content -Path (Join-Path $stage 'README.txt') -Value $readme -Encoding utf8
 
     # --- stage the zip and checksum privately ---------------------------------

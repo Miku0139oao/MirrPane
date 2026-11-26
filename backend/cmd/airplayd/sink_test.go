@@ -197,8 +197,7 @@ func TestFrameSinkGPUZeroCopySnapshotAndConsumerFallback(t *testing.T) {
 	sink := newFrameSink(dec, pub, nil)
 	defer sink.Close()
 
-	// Map consumer view to simulate an attached Flutter FrameReader (offset 0x080
-	// is consumer_pid, 0x084 is consumer_flags).
+	// Advertise a GPU-capable consumer through consumer_pid and consumer_flags.
 	namePtr, err := windows.UTF16PtrFromString(shmName)
 	if err != nil {
 		t.Fatalf("UTF16PtrFromString: %v", err)

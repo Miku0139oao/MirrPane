@@ -58,8 +58,7 @@ func (s *runtimeState) snapshot() (receiver.Status, string, string, time.Duratio
 	return s.status, s.reason, s.sender, time.Since(s.started)
 }
 
-// apiState is the JSON body the app reads. Field names are the contract with
-// frontend/lib/receiver_api.dart.
+// apiState is the JSON representation consumed by cmd/mirrpane's ReceiverState.
 type apiState struct {
 	Status       string  `json:"status"`
 	Reason       string  `json:"reason"`

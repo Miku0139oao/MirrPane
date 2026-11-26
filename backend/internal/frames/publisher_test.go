@@ -57,9 +57,7 @@ func TestClearedPublicationKeepsSequenceAcrossRestart(t *testing.T) {
 	}
 }
 
-// The control block is a contract with the C++ reader. Every offset here is
-// mirrored by a static_assert in frontend/windows/runner/frame_reader.cc; a
-// drift on either side must fail a build, not produce a garbled picture.
+// The reader maps these fields by offset, so layout changes must be explicit.
 func TestControlLayout(t *testing.T) {
 	var c control
 	fields := []struct {

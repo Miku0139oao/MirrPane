@@ -803,9 +803,8 @@ func (p *d3d11Pool) renderFrame(pic d3d11Picture, slotIndex int) (GPUSurface, er
 		return GPUSurface{}, err
 	}
 
-	// A slot claim protects the reader's acquisition of a resource, but
-	// Flutter may keep sampling it after it releases the claim. Replace the
-	// slot's texture so a later frame cannot alter an in-flight draw.
+	// A reader may still sample a resource after releasing its slot claim.
+	// Replace the slot's texture to preserve the in-flight draw.
 	p.slots[slotIndex].tex.release()
 	p.slots[slotIndex] = slot
 	p.lastSlot = slotIndex
@@ -892,8 +891,7 @@ func (p *d3d11Pool) renderLocked(pic d3d11Picture, srcDesc *d3d11Texture2DDesc) 
 		return d3d11SlotSurface{}, hresultErr("VideoProcessorBlt", r1)
 	}
 
-	// Signal GPU completion marker and flush the command buffer immediately so
-	// Flutter's separate ANGLE D3D11 device never reads an incomplete surface.
+	// Flush the completion marker before a second D3D11 device imports the surface.
 	_, _, _ = syscall.SyscallN(
 		p.context.method(vtblContextEnd),
 		uintptr(unsafe.Pointer(p.context)),

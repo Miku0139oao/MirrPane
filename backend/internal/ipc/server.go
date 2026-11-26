@@ -1,5 +1,4 @@
-// Package ipc serves the AirPlay control endpoints (RTSP over TCP) to clients,
-// and a separate localhost-only API for the Flutter UI.
+// Package ipc serves the AirPlay control endpoints over RTSP/TCP.
 //
 // The control channel is not HTTP: senders open a TCP connection, send
 // "GET /info RTSP/1.0" style request lines and keep the connection open for the

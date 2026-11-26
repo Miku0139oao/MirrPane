@@ -1,12 +1,14 @@
 # 鏡屏 MirrPane
 
+<img src="assets/logo.png" width="80" alt="">
+
 **繁體中文** | [English](README.en.md)
 
 **Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + MyGo** 打造，以原生桌面介面將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **最新版本**：`v0.4.1`
+- **v0.4.2 正式版** · [下載 Windows x64 便攜包][win64] · [SHA-256 校驗檔][checksum] · [版本說明][release] · [標籤原始碼][source-tag]
 
 ---
 
@@ -19,7 +21,7 @@
 - **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔延遲／抗抖動設定（低延遲、平衡、穩定），並以較大的環形緩衝吸收 Wi-Fi 爆量；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
 - **自動化 FFmpeg 管理**：固定上游建置版本（含 SHA256 驗證與 ABI 檢查），首次啟動可自動偵測、續傳下載並安裝；DLL 只從明確的信任位置載入，不搜尋 `PATH` 或工作目錄。
-- **安全強化**：串流 setup 需先完成 pair-verify、鏡像連線綁定來源 IP 與串流識別碼、AES 金鑰不再寫入日誌、HEVC 參數解析具邊界檢查、本機 API 具 Host/Origin 檢查且 `/stop` 僅限 loopback。細節與殘留風險見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md)。
+- 鏡像與音訊串流使用核准裝置的配對身分，並綁定傳送端。本機管理 API 檢查 `Host` 與 `Origin`，防護細節見[安全性](#安全性)。
 - **綠色免安裝**：設定檔（`config.json`）、UI 偏好與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔，也不需要系統管理員權限；唯一例外是 MyGo 於首次啟動在 `%LOCALAPPDATA%\MyGo\ShaderCache` 建立的著色器快取。
 
 ---
@@ -34,7 +36,7 @@ airplayd (Go Sidecar, CGO_ENABLED=0)
   ├── mDNS / Bonjour 廣播 (zeroconf)
   ├── FairPlay 金鑰交換與 AirPlay 配對 (pair-setup / pair-verify)
   ├── 視訊解碼：purego 綁定 FFmpeg D3D11VA (H.264 Annex-B)
-  └── 音訊輸出：AAC-ELD → Windows winmm waveOut (30 / 40 / 60 ms 緩衝)
+  └── 音訊輸出：AAC-ELD → Windows winmm waveOut (低延遲／平衡／穩定)
         │
         ▼  視訊：3-slot mailbox 共享記憶體 (Local\MirrPaneFrames-<pid>) + Windows 事件喚醒
         │  狀態與控制：本機 HTTP API (IPC)
@@ -73,7 +75,7 @@ MirrPane/
 │   ├── build.ps1               # 後端建置腳本
 │   ├── go.mod
 │   └── go.sum
-├── frontend/                   # 舊版 Flutter UI（保留參考，不再隨發行版建置）
+├── assets/                     # 專案標誌與 Windows 圖示
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # 偵測或下載固定版本 Windows x64 FFmpeg shared build (SHA256)
 │   ├── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
@@ -91,10 +93,11 @@ MirrPane/
 
 ## 快速使用
 
-1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.4.1`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
+1. 下載 [Windows x64 便攜包][win64]，解壓到可寫入的資料夾，再執行 `MirrPane.exe`。若要驗證下載，可將 `Get-FileHash` 算出的 SHA-256 與[校驗檔][checksum]中的值比對。
 2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
-4. 介面提供 `F11` 全螢幕、`Ctrl+T` 置頂、`Ctrl+,`／`Ctrl+K` 設定、`Ctrl+L` 日誌與 `Ctrl+S` 截圖等快捷鍵；設定視窗包含一般、圖形與解碼、渲染、音訊等區段。
+4. 首次連線時，在電腦上確認裝置名稱並按「允許連線」，再回到 iPhone 或 iPad 選一次「鏡屏」。之後使用相同配對身分即可直接連線。
+5. 介面提供 `F11` 全螢幕、`Ctrl+T` 置頂、`Ctrl+,`／`Ctrl+K` 設定、`Ctrl+L` 日誌與 `Ctrl+S` 截圖等快捷鍵；設定視窗包含一般、圖形與解碼、渲染、音訊等區段。
 
 ---
 
@@ -103,8 +106,7 @@ MirrPane/
 ### 環境需求
 
 - **Go**：`1.27.4+`（`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
-- **建置工具**：PowerShell；發行版 UI 與後端皆以 `CGO_ENABLED=0` 建置，不需要 Flutter、Visual Studio C++ 或 CMake
-- **舊版 Flutter UI（選用）**：若需維護 `frontend/`，另需 Flutter `3.47+`（Dart SDK `^3.13.5`）與 Visual Studio C++ Build Tools
+- 在 Windows x64 上使用 PowerShell 建置便攜包。MyGo 介面與接收器皆以 `CGO_ENABLED=0` 編譯。
 
 ### 建置步驟
 
@@ -131,7 +133,8 @@ MirrPane/
 
    ```powershell
    cd backend
-   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.1
+   $version = (Get-Content ..\VERSION -Raw).Trim()
+   go run ./cmd/mirrpane -install-dir "..\dist\鏡屏-$version"
    ```
 
 3. **整包建置與打包**（於專案根目錄執行）：
@@ -140,7 +143,7 @@ MirrPane/
    .\package.ps1
    ```
 
-   版本預設讀取 `VERSION`；`-Version 0.4.1-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
+   版本預設讀取 `VERSION`；`-Version 0.0.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
 
 ### 驗證與測試項目
 
@@ -202,11 +205,9 @@ MirrPane/
 
 ## 安全性
 
-2026-11-22 完成一輪獨立安全掃描與修補（5 類 finder、逐項對抗式驗證，誤報率 44%）。本版包含：
+接收器會核對傳送端的配對公鑰，核准名單存放在 `config\trusted_senders.json`。在設定中選擇「清除信任裝置」會中斷目前連線，裝置下次連線時需重新核准。[信任名單實作](backend/internal/trust/store.go)
 
-- **已修補**：串流金鑰不再寫入日誌；HEVC 參數集短封包不再能觸發 panic；Go 1.27.3（包含自 1.26.11 起消除的 20 個可達標準庫 CVE）；FFmpeg DLL 僅從信任位置載入；本機 API 驗證 `Host`/`Origin`（含拒絕 `Origin: null`）；`POST /stop` 僅限 loopback；RTSP 日誌欄位轉義；新安裝使用 CSPRNG 金鑰與隨機 `PairingID`，`config.json` 以 0600 寫入。
-- **已強化但仍有殘留**：`/setup` 需完成 pair-verify，鏡像連線綁定來源 IP 與串流識別碼，半開連線 4 秒回收，音訊金鑰僅供擁有者；但 legacy pair-verify 只證明對方持有自選金鑰，並非使用者授權，完整的 PIN／allowlist 信任政策仍待實作。詳見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md) 的 SEC-001 與後續追蹤清單。
-- **回報**：若發現安全性問題，請透過 GitHub 的 *Security → Report a vulnerability* 私下回報，避免公開 issue。
+Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限限制設定與信任名單的存取。本機管理 API 僅監聽 loopback。
 
 ---
 
@@ -216,7 +217,6 @@ MirrPane/
 
 - **UI**：`github.com/egoist/mygo`（原生 Windows 介面，含 `github.com/go-text/typesetting`、`golang.org/x/image` 等間接相依；隨附授權見發行版內的 `THIRD_PARTY_LICENSES.txt`）
 - **後端**：`github.com/ebitengine/purego`、`github.com/grandcat/zeroconf`、`howett.net/plist`、`golang.org/x/sys`、`github.com/google/uuid`
-- **舊版前端（不再隨發行版建置）**：`frontend/` 內的 Flutter Windows UI 與 C++ `yingping_frames` 插件
 
 ### 致謝
 
@@ -226,3 +226,8 @@ MirrPane/
 - [FFmpeg](https://ffmpeg.org/)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
+
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.2
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.2/MirrPane-0.4.2-win64.zip.sha256
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.2

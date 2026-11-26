@@ -13,8 +13,7 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/config"
 )
 
-// UIPrefs mirrors frontend/lib/ui_prefs.dart (config/ui_prefs.json) with
-// identical JSON keys, defaults, and clamp ranges.
+// UIPrefs holds the desktop settings stored in config/ui_prefs.json.
 type UIPrefs struct {
 	FilterQuality  string  `json:"filterQuality"`
 	Brightness     float64 `json:"brightness"`
@@ -98,8 +97,7 @@ func LoadUIPrefs(installDir string) UIPrefs {
 	return UIPrefsFromMap(raw)
 }
 
-// UIPrefsFromMap parses a decoded JSON object into a sanitized UIPrefs,
-// matching frontend/lib/ui_prefs.dart field-for-field.
+// UIPrefsFromMap parses a saved configuration, applying defaults and bounds.
 func UIPrefsFromMap(raw map[string]any) UIPrefs {
 	p := DefaultUIPrefs()
 	if raw == nil {

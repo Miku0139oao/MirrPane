@@ -14,16 +14,11 @@ third_party/ffmpeg/
 third_party/extract/
 third_party/*.zip
 
-# Flutter / Dart
-frontend/build/
-frontend/.dart_tool/
-frontend/windows/flutter/ephemeral/
-frontend/packages/**/.dart_tool/
-frontend/packages/**/build/
-frontend/packages/**/windows/flutter/ephemeral/
-*.iml
+# Local build output left by the retired desktop client
+/frontend/
 
 # OS / Editor
+*.iml
 .DS_Store
 Thumbs.db
 legacy/

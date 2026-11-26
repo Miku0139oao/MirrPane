@@ -59,7 +59,7 @@ func openSharedTestTexture(t testing.TB, d *comObject, handle uintptr) *comObjec
 
 // TestDecoderD3D11ZeroCopyAndCrossDeviceImport exercises the full real-GPU
 // D3D11VA -> ID3D11VideoProcessor -> DXGI shared handle -> cross-device
-// OpenSharedResource (simulating Flutter ANGLE) + ReadbackSlotGPU path.
+// OpenSharedResource + ReadbackSlotGPU path.
 func TestDecoderD3D11ZeroCopyAndCrossDeviceImport(t *testing.T) {
 	stream, err := os.ReadFile("testdata/sample.h264")
 	if err != nil {
@@ -164,7 +164,7 @@ func TestDecoderD3D11ZeroCopyAndCrossDeviceImport(t *testing.T) {
 			maxConvert = surf.Timings.ConvertNanos
 		}
 
-		// Simulate Flutter's ANGLE D3D11 device opening the DXGI shared handle.
+		// Import the DXGI shared handle on a separate D3D11 device.
 		importedTex := openSharedTestTexture(t, consumerDev, surf.SharedHandle)
 
 		var importedDesc d3d11Texture2DDesc
@@ -362,7 +362,7 @@ func TestD3D11PoolMacroblockCropAndRotation(t *testing.T) {
 	checkRGB(img1, [3]int{188, 120, 63})
 
 	// Keep a consumer device's reference open across a same-size slot reuse.
-	// This models an ANGLE draw that still reads the old shared resource.
+	// This models an in-flight draw that still reads the old shared resource.
 	consumer := newD3D11Pool()
 	consumer.device, consumer.context = createTestD3D11Device(t)
 	defer consumer.close()
