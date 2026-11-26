@@ -29,6 +29,11 @@
 
 ## Architecture
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/mirrpane-architecture-dark.svg">
+  <img src="assets/mirrpane-architecture-light.svg" alt="MirrPane system architecture: the iPhone reaches airplayd over RTSP control and a TCP mirror stream; decoded pictures reach the MyGo UI through shared memory, audio arrives as UDP RTP and plays through waveOut, and the UI talks to the receiver over a loopback HTTP API" width="100%">
+</picture>
+
 ```text
 iPhone / iPad (AirPlay / mDNS)
         │
@@ -77,14 +82,13 @@ MirrPane/
 │   ├── build.ps1               # Backend build script
 │   ├── go.mod
 │   └── go.sum
-├── assets/                     # Project logo and Windows icon
+├── assets/                     # Project logo, Windows icon, and system architecture diagrams
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # Detect or download the pinned Windows x64 shared build (SHA256)
 │   ├── generate-app-icon.ps1   # Generate the Windows ICO and executable icon resource from assets/logo.png
 │   ├── generate-ffmpeg-abi.ps1 # Generate FFmpeg ABI definitions
 │   └── third-party-notices.ps1 # Collect the licences of bundled Go modules
 ├── third_party/                # Local third-party dependencies, such as FFmpeg
-├── analysis/                   # Security scan report and remediation patch (MirrPane/)
 ├── LICENSE                     # GPL-3.0 license
 ├── README.md                   # Traditional Chinese documentation
 ├── README.en.md                # English documentation
@@ -235,4 +239,4 @@ This project draws from and benefits from the following open-source projects:
 [checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
 [setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
 [lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.3
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.4

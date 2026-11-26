@@ -29,6 +29,11 @@
 
 ## 系統架構
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/mirrpane-architecture-dark.svg">
+  <img src="assets/mirrpane-architecture-light.svg" alt="鏡屏 MirrPane 系統架構圖：iPhone 經 RTSP 控制與 TCP 鏡像串流進入 airplayd，解碼後經共享記憶體交給 MyGo UI，音訊則由 UDP RTP 接收後以 waveOut 播放；UI 與接收器另以本機 HTTP API 溝通" width="100%">
+</picture>
+
 ```text
 iPhone / iPad (AirPlay / mDNS)
         │
@@ -76,14 +81,13 @@ MirrPane/
 │   ├── build.ps1               # 後端建置腳本
 │   ├── go.mod
 │   └── go.sum
-├── assets/                     # 專案標誌與 Windows 圖示
+├── assets/                     # 專案標誌、Windows 圖示與系統架構圖
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # 偵測或下載固定版本 Windows x64 FFmpeg shared build (SHA256)
 │   ├── generate-app-icon.ps1   # 從 assets/logo.png 產生多尺寸 ICO 與執行檔圖示資源
 │   ├── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
 │   └── third-party-notices.ps1 # 收集隨附 Go 模組的授權文件
 ├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
-├── analysis/                   # 安全掃描報告與修補 patch（MirrPane/）
 ├── LICENSE                     # GPL-3.0 授權文件
 ├── README.md                   # 專案說明文件
 ├── README.en.md                # 英文版專案說明
@@ -234,4 +238,4 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 [checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
 [setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
 [lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.3
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.4
