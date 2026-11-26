@@ -2,25 +2,25 @@
 
 [繁體中文](README.md) | **English**
 
-**An AirPlay screen mirroring receiver for Windows**, built with **Go + FFmpeg D3D11VA + Flutter**. Turn your Windows PC into a wireless display for an iPhone or iPad. Extract the release archive and run the app, with no installer, registry writes, or additional runtime installation required.
+**An AirPlay screen mirroring receiver for Windows**, built with **Go + FFmpeg D3D11VA + MyGo**. Turn your Windows PC into a wireless display for an iPhone or iPad with a native desktop UI. Extract the release archive and run the app, with no installer, registry writes, or additional runtime installation required.
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Latest release**: `v0.3.4`
+- **Latest release**: `v0.4.0`
 
 ---
 
 ## Features
 
 - **Low-latency hardware decoding**: FFmpeg **D3D11VA** provides H.264 hardware acceleration. Complete Annex-B access units go directly to the decoder. Software decoding is available when hardware acceleration is unavailable and can also be selected in settings.
-- **Go backend without CGO**: Built with `CGO_ENABLED=0`. The backend binds FFmpeg at runtime through `purego` and calls Windows system APIs from Go. No MinGW compiler or FFmpeg development headers are needed for a normal backend build.
-- **Shared-memory frame rendering**: The backend publishes RGBA frames to Windows shared memory (`Local\YingpingFrames`). A three-slot mailbox and Windows event notifications deliver frames to the native C++ texture bridge (`yingping_frames`) for Flutter, avoiding image serialization between processes.
+- **No CGO in the UI or backend**: Both the desktop UI (MyGo) and `airplayd` are built with `CGO_ENABLED=0`. The backend binds FFmpeg at runtime through `purego` and calls Windows system APIs from Go. No Visual Studio C++ compiler, MinGW, or FFmpeg development headers are needed.
+- **Shared-memory frame rendering**: The backend publishes RGBA frames to a Windows shared-memory section unique to each UI instance (`Local\MirrPaneFrames-<pid>`). A three-slot mailbox and Windows event notifications deliver frames to the native MyGo UI (`internal/framefeed`), which maps the section directly and uploads it as a texture. This avoids image serialization between processes and keeps two instances from fighting over one section; a standalone `airplayd` still defaults to `Local\YingpingFrames`.
 - **Direct-to-slot conversion with idle gating**: `sws_scale` writes straight into the claimed shared-memory slot (no full-frame copy per picture). When the UI is minimised or stops adopting frames for a second, the download, conversion and publish are skipped while decoding continues (reference frames), with a 1 Hz probe so the UI can re-adopt instantly on restore.
 - **Low-latency audio playback**: AAC-ELD audio is decoded and played through Windows `winmm waveOut`. Supports live volume control, mute, and three latency/jitter profiles (low, balanced, stable) backed by a larger ring that absorbs Wi-Fi bursts. The ring gently catches up when a burst raises occupancy, so latency does not stay elevated for the rest of the session.
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
 - **Automatic FFmpeg management**: Pins a dated upstream build (SHA256 and ABI checked), detects existing runtimes, and supports resumable first-run downloads. DLLs are resolved only from explicit trusted locations — never `PATH` or the working directory.
-- **Security hardening**: stream setup requires a completed pair-verify, mirror connections are bound to the sender IP and stream ID, AES keys are no longer logged, HEVC parameter parsing is bounds-checked, Go 1.26.11 is required, the local API validates Host/Origin, and `/stop` is loopback-only. Details and residual risk: [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md).
-- **Portable distribution**: Settings (`config.json`) and pairing keys stay in the application directory. The app does not write to the Windows registry.
+- **Security hardening**: stream setup requires a completed pair-verify, mirror connections are bound to the sender IP and stream ID, AES keys are no longer logged, HEVC parameter parsing is bounds-checked, the local API validates Host/Origin, and `/stop` is loopback-only. Details and residual risk: [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md).
+- **Portable distribution**: Settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
 
 ---
 
@@ -36,12 +36,12 @@ airplayd (Go sidecar, CGO_ENABLED=0)
   ├── Video: purego bindings to FFmpeg D3D11VA (H.264 Annex-B)
   └── Audio: AAC-ELD → Windows winmm waveOut (30 / 40 / 60 ms buffers)
         │
-        ▼  Video: three-slot shared-memory mailbox (Local\YingpingFrames)
+        ▼  Video: three-slot shared-memory mailbox (Local\MirrPaneFrames-<pid>)
         │         + Windows event notifications
         │  State and controls: local HTTP API (IPC)
         ▼
-Flutter Desktop UI (yingping)
-  └── yingping_frames (C++ Windows texture bridge)
+MyGo native desktop UI (backend/cmd/mirrpane, CGO_ENABLED=0)
+  └── framefeed shared-memory reader → ui.Bitmap texture
 ```
 
 ---
@@ -54,7 +54,8 @@ MirrPane/
 ├── backend/                    # Go module: github.com/miku0139/airplay-go/backend
 │   ├── cmd/
 │   │   ├── airplayd/           # Main sidecar and local HTTP API
-│   │   └── ffmpeg-setup/       # Shared FFmpeg DLL download, verification, and installation
+│   │   ├── ffmpeg-setup/       # Shared FFmpeg DLL download, verification, and installation
+│   │   └── mirrpane/           # Native MyGo desktop UI (main.go, app.go, sidecar.go, prefs.go, …)
 │   ├── internal/
 │   │   ├── audio/              # Audio stream reception, decryption, and AAC-ELD decoding flow
 │   │   ├── audioout/           # Windows waveOut playback and jitter buffering
@@ -62,6 +63,7 @@ MirrPane/
 │   │   ├── decode/             # purego FFmpeg bindings and video/audio decoding
 │   │   ├── fairplay/           # FairPlay key exchange and decryption
 │   │   ├── ffmpeg/             # Runtime discovery, download, verification, and caching
+│   │   ├── framefeed/          # Shared-memory frame reader used by the UI
 │   │   ├── frames/             # Frame publication and shared-memory layout
 │   │   ├── ipc/                # AirPlay RTSP control endpoints and packet parsing
 │   │   ├── mdns/               # AirPlay mDNS / Bonjour advertisements and discovery
@@ -72,35 +74,28 @@ MirrPane/
 │   ├── build.ps1               # Backend build script
 │   ├── go.mod
 │   └── go.sum
-├── frontend/                   # Flutter desktop application (yingping)
-│   ├── assets/                 # Static assets, including logo.png
-│   ├── lib/
-│   │   ├── main.dart           # Main UI, window controls, and four settings tabs
-│   │   ├── receiver_api.dart   # Client for the backend's local HTTP API
-│   │   └── ui_prefs.dart       # UI preferences
-│   ├── packages/
-│   │   └── yingping_frames/    # Local C++ texture and shared-memory bridge plugin
-│   ├── windows/                # Windows runner and CMake configuration
-│   └── pubspec.yaml
+├── frontend/                   # Legacy Flutter UI (reference only, not shipped)
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # Detect or download the pinned Windows x64 shared build (SHA256)
-│   └── generate-ffmpeg-abi.ps1 # Generate FFmpeg ABI definitions
+│   ├── generate-ffmpeg-abi.ps1 # Generate FFmpeg ABI definitions
+│   └── third-party-notices.ps1 # Collect the licences of bundled Go modules
 ├── third_party/                # Local third-party dependencies, such as FFmpeg
 ├── analysis/                   # Security scan report and remediation patch (MirrPane/)
 ├── LICENSE                     # GPL-3.0 license
 ├── README.md                   # Traditional Chinese documentation
 ├── README.en.md                # English documentation
-└── package.ps1                 # Build and package the portable distribution
+├── VERSION                     # Release version read by package.ps1
+└── package.ps1                 # Build, package, and SHA256 script
 ```
 
 ---
 
 ## Quick Start
 
-1. Download the latest release, such as `v0.3.4`, from [Releases](https://github.com/Miku0139oao/MirrPane/releases). Extract it and run `MirrPane.exe`. No installation or registry changes are required.
+1. Download the latest release, such as `v0.4.0`, from [Releases](https://github.com/Miku0139oao/MirrPane/releases). Extract it and run `MirrPane.exe`. No installation or registry changes are required.
 2. Connect the Windows PC and your iPhone or iPad to the same local network. Allow the receiver on private networks when Windows Firewall prompts you.
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
-4. Double-click the video or press `F11` to toggle full screen. The app includes keyboard shortcuts and four settings tabs for general preferences, connection information, live statistics, pairing identity reset, graphics, and audio.
+4. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
 
 ---
 
@@ -108,11 +103,11 @@ MirrPane/
 
 ### Requirements
 
-- **Go**: `1.26.11+` (with the patched standard library; `go.mod` selects it via `GOTOOLCHAIN=auto`)
-- **Flutter**: `3.47+` with Dart SDK `^3.13.5` (CI pins 3.47.7)
-- **Build tools**: Visual Studio C++ Build Tools, CMake, and PowerShell
+- **Go**: `1.27.3+` (with the patched standard library; `go.mod` selects it via `GOTOOLCHAIN=auto`)
+- **Build tools**: PowerShell. The shipped UI and backend build with `CGO_ENABLED=0`; Flutter, Visual Studio C++, and CMake are not required.
+- **Legacy Flutter UI (optional)**: Maintaining `frontend/` still needs Flutter `3.47+` (Dart SDK `^3.13.5`) and the Visual Studio C++ Build Tools.
 
-The desktop application targets Windows x64. Visual Studio C++ tools are needed for Flutter's Windows runner and texture plugin; the Go backend builds with CGO disabled.
+The desktop application targets Windows x64.
 
 ### Build Steps
 
@@ -122,17 +117,24 @@ The desktop application targets Windows x64. Visual Studio C++ tools are needed 
    .\scripts\fetch-ffmpeg.ps1 -Pinned
    ```
 
-2. **Build and test the Go backend**, starting from the repository root and returning there when finished:
+2. **Build and test the Go UI and backend**, starting from the repository root and returning there when finished:
 
    ```powershell
    $env:CGO_ENABLED = '0'
    # Point tests at the repository's pinned FFmpeg (Find no longer searches CWD or PATH)
-   $env:MIRRPANE_FFMPEG_DIR = (Resolve-Path third_party\ffmpeg\bin).Path
+   $env:MIRRPANE_FFMPEG_DIR = @(.\scripts\fetch-ffmpeg.ps1 -Pinned -PassThru)[-1]
    cd backend
    go build ./...
    go vet ./...
    go test ./...
    cd ..
+   ```
+
+   For UI development, run the native app and point it at any packaged folder that contains `backend\airplayd.exe`:
+
+   ```powershell
+   cd backend
+   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.0
    ```
 
 3. **Build and package the complete application** from the repository root:
@@ -141,31 +143,42 @@ The desktop application targets Windows x64. Visual Studio C++ tools are needed 
    .\package.ps1
    ```
 
+   The version defaults to `VERSION`; `-Version 0.4.0-test1` produces a separate test build. Output is the runnable folder `dist\鏡屏-<version>\` plus `dist\MirrPane-<version>-win64.zip` and its `.sha256`. Every package builds inside a unique `dist\.staging` folder (Go's content-addressed build cache skips unchanged work), so shared `backend\*.exe` and `*.dll` files are never overwritten. `-SkipBuild` is accepted for compatibility with older command lines but still runs the cached builds. Packaging never replaces a folder that is currently running; re-packaging an existing install preserves its `config\`, `logs\`, `screenshots\`, and unknown user files (including additions under `backend\`), and keeps the old install as a `dist\.staging\previous-*` backup.
+
 ### Validation
 
-- **Windows builds**: CI builds and tests the backend with `CGO_ENABLED=0` and packages the Flutter application.
-- **Portable protocol tests**: Linux CI runs the Go protocol and cryptographic tests, including a FairPlay corpus of 1,024 cases checked against the original C implementation, and cross-compiles the complete Windows backend.
+- **Windows builds**: CI builds and tests the native UI and backend with `CGO_ENABLED=0`, then runs `package.ps1` to produce the portable archive and SHA256 checksum.
+- **Portable protocol tests**: Linux CI runs the Go protocol and cryptographic tests, including a FairPlay corpus of 1,024 cases checked against the original C implementation, and cross-compiles the complete Windows application.
 
 ---
 
 ## `airplayd` Command-Line Options
 
-The Flutter application normally starts and manages `airplayd` as a sidecar. It can also run independently for testing or recording a stream for offline replay and debugging.
+The native MyGo UI normally starts and manages `airplayd` as a sidecar. It can also run independently for testing or recording a stream for offline replay and debugging.
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
 | `-name` | `"鏡屏"` | Receiver name used when the configuration is first created. Later launches use the stored name. |
 | `-data` | `config` beside the executable | Directory for `config.json` and pairing keys. |
 | `-port` | `0` (prefers `7000`) | AirPlay control port. With `0`, tries `7000` first, then selects an available port. |
-| `-api-port` | `0` (automatic) | Local HTTP API port used by the Flutter UI. |
+| `-api-port` | `0` (automatic) | Local HTTP API port used by the UI. |
 | `-width` | `0` | Virtual display width. With `0`, reads the value from `config.json`. |
 | `-height` | `0` | Virtual display height. With `0`, reads the value from `config.json`. |
 | `-fps` | `0` | Maximum advertised frame rate. With `0`, reads the value from `config.json`. |
 | `-record` | Empty string | Save the raw H.264 mirroring stream to this directory for offline replay and debugging. |
-| `-shm` | `Local\YingpingFrames` | Windows shared-memory section used to publish video frames to the UI. |
+| `-shm` | `Local\YingpingFrames` | Windows shared-memory section used to publish video frames. The UI passes a per-instance `Local\MirrPaneFrames-<pid>`. |
 | `-log` | Empty string | Specify a log file and enable verbose logging. Without this option, logs are still written to the default `logs/airplayd.log`. |
 | `-parent-pid` | `0` | Parent process ID, supplied by the UI. The backend exits when that process exits. |
 | `-v` | `false` | Enable verbose logging. |
+
+### `MirrPane.exe` UI Options
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `-install-dir` | The executable's directory | Override the installation root (must contain `backend\airplayd.exe`). Required when running `go run ./cmd/mirrpane`. |
+| `-shm` | `Local\MirrPaneFrames-<pid>` | Shared-memory section shared with the sidecar; the UI passes the same name to its child. |
+| `-demo` | `false` | Show a synthetic test picture without starting the sidecar (UI development). |
+| `-demo-settings` | `false` | Open the settings window at startup (UI testing). |
 
 ---
 
@@ -194,7 +207,7 @@ If an iPhone or iPad cannot find the receiver, check the local network and firew
 
 An independent security scan and hardening round completed on 2026-11-22 (five finder classes with per-finding adversarial verification; 44% false-positive rate). This release includes:
 
-- **Fixed**: stream keys are no longer written to logs; short HEVC parameter-set payloads can no longer panic the receiver; Go 1.26.11 removes 20 reachable standard-library CVEs; FFmpeg DLLs load only from trusted locations; the local API validates `Host`/`Origin` (including rejecting `Origin: null`); `POST /stop` is loopback-only; RTSP request fields are escaped in logs; new installations use a CSPRNG seed and a random `PairingID`, and `config.json` is written with mode 0600.
+- **Fixed**: stream keys are no longer written to logs; short HEVC parameter-set payloads can no longer panic the receiver; Go 1.27.3 includes the fixes that removed 20 reachable standard-library CVEs; FFmpeg DLLs load only from trusted locations; the local API validates `Host`/`Origin` (including rejecting `Origin: null`); `POST /stop` is loopback-only; RTSP request fields are escaped in logs; new installations use a CSPRNG seed and a random `PairingID`, and `config.json` is written with mode 0600.
 - **Hardened, residual risk**: `/setup` requires a completed pair-verify, mirror connections are bound to the sender IP and stream ID, half-open connections are reaped after 4 s, and audio keys belong to the owning sender. Legacy pair-verify proves possession of a self-selected key, not owner approval; a PIN/allowlist trust policy remains a follow-up. See SEC-001 and the follow-up list in [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md).
 - **Reporting**: please report vulnerabilities privately via GitHub *Security → Report a vulnerability* rather than a public issue.
 
@@ -204,8 +217,9 @@ An independent security scan and hardening round completed on 2026-11-22 (five f
 
 ### Main Dependencies
 
+- **UI**: `github.com/egoist/mygo` (native Windows UI, with transitive modules such as `github.com/go-text/typesetting` and `golang.org/x/image`; bundled licences are listed in the release's `THIRD_PARTY_LICENSES.txt`).
 - **Backend**: `github.com/ebitengine/purego`, `github.com/grandcat/zeroconf`, `howett.net/plist`, `golang.org/x/sys`, and `github.com/google/uuid`.
-- **Frontend**: Flutter Windows Desktop and the project's C++ `yingping_frames` plugin.
+- **Legacy frontend (not shipped)**: the Flutter Windows UI and C++ `yingping_frames` plugin under `frontend/`.
 
 ### Acknowledgements
 
@@ -214,3 +228,4 @@ This project draws from and benefits from the following open-source projects:
 - [UxPlay](https://github.com/FDH2/UxPlay)
 - [FFmpeg](https://ffmpeg.org/)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
+- [MyGo](https://github.com/egoist/mygo)

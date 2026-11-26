@@ -337,6 +337,13 @@ func main() {
 	}()
 	defer api.Close()
 	note("api: %s", apiLn.Addr().String())
+	// Machine-readable handshake for the UI: the port the API actually bound.
+	// The UI polls it and no longer has to trust the port it probed before the
+	// child started. Older UIs ignore unknown events, so this stays additive.
+	_ = json.NewEncoder(os.Stdout).Encode(struct {
+		Event string `json:"event"`
+		Port  int    `json:"port"`
+	}{"api_ready", apiLn.Addr().(*net.TCPAddr).Port})
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

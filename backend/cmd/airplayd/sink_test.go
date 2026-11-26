@@ -12,10 +12,59 @@ import (
 	"unsafe"
 
 	"github.com/miku0139/airplay-go/backend/internal/decode"
+	"github.com/miku0139/airplay-go/backend/internal/framefeed"
 	"github.com/miku0139/airplay-go/backend/internal/frames"
 	"github.com/miku0139/airplay-go/backend/internal/mirror"
 	"golang.org/x/sys/windows"
 )
+
+// The fixture is a single intra-coded 2560x1178 picture, red on the left
+// and blue on the right. Exercise the real decoder, sink and native reader
+// at the visible (cropped) size sent by a landscape iPhone.
+func TestLandscape2KNativeReceiverPath(t *testing.T) {
+	const w, h = 2560, 1178
+	stream, err := os.ReadFile(filepath.Join("..", "..", "internal", "decode", "testdata", "landscape-2560x1178.h264"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf(`Local\MirrPaneLandscape-%d`, os.Getpid())
+	pub, err := frames.NewPublisher(name, w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+	reader, err := framefeed.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	dec, err := decode.NewDecoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := newFrameSink(dec, pub, nil)
+	defer sink.Close()
+	var seq uint64
+	for i := range 12 {
+		if !sink.Handle(&mirror.Frame{Data: stream, Valid: true}) {
+			t.Fatalf("frame %d was not published", i)
+		}
+		f, ok := reader.Latest()
+		if !ok || f.Width != w || f.Height != h || f.Seq <= seq {
+			t.Fatalf("frame %d: got %dx%d seq=%d after %d", i, f.Width, f.Height, f.Seq, seq)
+		}
+		seq = f.Seq
+		left := f.Pixels[(h-1)*f.Stride+4:]
+		right := f.Pixels[(h-1)*f.Stride+4*(w-2):]
+		if left[0] < 220 || left[2] > 30 || right[0] > 30 || right[2] < 220 {
+			t.Fatalf("frame %d: last visible row has unexpected colors: left=%v right=%v", i, left[:4], right[:4])
+		}
+	}
+	if pub.ConsumerAllowsGPUShare() || pub.ConsumerStats().Adopted != 12 {
+		t.Fatalf("expected 12 native RGBA adoptions, got %+v", pub.ConsumerStats())
+	}
+	t.Logf("12 landscape %dx%d pictures decoded by %s and adopted by native reader", w, h, sink.Mode())
+}
 
 func splitTestAccessUnits(stream []byte) [][]byte {
 	var nals [][]byte

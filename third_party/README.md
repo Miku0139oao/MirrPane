@@ -3,8 +3,8 @@
 MirrPane uses FFmpeg for H.264/AAC-ELD decoding, color conversion and resampling.
 The Go backend calls its shared libraries using [purego](https://github.com/ebitengine/purego)
 and the Windows x64 ABI. **CGO is disabled.** Headers, import libraries and a C
-compiler are unnecessary for normal builds. Flutter's Windows runner and texture
-plugin still use the standard Visual Studio C++ toolchain.
+compiler are unnecessary for normal builds. The native MyGo UI and the sidecar
+need no C toolchain; only the legacy Flutter frontend under `frontend/` does.
 
 ## Detecting and downloading
 
@@ -16,10 +16,11 @@ asset's size and SHA256 digest from the GitHub release API, extracts only the
 required DLL basenames, and publishes a complete runtime directory atomically.
 
 The application performs the same setup automatically if no shared runtime can
-be found beside the sidecar, in its portable cache, in the development tree, or
-on PATH. Set `MIRRPANE_FFMPEG_DIR` to an explicit directory to override discovery.
-An invalid override is reported as an error so it cannot silently use another
-installation. A static `ffmpeg.exe` alone does not provide the required DLLs.
+be found beside the sidecar or in its portable cache. Set
+`MIRRPANE_FFMPEG_DIR` to an explicit directory to override discovery. `PATH`
+and the current working directory are never consulted. An invalid override is
+reported as an error so it cannot silently use another installation. A static
+`ffmpeg.exe` alone does not provide the required DLLs.
 
 Normal release archives include the four DLLs beside `backend/airplayd.exe` and
 work offline. First-run downloads, when needed, stay under `backend/ffmpeg/`.

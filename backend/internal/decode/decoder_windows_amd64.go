@@ -72,7 +72,8 @@ type DecodeTimings struct {
 	// TransferNanos is av_hwframe_transfer_data, the GPU→system-memory
 	// download. It is zero in software mode.
 	TransferNanos int64
-	// ConvertNanos is sws_scale and its colour-space setup.
+	// ConvertNanos includes swscale setup/conversion for RGBA, or the video
+	// processor conversion and its GPU completion wait for a shared texture.
 	ConvertNanos int64
 }
 
@@ -118,8 +119,9 @@ type Decoder struct {
 	params       []byte // last SPS/PPS seen, replayed into a rebuilt decoder
 	replayParams bool
 
-	gpu         *d3d11Pool
-	gpuDisabled bool // set when D3D11 VideoProcessor/shared textures are unsupported on current device
+	gpu           *d3d11Pool
+	gpuRetryAt    time.Time
+	gpuRetryDelay time.Duration
 }
 
 // Hardware failure policy. A run of consecutive failed access units while
@@ -421,7 +423,8 @@ func (d *Decoder) release() {
 	d.decoded = false
 	d.frameReady = false
 	d.replayParams = false
-	d.gpuDisabled = false
+	d.gpuRetryAt = time.Time{}
+	d.gpuRetryDelay = 0
 	// A previously published texture can remain current while the FFmpeg
 	// decoder recovers. Keep its pool alive for import and on-demand snapshots.
 	if d.scaler != 0 {
@@ -585,7 +588,7 @@ func (d *Decoder) CanRenderGPU() bool {
 		d.frame.Format == d.hardwareFormat &&
 		d.options.ScaleFilter != "bilinear" &&
 		d.options.ScaleFilter != "bicubic" &&
-		!d.gpuDisabled
+		(d.gpuRetryAt.IsZero() || !time.Now().Before(d.gpuRetryAt))
 }
 
 // RenderFrameGPU converts the received D3D11VA NV12 picture on the GPU via
@@ -618,11 +621,14 @@ func (d *Decoder) RenderFrameGPU(slotIndex int) (GPUSurface, error) {
 		fullRange:  full,
 	}, slotIndex)
 	if err != nil {
-		if !d.gpu.deviceRemoved() {
-			d.gpuDisabled = true
-		}
+		// A late completion query or device reset can recover. Keep publishing
+		// RGBA in the meantime and bound the cost on unsupported hardware.
+		d.gpuRetryDelay = min(time.Minute, max(time.Second, 2*d.gpuRetryDelay))
+		d.gpuRetryAt = time.Now().Add(d.gpuRetryDelay)
 		return GPUSurface{}, err
 	}
+	d.gpuRetryAt = time.Time{}
+	d.gpuRetryDelay = 0
 	d.frameReady = false
 	d.health.success()
 	return surf, nil
@@ -636,6 +642,26 @@ func (d *Decoder) ReadbackSlotGPU(slotIndex int) (Image, error) {
 		return Image{}, errors.New("decode: no active GPU surface pool")
 	}
 	return d.gpu.readbackSlotRGBA(slotIndex)
+}
+
+// ReleaseGPUSlot drops the producer's reference once a CPU picture replaces
+// this mailbox slot. Other slots can still belong to readers on the old device.
+func (d *Decoder) ReleaseGPUSlot(index int) {
+	if d.gpu == nil {
+		return
+	}
+	d.gpu.slots[index].tex.release()
+	d.gpu.slots[index] = d3d11SlotSurface{}
+	if d.gpu.lastSlot == index {
+		d.gpu.lastSlot = -1
+	}
+	for _, slot := range d.gpu.slots {
+		if slot.tex != nil {
+			return
+		}
+	}
+	d.gpu.close()
+	d.gpu = nil
 }
 
 func (d *Decoder) receiveAccessUnit(data []byte) error {

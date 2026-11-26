@@ -319,6 +319,7 @@ type d3d11Picture struct {
 
 type d3d11SlotSurface struct {
 	tex          *comObject
+	device       *comObject // borrowed: the texture keeps its creating device alive
 	sharedHandle uintptr
 	width        uint32
 	height       uint32
@@ -375,19 +376,16 @@ func (p *d3d11Pool) unlockContext() {
 	}
 }
 
-func (p *d3d11Pool) deviceRemoved() bool {
-	if p.device == nil {
-		return false
-	}
-	r1, _, _ := syscall.SyscallN(p.device.method(vtblDeviceGetRemovedReason), uintptr(unsafe.Pointer(p.device)))
-	return r1 != hrSOK
-}
-
-func (p *d3d11Pool) ensureDevice(dev *comObject) error {
+func (p *d3d11Pool) ensureDevice(dev *comObject) (err error) {
 	if p.device == dev && p.videoDevice != nil && p.videoContext != nil && p.query != nil {
 		return nil
 	}
-	p.close()
+	p.closeDevice()
+	defer func() {
+		if err != nil {
+			p.closeDevice()
+		}
+	}()
 
 	dev.addRef()
 	p.device = dev
@@ -399,7 +397,6 @@ func (p *d3d11Pool) ensureDevice(dev *comObject) error {
 		uintptr(unsafe.Pointer(&ctx)),
 	)
 	if ctx == nil {
-		p.close()
 		return errors.New("decode: d3d11 GetImmediateContext returned nil")
 	}
 	p.context = ctx
@@ -414,14 +411,12 @@ func (p *d3d11Pool) ensureDevice(dev *comObject) error {
 
 	vdev, err := dev.queryInterface(&iidID3D11VideoDevice)
 	if err != nil {
-		p.close()
 		return fmt.Errorf("query ID3D11VideoDevice: %w", err)
 	}
 	p.videoDevice = vdev
 
 	vctx, err := ctx.queryInterface(&iidID3D11VideoContext)
 	if err != nil {
-		p.close()
 		return fmt.Errorf("query ID3D11VideoContext: %w", err)
 	}
 	p.videoContext = vctx
@@ -439,14 +434,12 @@ func (p *d3d11Pool) ensureDevice(dev *comObject) error {
 		uintptr(unsafe.Pointer(&query)),
 	)
 	if hrFailed(r1) || query == nil {
-		p.close()
 		return hresultErr("CreateQuery(EVENT)", r1)
 	}
 	p.query = query
 
 	luid, err := queryAdapterLUID(dev)
 	if err != nil {
-		p.close()
 		return err
 	}
 	p.adapterLUID = luid
@@ -607,7 +600,7 @@ func (p *d3d11Pool) newSharedSurface(outW, outH uint32) (d3d11SlotSurface, error
 		tex.release()
 		return d3d11SlotSurface{}, hresultErr("IDXGIResource::GetSharedHandle", r1)
 	}
-	return d3d11SlotSurface{tex: tex, sharedHandle: handle, width: outW, height: outH}, nil
+	return d3d11SlotSurface{tex: tex, device: p.device, sharedHandle: handle, width: outW, height: outH}, nil
 }
 
 func (p *d3d11Pool) configureVideoProcessor(pic d3d11Picture) error {
@@ -953,10 +946,23 @@ func (p *d3d11Pool) readbackSlotRGBA(slotIndex int) (Image, error) {
 		return Image{}, errors.New("decode: no GPU slot available for readback")
 	}
 	slot := &p.slots[slotIndex]
-	if p.device == nil || p.context == nil || slot.tex == nil || slot.width == 0 || slot.height == 0 {
+	if slot.tex == nil || slot.width == 0 || slot.height == 0 {
 		return Image{}, errors.New("decode: GPU slot surface is empty")
 	}
+	// A decoder rebuild can change devices while this slot is still shared.
+	// A staging texture and its source must belong to the same device.
+	if slot.device != nil && slot.device != p.device {
+		reader := newD3D11Pool()
+		defer reader.close()
+		if err := reader.ensureDevice(slot.device); err != nil {
+			return Image{}, err
+		}
+		return reader.readbackSurface(slot)
+	}
+	return p.readbackSurface(slot)
+}
 
+func (p *d3d11Pool) readbackSurface(slot *d3d11SlotSurface) (Image, error) {
 	w, h := int(slot.width), int(slot.height)
 	p.lockContext()
 	defer p.unlockContext()
@@ -1052,6 +1058,12 @@ func (p *d3d11Pool) close() {
 		p.slots[i] = d3d11SlotSurface{}
 	}
 	p.lastSlot = -1
+	p.closeDevice()
+}
+
+// Each shared surface belongs to its mailbox slot until a writer reclaims
+// that slot. Replacing the decoder device must leave those handles valid.
+func (p *d3d11Pool) closeDevice() {
 	if p.staging != nil {
 		p.staging.release()
 		p.staging = nil

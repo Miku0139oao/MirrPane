@@ -2,25 +2,25 @@
 
 **繁體中文** | [English](README.en.md)
 
-**Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + Flutter** 打造，將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
+**Windows AirPlay 螢幕鏡像接收器** — 基於 **Go + FFmpeg D3D11VA + MyGo** 打造，以原生桌面介面將 Windows 電腦變成 iPhone / iPad 的無線外接顯示器。主打整包解壓即用、不寫入系統登錄檔、無需額外安裝執行期環境。
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **最新版本**：`v0.3.4`
+- **最新版本**：`v0.4.0`
 
 ---
 
 ## 主要特色
 
 - **硬體加速低延遲解碼**：透過 FFmpeg **D3D11VA** 進行 H.264 硬體加速解碼，採用直通式 Annex-B access unit 管線；不支援硬解的環境可退回 CPU 軟體解碼，也可在設定中指定軟解。
-- **零 CGO Go 後端**：以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 MinGW 或 C 開發標頭檔。
-- **共享記憶體影格渲染**：後端將 RGBA 影格發布至 Windows 共享記憶體（`Local\YingpingFrames`），透過 3-slot mailbox 與事件喚醒機制，由原生 C++ 橋接（`yingping_frames`）提供 Flutter 紋理，省去跨程序影像序列化。
+- **零 CGO 的 UI 與後端**：桌面介面（MyGo）與 `airplayd` 皆以 `CGO_ENABLED=0` 建置，透過 `purego` 在執行時動態綁定 FFmpeg，並由 Go 呼叫 Windows 系統 API，無需 Visual Studio C++、MinGW 或 C 開發標頭檔。
+- **共享記憶體影格渲染**：後端將 RGBA 影格發布至每個 UI 實例專屬的 Windows 共享記憶體（`Local\MirrPaneFrames-<pid>`），透過 3-slot mailbox 與事件喚醒機制，由原生 MyGo UI（`internal/framefeed`）直接映射讀取並上傳紋理，省去跨程序影像序列化，也避免多個實例互搶同一區段；獨立執行 `airplayd` 時仍預設 `Local\YingpingFrames`。
 - **直寫共享記憶體與閒置節流**：色彩轉換（swscale）直接寫入已取得的共享記憶體 slot，免去每幀一次整幀複製；當 UI 最小化或停止取幀超過一秒時，暫停下載、轉換與發佈（仍持續解碼參考幀），並以每秒一次的探測幀保留喚醒能力。
 - **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔延遲／抗抖動設定（低延遲、平衡、穩定），並以較大的環形緩衝吸收 Wi-Fi 爆量；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
 - **自動化 FFmpeg 管理**：固定上游建置版本（含 SHA256 驗證與 ABI 檢查），首次啟動可自動偵測、續傳下載並安裝；DLL 只從明確的信任位置載入，不搜尋 `PATH` 或工作目錄。
-- **安全強化**：串流 setup 需先完成 pair-verify、鏡像連線綁定來源 IP 與串流識別碼、AES 金鑰不再寫入日誌、HEVC 參數解析具邊界檢查、Go 1.26.11、本機 API 具 Host/Origin 檢查且 `/stop` 僅限 loopback。細節與殘留風險見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md)。
-- **綠色免安裝**：設定檔（`config.json`）與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔。
+- **安全強化**：串流 setup 需先完成 pair-verify、鏡像連線綁定來源 IP 與串流識別碼、AES 金鑰不再寫入日誌、HEVC 參數解析具邊界檢查、本機 API 具 Host/Origin 檢查且 `/stop` 僅限 loopback。細節與殘留風險見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md)。
+- **綠色免安裝**：設定檔（`config.json`）、UI 偏好與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔，也不需要系統管理員權限；唯一例外是 MyGo 於首次啟動在 `%LOCALAPPDATA%\MyGo\ShaderCache` 建立的著色器快取。
 
 ---
 
@@ -36,11 +36,11 @@ airplayd (Go Sidecar, CGO_ENABLED=0)
   ├── 視訊解碼：purego 綁定 FFmpeg D3D11VA (H.264 Annex-B)
   └── 音訊輸出：AAC-ELD → Windows winmm waveOut (30 / 40 / 60 ms 緩衝)
         │
-        ▼  視訊：3-slot mailbox 共享記憶體 (Local\YingpingFrames) + Windows 事件喚醒
+        ▼  視訊：3-slot mailbox 共享記憶體 (Local\MirrPaneFrames-<pid>) + Windows 事件喚醒
         │  狀態與控制：本機 HTTP API (IPC)
         ▼
-Flutter Desktop UI (yingping)
-  └── yingping_frames (C++ Windows Texture 橋接)
+MyGo 原生桌面 UI (backend/cmd/mirrpane, CGO_ENABLED=0)
+  └── framefeed 共享記憶體讀取器 → ui.Bitmap 紋理
 ```
 
 ---
@@ -53,7 +53,8 @@ MirrPane/
 ├── backend/                    # Go 後端 (module: github.com/miku0139/airplay-go/backend)
 │   ├── cmd/
 │   │   ├── airplayd/           # 主後端 sidecar 與本機 HTTP API (main.go, sink.go, state.go, record.go 等)
-│   │   └── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
+│   │   ├── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
+│   │   └── mirrpane/           # 原生 MyGo 桌面 UI (main.go, app.go, sidecar.go, prefs.go 等)
 │   ├── internal/
 │   │   ├── audio/              # 音訊串流接收、解密與 AAC-ELD 解碼調度
 │   │   ├── audioout/           # Windows winmm waveOut 音訊輸出與抗抖動緩衝
@@ -61,6 +62,7 @@ MirrPane/
 │   │   ├── decode/             # purego FFmpeg DLL 綁定、視訊與音訊解碼封裝
 │   │   ├── fairplay/           # FairPlay 金鑰交換與解密實作
 │   │   ├── ffmpeg/             # FFmpeg 執行環境偵測、下載、驗證與快取管理
+│   │   ├── framefeed/          # UI 讀取共享記憶體影格的 reader
 │   │   ├── frames/             # 影格傳遞與共享記憶體格式
 │   │   ├── ipc/                # AirPlay RTSP 控制端點與封包解析
 │   │   ├── mdns/               # AirPlay mDNS / Bonjour 廣播與裝置發現
@@ -71,35 +73,28 @@ MirrPane/
 │   ├── build.ps1               # 後端建置腳本
 │   ├── go.mod
 │   └── go.sum
-├── frontend/                   # Flutter 桌面前端 (yingping)
-│   ├── assets/                 # 靜態資源 (logo.png 等)
-│   ├── lib/
-│   │   ├── main.dart           # UI 主程式、視窗與 4 分頁設定介面
-│   │   ├── receiver_api.dart   # 呼叫後端本機 HTTP API 的用戶端
-│   │   └── ui_prefs.dart       # 前端介面偏好設定
-│   ├── packages/
-│   │   └── yingping_frames/    # 本地 Flutter 插件 (C++ Windows 紋理與共享記憶體橋接)
-│   ├── windows/                # Flutter Windows 平台原生工程與 CMake 設定
-│   └── pubspec.yaml
+├── frontend/                   # 舊版 Flutter UI（保留參考，不再隨發行版建置）
 ├── scripts/
 │   ├── fetch-ffmpeg.ps1        # 偵測或下載固定版本 Windows x64 FFmpeg shared build (SHA256)
-│   └── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
+│   ├── generate-ffmpeg-abi.ps1 # 產生 FFmpeg ABI 綁定相關定義
+│   └── third-party-notices.ps1 # 收集隨附 Go 模組的授權文件
 ├── third_party/                # 第三方相依存放目錄 (如本地預載的 ffmpeg)
 ├── analysis/                   # 安全掃描報告與修補 patch（MirrPane/）
 ├── LICENSE                     # GPL-3.0 授權文件
 ├── README.md                   # 專案說明文件
 ├── README.en.md                # 英文版專案說明
-└── package.ps1                 # 整包建置與打包 PowerShell 腳本
+├── VERSION                     # 發行版本來源（package.ps1 預設讀取）
+└── package.ps1                 # 整包建置、打包與 SHA256 產生腳本
 ```
 
 ---
 
 ## 快速使用
 
-1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.3.4`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
+1. 從 [Releases](https://github.com/Miku0139oao/MirrPane/releases) 下載最新版本（如 `v0.4.0`），解壓縮後直接執行 `MirrPane.exe`（無需安裝或寫入系統登錄檔）。
 2. 確認 Windows 電腦與 iPhone / iPad 位於同一區域網路，並在 Windows 防火牆提示中允許接收器存取私人網路。
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
-4. 雙擊視窗或按下 `F11` 可切換全螢幕；介面內建進階設定分頁（一般設定、連線資訊、即時統計、配對重設等）與快捷鍵操作。
+4. 介面提供 `F11` 全螢幕、`Ctrl+T` 置頂、`Ctrl+,`／`Ctrl+K` 設定、`Ctrl+L` 日誌與 `Ctrl+S` 截圖等快捷鍵；設定視窗包含一般、圖形與解碼、渲染、音訊等區段。
 
 ---
 
@@ -107,9 +102,9 @@ MirrPane/
 
 ### 環境需求
 
-- **Go**：`1.26.11+`（需包含已修補的標準庫；`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
-- **Flutter**：`3.47+`（Dart SDK `^3.13.5`；CI 固定 3.47.7）
-- **建置工具**：Visual Studio C++ Build Tools、CMake、PowerShell
+- **Go**：`1.27.3+`（需包含已修補的標準庫；`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
+- **建置工具**：PowerShell；發行版 UI 與後端皆以 `CGO_ENABLED=0` 建置，不需要 Flutter、Visual Studio C++ 或 CMake
+- **舊版 Flutter UI（選用）**：若需維護 `frontend/`，另需 Flutter `3.47+`（Dart SDK `^3.13.5`）與 Visual Studio C++ Build Tools
 
 ### 建置步驟
 
@@ -119,17 +114,24 @@ MirrPane/
    .\scripts\fetch-ffmpeg.ps1 -Pinned
    ```
 
-2. **建置與測試 Go 後端**（從專案根目錄切換至 `backend/`，完成後返回）：
+2. **建置與測試 Go UI 與後端**（從專案根目錄切換至 `backend/`，完成後返回）：
 
    ```powershell
    $env:CGO_ENABLED = '0'
    # 讓測試找到 repo 內的固定版 FFmpeg（Find 不再搜尋工作目錄/PATH）
-   $env:MIRRPANE_FFMPEG_DIR = (Resolve-Path third_party\ffmpeg\bin).Path
+   $env:MIRRPANE_FFMPEG_DIR = @(.\scripts\fetch-ffmpeg.ps1 -Pinned -PassThru)[-1]
    cd backend
    go build ./...
    go vet ./...
    go test ./...
    cd ..
+   ```
+
+   開發時可直接啟動 UI，並以 `-install-dir` 指向任一已打包的資料夾（需含 `backend\airplayd.exe`）：
+
+   ```powershell
+   cd backend
+   go run ./cmd/mirrpane -install-dir ..\dist\鏡屏-0.4.0
    ```
 
 3. **整包建置與打包**（於專案根目錄執行）：
@@ -138,31 +140,42 @@ MirrPane/
    .\package.ps1
    ```
 
+   版本預設讀取 `VERSION`；`-Version 0.4.0-test1` 可產生獨立測試版。輸出為 `dist\鏡屏-<version>\`（可直接執行）與 `dist\MirrPane-<version>-win64.zip`、`.sha256`。每次打包都在獨立的 `dist\.staging` 資料夾中重新建置（Go 建置快取會依內容跳過未變更的工作），不會覆寫共用的 `backend\*.exe`／`*.dll`；`-SkipBuild` 僅為相容舊命令列而接受，仍會執行快取建置。打包不會覆寫正在執行的資料夾；重新打包既有資料夾時，會保留其 `config\`、`logs\`、`screenshots\` 與其他未知使用者檔案（包含 `backend\` 內新增的檔案），並將舊安裝移至 `dist\.staging\previous-*` 備份。
+
 ### 驗證與測試項目
 
-- **Windows 建置驗證**：確保後端於 `CGO_ENABLED=0` 模式下正常編譯。
-- **跨平台協定測試**：於 Linux 環境執行 Go 協定與加密單元測試，包含 FairPlay 1024 組參考測試資料比對，並交叉編譯完整 Windows 後端。
+- **Windows 建置驗證**：CI 以 `CGO_ENABLED=0` 建置並測試原生 UI 與後端，再執行 `package.ps1` 產生可攜壓縮檔與 SHA256。
+- **跨平台協定測試**：於 Linux 環境執行 Go 協定與加密單元測試，包含 FairPlay 1024 組參考測試資料比對，並交叉編譯完整 Windows 應用程式。
 
 ---
 
 ## `airplayd` 後端 CLI 參數
 
-`airplayd` 通常由 Flutter 前端作為 sidecar 自動啟動與管理，亦可獨立執行以進行測試或離線錄製除錯：
+`airplayd` 通常由原生 MyGo UI 作為 sidecar 自動啟動與管理，亦可獨立執行以進行測試或離線錄製除錯：
 
 | 參數 | 預設值 | 說明 |
 | :--- | :--- | :--- |
 | `-name` | `"鏡屏"` | 設定檔首次建立時使用的 AirPlay 接收器名稱；之後以儲存的名稱為準 |
 | `-data` | 執行檔旁的 `config` 目錄 | 設定檔（`config.json`）與配對金鑰儲存資料夾 |
 | `-port` | `0`（優先嘗試 `7000`） | AirPlay 控制埠；設為 `0` 時優先使用 `7000` 否則自動挑選 |
-| `-api-port` | `0`（自動挑選） | 提供給 Flutter UI 溝通的本機 HTTP API 埠 |
+| `-api-port` | `0`（自動挑選） | 提供給 UI 溝通的本機 HTTP API 埠 |
 | `-width` | `0` | 虛擬顯示器寬度（設為 `0` 時讀取 `config.json`） |
 | `-height` | `0` | 虛擬顯示器高度（設為 `0` 時讀取 `config.json`） |
 | `-fps` | `0` | 虛擬顯示器最高幀率（設為 `0` 時讀取 `config.json`） |
 | `-record` | 空字串 | 將接收到的原始 H.264 鏡像串流儲存至指定資料夾供離線重播除錯 |
-| `-shm` | `Local\YingpingFrames` | 供 UI 讀取影格的 Windows 共享記憶體區段名稱 |
+| `-shm` | `Local\YingpingFrames` | 供 UI 讀取影格的 Windows 共享記憶體區段名稱；UI 啟動時會改傳每個實例專屬的 `Local\MirrPaneFrames-<pid>` |
 | `-log` | 空字串 | 指定日誌檔案並啟用詳細記錄；未指定時仍會寫入預設的 `logs/airplayd.log` |
-| `-parent-pid` | `0` | 父行程 PID（由前端傳入，當 UI 關閉時自動結束後端） |
+| `-parent-pid` | `0` | 父行程 PID（由 UI 傳入，當 UI 關閉時自動結束後端） |
 | `-v` | `false` | 啟用詳細日誌輸出（verbose logging） |
+
+### `MirrPane.exe` UI 參數
+
+| 參數 | 預設值 | 說明 |
+| :--- | :--- | :--- |
+| `-install-dir` | 執行檔所在資料夾 | 覆寫安裝根目錄（需含 `backend\airplayd.exe`）；以 `go run ./cmd/mirrpane` 開發時必須指定 |
+| `-shm` | `Local\MirrPaneFrames-<pid>` | 與 sidecar 共用的共享記憶體區段；UI 會把同一個名稱傳給子行程 |
+| `-demo` | `false` | 顯示合成測試畫面，不啟動 sidecar（UI 開發用） |
+| `-demo-settings` | `false` | 啟動時直接開啟設定視窗（UI 測試用） |
 
 ---
 
@@ -191,7 +204,7 @@ MirrPane/
 
 2026-11-22 完成一輪獨立安全掃描與修補（5 類 finder、逐項對抗式驗證，誤報率 44%）。本版包含：
 
-- **已修補**：串流金鑰不再寫入日誌；HEVC 參數集短封包不再能觸發 panic；Go 1.26.11（消除 20 個可達標準庫 CVE）；FFmpeg DLL 僅從信任位置載入；本機 API 驗證 `Host`/`Origin`（含拒絕 `Origin: null`）；`POST /stop` 僅限 loopback；RTSP 日誌欄位轉義；新安裝使用 CSPRNG 金鑰與隨機 `PairingID`，`config.json` 以 0600 寫入。
+- **已修補**：串流金鑰不再寫入日誌；HEVC 參數集短封包不再能觸發 panic；Go 1.27.3（包含自 1.26.11 起消除的 20 個可達標準庫 CVE）；FFmpeg DLL 僅從信任位置載入；本機 API 驗證 `Host`/`Origin`（含拒絕 `Origin: null`）；`POST /stop` 僅限 loopback；RTSP 日誌欄位轉義；新安裝使用 CSPRNG 金鑰與隨機 `PairingID`，`config.json` 以 0600 寫入。
 - **已強化但仍有殘留**：`/setup` 需完成 pair-verify，鏡像連線綁定來源 IP 與串流識別碼，半開連線 4 秒回收，音訊金鑰僅供擁有者；但 legacy pair-verify 只證明對方持有自選金鑰，並非使用者授權，完整的 PIN／allowlist 信任政策仍待實作。詳見 [`analysis/MirrPane/SECURITY_FINDINGS.md`](analysis/MirrPane/SECURITY_FINDINGS.md) 的 SEC-001 與後續追蹤清單。
 - **回報**：若發現安全性問題，請透過 GitHub 的 *Security → Report a vulnerability* 私下回報，避免公開 issue。
 
@@ -201,8 +214,9 @@ MirrPane/
 
 ### 主要技術依賴
 
+- **UI**：`github.com/egoist/mygo`（原生 Windows 介面，含 `github.com/go-text/typesetting`、`golang.org/x/image` 等間接相依；隨附授權見發行版內的 `THIRD_PARTY_LICENSES.txt`）
 - **後端**：`github.com/ebitengine/purego`、`github.com/grandcat/zeroconf`、`howett.net/plist`、`golang.org/x/sys`、`github.com/google/uuid`
-- **前端**：Flutter Windows Desktop、自研 C++ 插件 `yingping_frames`
+- **舊版前端（不再隨發行版建置）**：`frontend/` 內的 Flutter Windows UI 與 C++ `yingping_frames` 插件
 
 ### 致謝
 
@@ -211,3 +225,4 @@ MirrPane/
 - [UxPlay](https://github.com/FDH2/UxPlay)
 - [FFmpeg](https://ffmpeg.org/)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
+- [MyGo](https://github.com/egoist/mygo)

@@ -24,7 +24,7 @@ jobs:
       - name: Test portable protocol and crypto without FFmpeg or a C compiler
         working-directory: backend
         run: go test ./internal/fairplay ./internal/pairing ./internal/mirror ./internal/config ./internal/protocol ./internal/mdns ./internal/ffmpeg
-      - name: Cross-compile the complete Windows backend with cgo disabled
+      - name: Cross-compile the complete Windows application with cgo disabled
         working-directory: backend
         env:
           GOOS: windows
@@ -43,13 +43,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.7'
-          channel: stable
-          cache: true
-
       - name: Cache FFmpeg win64 runtime
         id: ffmpeg-cache
         uses: actions/cache@v4
@@ -61,7 +54,7 @@ jobs:
         shell: pwsh
         run: .\scripts\fetch-ffmpeg.ps1 -Pinned
 
-      - name: Backend build & test
+      - name: Build and test Go binaries
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -76,15 +69,6 @@ jobs:
           go vet ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Frontend pub get & analyze
-        shell: pwsh
-        run: |
-          cd frontend
-          flutter pub get
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          flutter analyze
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Package portable build
         shell: pwsh
         run: .\package.ps1 -Version "0.0.0-ci"
@@ -93,5 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MirrPane-win64-ci
-          path: dist/MirrPane-0.0.0-ci-win64.zip
+          path: |
+            dist/MirrPane-0.0.0-ci-win64.zip
+            dist/MirrPane-0.0.0-ci-win64.zip.sha256
           retention-days: 7

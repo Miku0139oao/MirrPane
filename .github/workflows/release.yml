@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.3.1)'
+        description: 'Release version (must match VERSION)'
         required: true
         type: string
 
@@ -24,15 +24,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Resolve and verify version
         id: ver
         shell: pwsh
         env:
           RAW_RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
+          $ErrorActionPreference = 'Stop'
           $raw = $env:RAW_RELEASE_VERSION
           $clean = $raw.Trim().TrimStart('v', 'V')
           if ($clean -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'invalid release version' }
+          if (-not (Test-Path -LiteralPath 'VERSION')) { throw 'VERSION file missing' }
+          $declared = (Get-Content -LiteralPath 'VERSION' -Raw).Trim()
+          if ($clean -cne $declared) { throw "release version $clean does not match VERSION ($declared)" }
           "version=$clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Setup Go
@@ -40,13 +44,6 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.7'
-          channel: stable
-          cache: true
 
       - name: Cache FFmpeg win64 runtime
         uses: actions/cache@v4
@@ -58,7 +55,7 @@ jobs:
         shell: pwsh
         run: .\scripts\fetch-ffmpeg.ps1 -Pinned
 
-      - name: Run tests and analyze
+      - name: Run tests and vet
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -72,22 +69,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
 
-          Push-Location frontend
-          flutter pub get
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          flutter analyze
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
-
       - name: Build and package release
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $ver = "${{ steps.ver.outputs.version }}"
           .\package.ps1 -Version $ver
           $zipName = "MirrPane-$ver-win64.zip"
           $zipPath = Join-Path "dist" $zipName
-          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
-          "$hash  $zipName" | Set-Content -Path "$zipPath.sha256" -Encoding ascii
+          if (-not (Test-Path -LiteralPath $zipPath)) { throw "package.ps1 did not produce $zipPath" }
+          $shaPath = "$zipPath.sha256"
+          if (-not (Test-Path -LiteralPath $shaPath)) { throw "package.ps1 did not produce $shaPath" }
+          $expected = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $recorded = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split '\s+')[0]
+          if ($recorded -cne $expected) { throw "SHA256 file does not match $zipName" }
 
       - name: Publish GitHub Release
         # TODO: Add Authenticode signing with a release certificate and verify

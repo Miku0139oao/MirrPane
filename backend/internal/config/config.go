@@ -194,18 +194,24 @@ func (c *Config) Save(dir string) error {
 	diskCfg := *c
 	diskCfg.KeySeed = diskKeySeed
 
+	data, err := json.MarshalIndent(&diskCfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return WritePrivateFile(filepath.Join(dir, FileName), append(data, '\n'))
+}
+
+// WritePrivateFile atomically replaces a file inside the receiver's private
+// configuration directory. Protect the temporary copy before writing any data.
+func WritePrivateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("config: create %s: %w", dir, err)
 	}
 	if err := RestrictDirACL(dir); err != nil {
 		return fmt.Errorf("config: restrict dir %s: %w", dir, err)
 	}
-	data, err := json.MarshalIndent(&diskCfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dir, FileName)
-	tmp, err := os.CreateTemp(dir, FileName+".*.tmp")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("config: create temp in %s: %w", dir, err)
 	}
@@ -224,7 +230,7 @@ func (c *Config) Save(dir string) error {
 		_ = tmp.Close()
 		return fmt.Errorf("config: restrict %s: %w", tmpName, err)
 	}
-	_, writeErr := tmp.Write(append(data, '\n'))
+	_, writeErr := tmp.Write(data)
 	closeErr := tmp.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		return fmt.Errorf("config: write %s: %w", tmpName, err)

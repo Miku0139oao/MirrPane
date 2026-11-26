@@ -1,9 +1,10 @@
 module github.com/miku0139/airplay-go/backend
 
-go 1.26.11
+go 1.27.3
 
 require (
 	github.com/ebitengine/purego v0.11.3
+	github.com/egoist/mygo v0.10.0
 	github.com/google/uuid v1.6.0
 	github.com/grandcat/zeroconf v1.0.1-0.20230119201135-e4f60f8407b1
 	golang.org/x/sys v0.50.0
@@ -12,6 +13,9 @@ require (
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/miekg/dns v1.1.41 // indirect
+	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )

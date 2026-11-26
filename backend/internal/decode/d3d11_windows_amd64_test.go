@@ -348,6 +348,18 @@ func TestD3D11PoolMacroblockCropAndRotation(t *testing.T) {
 	if img1.Width != 320 || img1.Height != 250 {
 		t.Fatalf("readback = %dx%d, want 320x250", img1.Width, img1.Height)
 	}
+	// At (64, 2) the NV12 fixture has Y=128, U=96, V=160. Compare the
+	// actual video processor output against the BT.709 RGB reference.
+	checkRGB := func(img Image, want [3]int) {
+		t.Helper()
+		pixel := img.Pixels[2*img.Stride+64*4:]
+		for i, v := range want {
+			if diff := int(pixel[i]) - v; diff < -4 || diff > 4 {
+				t.Fatalf("BT.709 patch RGB = %v, want %v (tolerance 4)", pixel[:3], want)
+			}
+		}
+	}
+	checkRGB(img1, [3]int{188, 120, 63})
 
 	// Keep a consumer device's reference open across a same-size slot reuse.
 	// This models an ANGLE draw that still reads the old shared resource.
@@ -373,6 +385,7 @@ func TestD3D11PoolMacroblockCropAndRotation(t *testing.T) {
 	if bytes.Equal(img1.Pixels, imgNew.Pixels) {
 		t.Fatal("full-range conversion did not change the frame")
 	}
+	checkRGB(imgNew, [3]int{178, 119, 69})
 	imgHeld, err := consumer.readbackSlotRGBA(0)
 	if err != nil {
 		t.Fatalf("consumer readback of held old surface: %v", err)
@@ -395,6 +408,21 @@ func TestD3D11PoolMacroblockCropAndRotation(t *testing.T) {
 	}
 	if surf2.Width != 250 || surf2.Height != 320 {
 		t.Fatalf("rotated surface = %dx%d, want 250x320", surf2.Width, surf2.Height)
+	}
+
+	// Recreate the FFmpeg device while slot zero is still published. A
+	// newly arriving reader must be able to open it in this interval.
+	old, err := pool.readbackSlotRGBA(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.ensureDevice(consumer.device); err != nil {
+		t.Fatal(err)
+	}
+	openSharedTestTexture(t, consumer.device, surf2.SharedHandle).release()
+	retained, err := pool.readbackSlotRGBA(0)
+	if err != nil || !bytes.Equal(retained.Pixels, old.Pixels) {
+		t.Fatalf("snapshot after device replacement changed: %v", err)
 	}
 }
 

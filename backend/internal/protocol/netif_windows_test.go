@@ -21,10 +21,12 @@ func TestDefaultRouteIndexUsesNetworkOrder(t *testing.T) {
 }
 
 func TestPhysicalGatewayAdapter(t *testing.T) {
-	address := windows.RawSockaddrInet4{Family: windows.AF_INET, Addr: [4]byte{192, 168, 1, 1}}
+	var storage syscall.RawSockaddrAny
+	address := (*windows.RawSockaddrInet4)(unsafe.Pointer(&storage))
+	*address = windows.RawSockaddrInet4{Family: windows.AF_INET, Addr: [4]byte{192, 168, 1, 1}}
 	gateway := windows.IpAdapterGatewayAddress{Address: windows.SocketAddress{
-		Sockaddr:       (*syscall.RawSockaddrAny)(unsafe.Pointer(&address)),
-		SockaddrLength: int32(unsafe.Sizeof(address)),
+		Sockaddr:       &storage,
+		SockaddrLength: int32(unsafe.Sizeof(*address)),
 	}}
 	base := windows.IpAdapterAddresses{OperStatus: windows.IfOperStatusUp, IfType: windows.IF_TYPE_ETHERNET_CSMACD, PhysicalAddressLength: 6, FirstGatewayAddress: &gateway}
 	for _, tc := range []struct {

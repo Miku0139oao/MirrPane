@@ -172,7 +172,7 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 	// is active and the UI consumer accepts DXGI shared handles. If the GPU
 	// video processor fails or the UI reports cross-adapter incompatibility,
 	// fall straight through to CopyImageTo on the same decoded frame.
-	if s.dec.CanRenderGPU() && s.pub.ConsumerAllowsGPUShare() {
+	if s.pub.ConsumerAllowsGPUShare() && s.dec.CanRenderGPU() {
 		surf, gpuErr := s.dec.RenderFrameGPU(claim.Index())
 		if gpuErr == nil {
 			claim.CommitGPU(surf.SharedHandle, surf.AdapterLUID)
@@ -193,6 +193,7 @@ func (s *frameSink) Handle(f *mirror.Frame) bool {
 		s.refreshMode(true)
 		return false
 	}
+	s.dec.ReleaseGPUSlot(claim.Index())
 	claim.Commit()
 	s.zeroCopy = false
 	s.gate.Published(true)
