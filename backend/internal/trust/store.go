@@ -29,7 +29,7 @@ type record struct {
 	TrustedSenders []string `json:"trustedSenders,omitempty"`
 }
 
-// Store serializes owner-directed approvals with persistence. A failed save never
+// Store serializes trust decisions with persistence. A failed save never
 // changes the in-memory policy. One sidecar owns the data directory.
 type Store struct {
 	mu   sync.Mutex
@@ -105,7 +105,8 @@ func (s *Store) contains(fingerprint string) bool {
 	return false
 }
 
-// TrustSender explicitly enrolls another sender, for owner-directed management.
+// TrustSender enrolls a sender identity: automatically on first use, or after
+// the owner approves it in manual approval mode.
 func (s *Store) TrustSender(fingerprint string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,7 +124,7 @@ func (s *Store) TrustSender(fingerprint string) error {
 	return nil
 }
 
-// ClearTrustedSenders durably clears all owner-approved identities.
+// ClearTrustedSenders durably clears every trusted identity.
 func (s *Store) ClearTrustedSenders() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -117,13 +117,14 @@ type prefChange struct {
 // configDraft holds the config.json values edited in the settings modal, which
 // take effect only after the sidecar restarts.
 type configDraft struct {
-	name        string
-	resKey      string
-	maxFps      int
-	decoderMode string
-	colorRange  string
-	scaleFilter string
-	audioBuffer string
+	name            string
+	resKey          string
+	maxFps          int
+	decoderMode     string
+	colorRange      string
+	scaleFilter     string
+	audioBuffer     string
+	requireApproval bool
 }
 
 // toastAction is a queued toast with one action button that opens a folder.
@@ -522,6 +523,7 @@ func (a *mirrpaneApp) openSettings() {
 		if st.AudioBuffer != "" {
 			draft.audioBuffer = st.AudioBuffer
 		}
+		draft.requireApproval = st.RequireApproval
 		draft.name = st.Name
 	}
 	a.configDraft = draft
@@ -578,6 +580,9 @@ func (draft configDraft) changes(original configDraft) map[string]any {
 	}
 	if draft.audioBuffer != original.audioBuffer {
 		patch["audioBuffer"] = draft.audioBuffer
+	}
+	if draft.requireApproval != original.requireApproval {
+		patch["requireApproval"] = draft.requireApproval
 	}
 	return patch
 }
@@ -799,7 +804,8 @@ func (a *mirrpaneApp) buildWaitingScreen(c *ui.Context) {
 		a.buildHeaderBar(c, "鏡屏 MirrPane", "待機中", colOK)
 		body := ui.Column(c).Grow(1).FillWidth().Center().Gap(20).Padding(24)
 		body.Children(func() {
-			// Pending sender approval card, shown when an unapproved device verifies.
+			// Pending sender approval card, shown in manual approval mode when
+			// an unapproved device verifies.
 			if p := st.PendingSender; p != nil {
 				ui.Column(c).Width(560).Padding(20).Gap(12).Radius(12).Background(colSurfaceHi).
 					Border(1, colAccent).Children(func() {
@@ -1285,6 +1291,12 @@ func (a *mirrpaneApp) buildSettingsGeneral(c *ui.Context) {
 		ui.Text(c, "接收名稱").Width(96).TextColor(colMuted)
 		ui.TextInput(c.Key("set-name-in"), &a.configDraft.name).Grow(1)
 	})
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "首次連線需人工核准").Grow(1)
+		ui.Switch(c.Key("set-approval"), &a.configDraft.requireApproval)
+	})
+	ui.Text(c, "關閉時，已配對的裝置第一次連線就自動加入信任名單；開啟後需在畫面上允許。").
+		FontSize(11).TextColor(colMuted)
 	if st := a.snap.State; st != nil {
 		infoRow(c, "區域網路 IP", fmt.Sprintf("%s:%d", nonEmpty(st.IP, "-"), st.Port))
 		infoRow(c, "當前解碼引擎", nonEmpty(st.Decoder, "待機"))

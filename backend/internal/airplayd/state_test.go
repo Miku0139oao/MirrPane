@@ -17,14 +17,15 @@ import (
 func newTestAPIHandler(receivers ...receiverControl) http.Handler {
 	info := protocol.NewDeviceInfo("鏡屏", "AA:BB:CC:DD:EE:FF")
 	cfg := &config.Config{
-		Name:        "鏡屏",
-		Width:       1920,
-		Height:      1080,
-		MaxFPS:      60,
-		DecoderMode: "auto",
-		ColorRange:  "auto",
-		ScaleFilter: "fast",
-		AudioBuffer: "balanced",
+		Name:            "鏡屏",
+		Width:           1920,
+		Height:          1080,
+		MaxFPS:          60,
+		DecoderMode:     "auto",
+		ColorRange:      "auto",
+		ScaleFilter:     "fast",
+		AudioBuffer:     "balanced",
+		RequireApproval: true,
 	}
 	var recv receiverControl
 	if len(receivers) > 0 {
@@ -183,7 +184,7 @@ func TestAPIHostAndOriginValidation(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("invalid JSON body: %v", err)
 			}
-			if body.Name != "鏡屏" || body.Port != 7000 {
+			if body.Name != "鏡屏" || body.Port != 7000 || !body.RequireApproval {
 				t.Fatalf("unexpected apiState body: %+v", body)
 			}
 		})

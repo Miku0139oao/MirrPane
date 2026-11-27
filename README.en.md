@@ -22,7 +22,7 @@
 - **Low-latency audio playback**: AAC-ELD audio is decoded and played through Windows `winmm waveOut`. Supports live volume control, mute, and three latency/jitter profiles (low, balanced, stable) backed by a larger ring that absorbs Wi-Fi bursts. The ring gently catches up when a burst raises occupancy, so latency does not stay elevated for the rest of the session.
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
 - **Automatic FFmpeg management**: Pins a dated upstream build (SHA256 and ABI checked), detects existing runtimes, and supports resumable first-run downloads. DLLs are resolved only from explicit trusted locations — never `PATH` or the working directory.
-- Mirroring and audio streams use the approved device’s pairing identity and are bound to the sender. The local management API validates `Host` and `Origin`. See [Security](#security).
+- Mirroring and audio streams use the paired device’s identity and are bound to the sender. A verified device is trusted on first use, so its first connection starts without a trip to the PC; enable **首次連線需人工核准** (Require manual approval) in Settings to gate each new device. The local management API validates `Host` and `Origin`. See [Security](#security).
 - **Portable distribution**: In the portable builds, settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The installer places the app under `%LOCALAPPDATA%\Programs\MirrPane` and adds only the standard per-user uninstall entry. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
 - **Single instance and a lite package**: One receiver per logon session; launching again brings the running window to the front instead of starting a second receiver that would fight over the AirPlay port and advertise a duplicate name. A lite archive without FFmpeg is available too (about 10 MB); it downloads and SHA-256-verifies the pinned runtime on first launch.
 
@@ -105,7 +105,7 @@ MirrPane/
 1. Run the [Windows installer][setup] (per-user, no administrator rights; installs to `%LOCALAPPDATA%\Programs\MirrPane` with a Start Menu shortcut and an uninstall entry), or extract the [portable archive][win64] / [lite archive][lite] to a writable folder and run `MirrPane.exe`. To verify a download, compare its SHA-256 from `Get-FileHash` with the `.sha256` file next to it. The lite build downloads and verifies the FFmpeg runtime on first launch, so it needs a network connection once.
 2. Connect the Windows PC and your iPhone or iPad to the same local network. Allow the receiver on private networks when Windows Firewall prompts you.
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
-4. On the first connection, check the device name on the PC and click **允許連線** (Allow connection). Select the receiver again on the iPhone or iPad. Later connections use the approved pairing identity.
+4. The first connection needs no approval on the PC: a paired device is added to the trust list automatically and mirroring starts. If you enable **首次連線需人工核准** (Require manual approval) in Settings, confirm the device name on the PC and click **允許連線** (Allow connection), then select the receiver again on the iPhone or iPad.
 5. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
 
 ---
@@ -214,7 +214,7 @@ If an iPhone or iPad cannot find the receiver, check the local network and firew
 
 ## Security
 
-The receiver checks the sender’s pairing public key against the approved devices in `config\trusted_senders.json`. Choosing **清除信任裝置** (Clear trusted devices) in Settings ends the current session and requires senders to obtain approval again. [Trust store implementation](backend/internal/trust/store.go)
+The receiver checks the sender’s pairing public key. A new device is trusted on first use and recorded in `config\trusted_senders.json`, which suits a personal network you control. To confirm each new device before it streams, enable **首次連線需人工核准** in Settings (or set `"requireApproval": true` in `config.json`). Choosing **清除信任裝置** (Clear trusted devices) ends the current session and empties the list; devices are added again on their next connection, automatically or after approval. [Trust store implementation](backend/internal/trust/store.go)
 
 Windows protects the receiver’s pairing key seed with DPAPI. File permissions restrict access to the configuration and trusted-device list. The management API listens on loopback.
 

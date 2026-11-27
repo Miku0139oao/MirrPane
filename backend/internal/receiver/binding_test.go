@@ -96,7 +96,10 @@ func bindingReceiver(t *testing.T) (*Receiver, *testMirror, *testAudio) {
 	}
 	m, a := &testMirror{}, &testAudio{}
 	r := &Receiver{keys: keys, trust: allowTestSenders{}, log: log.New(io.Discard, "", 0),
-		mirror: m, audioRx: a, timing: &udpStub{port: 7300}, sessions: make(map[string]*clientSession)}
+		// Most tests here exercise the approval gate; automatic first-use
+		// trust is covered separately with the flag cleared.
+		requireApproval: true,
+		mirror:          m, audioRx: a, timing: &udpStub{port: 7300}, sessions: make(map[string]*clientSession)}
 	return r, m, a
 }
 

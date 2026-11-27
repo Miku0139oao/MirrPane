@@ -86,6 +86,7 @@ type ReceiverState struct {
 	ColorRange      string         `json:"colorRange"`
 	ScaleFilter     string         `json:"scaleFilter"`
 	AudioBuffer     string         `json:"audioBuffer"`
+	RequireApproval bool           `json:"requireApproval"`
 	PendingSender   *PendingSender `json:"pendingSender"`
 	FPS             float64        `json:"fps"`
 	DecodeAvgMs     float64        `json:"decodeAvgMs"`

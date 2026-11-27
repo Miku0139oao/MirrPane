@@ -26,6 +26,19 @@ func TestOfflineSettingsOnlyWriteEditedFields(t *testing.T) {
 	}
 }
 
+func TestApprovalToggleIsAnEditedSetting(t *testing.T) {
+	a := &mirrpaneApp{}
+	a.openSettings()
+	if patch := a.configDraft.changes(a.initialConfig); len(patch) != 0 {
+		t.Fatalf("fresh settings changed the config: %v", patch)
+	}
+	a.configDraft.requireApproval = true
+	patch := a.configDraft.changes(a.initialConfig)
+	if len(patch) != 1 || patch["requireApproval"] != true {
+		t.Fatalf("approval toggle was not saved: %v", patch)
+	}
+}
+
 func TestConfigPatchPreservesIdentityAndDamagedFile(t *testing.T) {
 	dir := t.TempDir()
 	path := ConfigPath(dir)

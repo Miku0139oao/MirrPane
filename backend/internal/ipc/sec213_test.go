@@ -246,7 +246,7 @@ func TestIPCServerIsolatesSameIPControlConnections(t *testing.T) {
 			states = append(states, s)
 			stateMu.Unlock()
 		},
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

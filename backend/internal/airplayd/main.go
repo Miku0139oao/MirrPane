@@ -268,7 +268,7 @@ func Main() {
 					got, dropped, decoded)
 			}
 		},
-	})
+	}, cfg.RequireApproval)
 	if err != nil {
 		note("error: %v", err)
 		os.Exit(1)
