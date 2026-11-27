@@ -9,6 +9,7 @@
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
 - **Stable release v0.6.0** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
+- **Full user guide**: [install, AirPlay, Android, settings and troubleshooting](docs/guide.en.md)
 
 ---
 

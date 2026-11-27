@@ -501,11 +501,9 @@ func (a *mirrpaneApp) pairAndroidWireless() {
 			a.toastAsync("配對失敗：" + err.Error())
 			return
 		}
-		a.toastAsync("配對成功，正在連線…")
-		if err := a.sidecar.AndroidWireless(address); err != nil {
-			a.toastAsync("無線連線失敗：" + err.Error())
-			return
-		}
+		// Pairing uses its own port; adb connect needs the wireless-debugging
+		// port from the main screen, which may differ. Do not guess it.
+		a.toastAsync("配對成功，請改成無線偵錯頁面上的「IP:連接埠」再按無線連線")
 		a.refreshAndroidDevices()
 	}()
 }

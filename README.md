@@ -9,6 +9,7 @@
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
 - **v0.6.0 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
+- **完整使用教學**：[安裝、AirPlay、Android、設定與排錯](docs/guide.md)
 
 ---
 
