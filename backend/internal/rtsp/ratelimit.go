@@ -1,4 +1,4 @@
-package ipc
+package rtsp
 
 import (
 	"log"
@@ -106,7 +106,7 @@ func (s *Server) noteRateLimited(remote string) {
 	s.limitLogCount = 0
 	s.limitLogAt = now
 	s.limMu.Unlock()
-	log.Printf("ipc: rate limited %d request(s), last from %s", count, remote)
+	log.Printf("rtsp: rate limited %d request(s), last from %s", count, remote)
 }
 
 func (s *Server) allowNewPrefixLocked(prefix string, now time.Time) bool {

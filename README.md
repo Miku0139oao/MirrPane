@@ -18,7 +18,7 @@
 - **硬體加速低延遲解碼**：透過 FFmpeg **D3D11VA** 進行 H.264 硬體加速解碼，採用直通式 Annex-B access unit 管線；不支援硬解的環境可退回 CPU 軟體解碼，也可在設定中指定軟解。
 - **零 CGO 的單一執行檔**：桌面介面（MyGo）與 AirPlay 接收器是同一個 `MirrPane.exe`，皆以 `CGO_ENABLED=0` 建置；UI 以內部參數 `--airplayd` 重新執行自身來啟動接收器行程。FFmpeg 透過 `purego` 在執行時動態綁定，Windows 系統 API 也由 Go 直接呼叫，無需 Visual Studio C++、MinGW 或 C 開發標頭檔。
 - **單一執行檔、兩個行程**：發行版只有 `MirrPane.exe`；UI 以 `--airplayd` 自我重新執行（self re-exec）啟動接收器子行程，兩者以共享記憶體與回環 HTTP API 溝通，接收器會隨 UI 結束自動退出。
-- **共享記憶體影格渲染**：後端將 RGBA 影格發布至每個 UI 實例專屬的 Windows 共享記憶體（`Local\MirrPaneFrames-<pid>`），透過 3-slot mailbox 與事件喚醒機制，由原生 MyGo UI（`internal/framefeed`）直接映射讀取並上傳紋理，省去跨程序影像序列化，也避免多個實例互搶同一區段；手動以 `MirrPane.exe --airplayd` 執行接收器時仍預設 `Local\YingpingFrames`。
+- **共享記憶體影格渲染**：後端將 RGBA 影格發布至每個 UI 實例專屬的 Windows 共享記憶體（`Local\MirrPaneFrames-<pid>`），透過 3-slot mailbox 與事件喚醒機制，由原生 MyGo UI（`internal/framefeed`）直接映射讀取並上傳紋理，省去跨程序影像序列化，也避免多個實例互搶同一區段；手動以 `MirrPane.exe --airplayd` 執行接收器時仍預設 `Local\MirrPaneFrames`。
 - **直寫共享記憶體與閒置節流**：色彩轉換（swscale）直接寫入已取得的共享記憶體 slot，免去每幀一次整幀複製；當 UI 最小化或停止取幀超過一秒時，暫停下載、轉換與發佈（仍持續解碼參考幀），並以每秒一次的探測幀保留喚醒能力。
 - **低延遲同步音訊**：解碼 AAC-ELD 音訊串流並透過 Windows 原生 `winmm waveOut` 驅動播放，支援即時音量調整、靜音與三檔延遲／抗抖動設定（低延遲、平衡、穩定），並以較大的環形緩衝吸收 Wi-Fi 爆量；環形緩衝會在高水位時平滑追上目標延遲，避免突發壅塞永久墊高延遲。
 - **即時管線量測**：`/api/state` 提供 fps、解碼／GPU 下載／色彩轉換／發佈的均值與 p95、UI 端採用進度與音訊緩衝指標，便於定位延遲與掉幀。
@@ -78,7 +78,7 @@ MirrPane/
 │   │   ├── ffmpeg/             # FFmpeg 執行環境偵測、下載、驗證與快取管理
 │   │   ├── framefeed/          # UI 讀取共享記憶體影格的 reader
 │   │   ├── frames/             # 影格傳遞與共享記憶體格式
-│   │   ├── ipc/                # AirPlay RTSP 控制端點與封包解析
+│   │   ├── rtsp/               # AirPlay RTSP 控制端點與封包解析
 │   │   ├── mdns/               # AirPlay mDNS / Bonjour 廣播與裝置發現
 │   │   ├── mirror/             # AirPlay 螢幕鏡像串流接收與 Annex-B 處理
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify 配對協定
@@ -118,7 +118,7 @@ MirrPane/
 
 ### 環境需求
 
-- **Go**：`1.27.4+`（`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
+- **Go**：`1.27.3+`（`go.mod` 會透過 `GOTOOLCHAIN=auto` 自動選用）
 - 在 Windows x64 上使用 PowerShell 建置便攜包。MyGo 介面與接收器皆以 `CGO_ENABLED=0` 編譯。
 
 ### 建置步驟
@@ -179,7 +179,7 @@ MirrPane/
 | `-height` | `0` | 虛擬顯示器高度（設為 `0` 時讀取 `config.json`） |
 | `-fps` | `0` | 虛擬顯示器最高幀率（設為 `0` 時讀取 `config.json`） |
 | `-record` | 空字串 | 將接收到的原始 H.264 鏡像串流儲存至指定資料夾供離線重播除錯 |
-| `-shm` | `Local\YingpingFrames` | 供 UI 讀取影格的 Windows 共享記憶體區段名稱；UI 啟動時會改傳每個實例專屬的 `Local\MirrPaneFrames-<pid>` |
+| `-shm` | `Local\MirrPaneFrames` | 供 UI 讀取影格的 Windows 共享記憶體區段名稱；UI 啟動時會改傳每個實例專屬的 `Local\MirrPaneFrames-<pid>` |
 | `-log` | 空字串 | 指定日誌檔案並啟用詳細記錄；未指定時仍會寫入預設的 `logs/airplayd.log` |
 | `-parent-pid` | `0` | 父行程 PID（由 UI 傳入，當 UI 關閉時自動結束後端） |
 | `-v` | `false` | 啟用詳細日誌輸出（verbose logging） |

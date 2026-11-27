@@ -1,4 +1,4 @@
-package ipc
+package rtsp
 
 import "testing"
 

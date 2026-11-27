@@ -19,7 +19,7 @@ import (
 
 // DefaultMappingName is the default named shared-memory section used by the
 // MirrPane receiver process.
-const DefaultMappingName = `Local\YingpingFrames`
+const DefaultMappingName = `Local\MirrPaneFrames`
 
 const (
 	magic          uint64 = 0x314D4853524D4641 // "AFRMSHM1" little endian

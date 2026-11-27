@@ -136,7 +136,7 @@ func TestSlotStride(t *testing.T) {
 // Publish must produce a control block a reader can validate, with the slot
 // index and sequence packed into the publish word.
 func TestPublishRoundTrip(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTest`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTest`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestPublishRoundTrip(t *testing.T) {
 // Acquire/Commit is the direct-to-slot path the decoder uses: the producer
 // renders into mapped memory and only the commit publishes it.
 func TestAcquireCommitRoundTrip(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestAcquire`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestAcquire`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestAcquireCommitRoundTrip(t *testing.T) {
 // names the previous picture and Latest returns it unchanged. Cancelling must
 // give the slot back without publishing.
 func TestAcquireUncommittedSlotNotPublished(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestUncommitted`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestUncommitted`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestAcquireUncommittedSlotNotPublished(t *testing.T) {
 // busy at once, so the fourth acquire is refused rather than overwriting a
 // slot in use.
 func TestAcquireRefusesWhenAllSlotsBusy(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestBusy`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestBusy`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestAcquireRefusesWhenAllSlotsBusy(t *testing.T) {
 
 // Latest is the snapshot path: a detached copy of the newest published frame.
 func TestLatestCopiesNewestPicture(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestLatest`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestLatest`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestLatestCopiesNewestPicture(t *testing.T) {
 
 // A frame larger than a slot is refused rather than silently truncated.
 func TestPublishRejectsOversize(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestSmall`, 32, 32)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestSmall`, 32, 32)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestPublishRejectsOversize(t *testing.T) {
 // The slots are sized for the largest supported display, not for the one we
 // advertised: a sender that mirrors at its own native resolution must still fit.
 func TestPublishAcceptsLargerThanAdvertised(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestAdvert`, 1920, 1080)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestAdvert`, 1920, 1080)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestPublishAcceptsLargerThanAdvertised(t *testing.T) {
 // Re-creating the publisher while the UI still holds the mapping and event
 // handles open (for example during a rename/restart) must reattach cleanly.
 func TestPublishReattachesOnRestart(t *testing.T) {
-	const name = `Local\YingpingFramesTestRestart`
+	const name = `Local\MirrPaneFramesTestRestart`
 	p1, err := NewPublisher(name, 1920, 1080)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
@@ -504,7 +504,7 @@ func TestPublishReattachesOnRestart(t *testing.T) {
 }
 
 func TestCommitGPURoundTripAndConsumerFallbackFlag(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestGPU`, 1920, 1080)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestGPU`, 1920, 1080)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestCommitGPURoundTripAndConsumerFallbackFlag(t *testing.T) {
 }
 
 func TestAcquirePreservesPublishedSlot(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestPreservesPublished`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestPreservesPublished`, 64, 64)
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestAcquirePreservesPublishedSlot(t *testing.T) {
 }
 
 func TestRestartRetiresGPUPublication(t *testing.T) {
-	const name = `Local\YingpingFramesTestGPURestart`
+	const name = `Local\MirrPaneFramesTestGPURestart`
 	first, err := NewPublisher(name, 64, 64)
 	if err != nil {
 		t.Fatal(err)

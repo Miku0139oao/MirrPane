@@ -5,7 +5,7 @@
 // whole session. Requests and replies therefore go through the parser in
 // rtsp.go, not net/http. See the routing table in UxPlay's lib/raop.c, which
 // this file mirrors.
-package ipc
+package rtsp
 
 import (
 	"bytes"
@@ -147,7 +147,7 @@ func (s *Server) Serve(ln net.Listener) error {
 					return
 				default:
 				}
-				log.Printf("ipc: accept: %v", err)
+				log.Printf("rtsp: accept: %v", err)
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
@@ -278,14 +278,14 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		// A known method on an unknown URL is not an error: UxPlay leaves its
 		// pre-initialised 200 in place. Endpoints such as /event, /volume and
 		// /pair-remove land here.
-		log.Printf("ipc: tolerated %q %q", req.Method, logTarget(req.Target))
+		log.Printf("rtsp: tolerated %q %q", req.Method, logTarget(req.Target))
 		return &Response{}
 
 	case "GET":
 		if strings.HasPrefix(req.Target, "/info") {
 			return s.handleInfo(req)
 		}
-		log.Printf("ipc: tolerated %q %q", req.Method, logTarget(req.Target))
+		log.Printf("rtsp: tolerated %q %q", req.Method, logTarget(req.Target))
 		return &Response{}
 
 	case "OPTIONS":
@@ -321,7 +321,7 @@ func (s *Server) dispatchRTSP(req *Request, remote string, path string) *Respons
 		return &Response{Status: 453}
 	}
 
-	log.Printf("ipc: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
+	log.Printf("rtsp: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
 	return &Response{Status: 501}
 }
 
@@ -363,7 +363,7 @@ func (s *Server) dispatchHTTP(req *Request, remote, path string) *Response {
 			return &Response{Status: 404}
 		}
 	}
-	log.Printf("ipc: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
+	log.Printf("rtsp: unhandled %q %q %q", req.Method, logTarget(req.Target), req.Protocol)
 	return &Response{Status: 200}
 }
 
@@ -389,7 +389,7 @@ func (s *Server) binaryPlist(remote string, body []byte, h func(string, map[stri
 	req := map[string]any{}
 	if len(body) > 0 {
 		if _, err := plist.Unmarshal(body, &req); err != nil {
-			log.Printf("ipc: setup plist decode: %v", err)
+			log.Printf("rtsp: setup plist decode: %v", err)
 			return &Response{Status: 400}
 		}
 	}
@@ -407,10 +407,10 @@ func (s *Server) binaryPlist(remote string, body []byte, h func(string, map[stri
 func errorResponse(err error) *Response {
 	var code statusCoder
 	if errors.As(err, &code) {
-		log.Printf("ipc: protocol error: %v", err)
+		log.Printf("rtsp: protocol error: %v", err)
 		return &Response{Status: code.HTTPStatus()}
 	}
-	log.Printf("ipc: error: %v", err)
+	log.Printf("rtsp: error: %v", err)
 	return &Response{Status: 500}
 }
 
@@ -612,14 +612,14 @@ func (s *Server) handleSetParameter(req *Request) *Response {
 		if len(body) <= 64 {
 			v, err := strconv.ParseFloat(string(bytes.TrimSpace(body[len("volume:"):])), 64)
 			if err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) {
-				log.Printf("ipc: sender set scene volume %g", v)
+				log.Printf("rtsp: sender set scene volume %g", v)
 			}
 		}
 	case bytes.HasPrefix(body, []byte("progress:")):
 		// Live mirroring has no scrubbing; accept and ignore.
 	default:
 		// Never echo the (up to 4 MiB) body to the log.
-		log.Printf("ipc: unhandled set_parameter (%d bytes)", len(body))
+		log.Printf("rtsp: unhandled set_parameter (%d bytes)", len(body))
 	}
 	return &Response{}
 }
@@ -628,7 +628,7 @@ func (s *Server) handleSetParameter(req *Request) *Response {
 func plistResponse(m map[string]any) *Response {
 	b, err := plist.Marshal(m, plist.BinaryFormat)
 	if err != nil {
-		log.Printf("ipc: plist encode: %v", err)
+		log.Printf("rtsp: plist encode: %v", err)
 		return &Response{Status: 500}
 	}
 	return &Response{ContentType: "application/x-apple-binary-plist", Body: b}

@@ -27,12 +27,12 @@ import (
 	"github.com/Miku0139oao/MirrPane/backend/internal/config"
 	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
 	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
-	"github.com/Miku0139oao/MirrPane/backend/internal/ipc"
 	"github.com/Miku0139oao/MirrPane/backend/internal/mdns"
 	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
 	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
 	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/rtsp"
 	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
@@ -70,7 +70,7 @@ func Main() {
 		height  = flag.Int("height", 0, "virtual display height (0 uses config.json)")
 		maxFPS  = flag.Int("fps", 0, "max frames per second announced to the sender (0 uses config.json)")
 		record  = flag.String("record", "", "save the mirrored H.264 stream to this folder for offline replay")
-		shmName = flag.String("shm", `Local\YingpingFrames`, "shared-memory section the UI reads frames from")
+		shmName = flag.String("shm", `Local\MirrPaneFrames`, "shared-memory section the UI reads frames from")
 		logFile = flag.String("log", "", "also write the log to this file (implies -v)")
 		parent  = flag.Int("parent-pid", 0, "exit when this process exits (set by the UI)")
 		verbose = flag.Bool("v", false, "verbose logging")
@@ -180,7 +180,7 @@ func Main() {
 	defer controlPort.Close()
 	port = &controlPort.port
 
-	srv := ipc.New(info, display)
+	srv := rtsp.New(info, display)
 
 	// The UI reads setup progress from stdout before the local API is ready.
 	startup("正在偵測 FFmpeg…", false, false)
@@ -360,7 +360,7 @@ func startup(message string, done, failed bool) {
 
 // Overrides apply to this process only. The API and advertisement share the
 // same effective values while config.json keeps the user's saved settings.
-func effectiveDisplay(cfg *config.Config, width, height, fps int) ipc.Display {
+func effectiveDisplay(cfg *config.Config, width, height, fps int) rtsp.Display {
 	if width > 0 {
 		cfg.Width = width
 	}
@@ -370,7 +370,7 @@ func effectiveDisplay(cfg *config.Config, width, height, fps int) ipc.Display {
 	if fps > 0 {
 		cfg.MaxFPS = fps
 	}
-	return ipc.Display{Width: cfg.Width, Height: cfg.Height, MaxFPS: cfg.MaxFPS, RefreshHz: float64(cfg.MaxFPS)}
+	return rtsp.Display{Width: cfg.Width, Height: cfg.Height, MaxFPS: cfg.MaxFPS, RefreshHz: float64(cfg.MaxFPS)}
 }
 
 // boundControl is the control listener together with the port it took.
