@@ -8,7 +8,7 @@
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Stable release v0.5.0** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
+- **Stable release v0.5.1** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
 
 ---
 
@@ -241,9 +241,9 @@ This project draws from and benefits from the following open-source projects:
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.0
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip.sha256
-[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-setup.exe
-[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.0
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.1
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64-lite.zip
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.1

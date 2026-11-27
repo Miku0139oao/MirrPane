@@ -167,3 +167,43 @@ func TestKeySelectionUsesDecodedPCMAndSamplesErrors(t *testing.T) {
 		t.Fatalf("probe or logging budget exceeded: calls %d, chosen %d, log %s", calls, r.chosen, f.logs.String())
 	}
 }
+
+// A sender reachable over IPv6 may send its audio over IPv4. That other-family
+// source is accepted only by producing audio with the session key, and the
+// first source that does owns the stream.
+func TestCrossFamilyDataSourceIsAdoptedByKey(t *testing.T) {
+	f := newJitterFixture(t)
+	peer := netip.MustParseAddr("2001:db8::1")
+	f.r.ConfigurePeer(peer, 1234, f.r.keys, f.r.iv)
+	t.Cleanup(f.r.ResetKey)
+
+	// Another address of the peer's own family stays a peer drop.
+	f.r.receiveDatagram(netip.MustParseAddrPort("[2001:db8::9]:9000"), wireAudio(1), false)
+	if f.r.dataSource.IsValid() || f.delivered != 0 || f.r.diag.peerDrops.Load() != 1 {
+		t.Fatalf("same-family stranger was accepted: dataSource=%v delivered=%d drops=%d",
+			f.r.dataSource, f.delivered, f.r.diag.peerDrops.Load())
+	}
+
+	// A candidate that cannot decrypt must not choose the source.
+	dec := f.r.dec.(*testAudioDecoder)
+	original := dec.onDecode
+	dec.onDecode = func([]byte) (*decode.AudioFrame, error) { return nil, errors.New("wrong key") }
+	v4 := netip.MustParseAddrPort("192.0.2.20:9000")
+	f.r.receiveDatagram(v4, wireAudio(2), false)
+	if f.r.dataSource.IsValid() || f.delivered != 0 {
+		t.Fatal("an undecryptable cross-family packet was adopted")
+	}
+
+	// The same device on IPv4 decrypts, so it owns the stream.
+	dec.onDecode = original
+	f.r.receiveDatagram(v4, wireAudio(3), false)
+	if f.r.dataSource != v4 || f.delivered != 1 {
+		t.Fatalf("cross-family data not adopted: dataSource=%v delivered=%d", f.r.dataSource, f.delivered)
+	}
+
+	// Once pinned, another cross-family address is dropped.
+	f.r.receiveDatagram(netip.MustParseAddrPort("192.0.2.21:9000"), wireAudio(4), false)
+	if f.delivered != 1 || f.r.diag.peerDrops.Load() != 2 {
+		t.Fatalf("second address took over: delivered=%d drops=%d", f.delivered, f.r.diag.peerDrops.Load())
+	}
+}

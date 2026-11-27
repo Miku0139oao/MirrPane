@@ -118,6 +118,7 @@ type Receiver struct {
 
 	// Peer binding, pending repairs and key probing are protected by decMu.
 	peer                          netip.Addr
+	peerLogged                    bool
 	remoteControl                 netip.AddrPort
 	controlSource                 netip.AddrPort
 	dataSource                    netip.AddrPort
@@ -222,6 +223,7 @@ func (r *Receiver) ConfigurePeer(peer netip.Addr, controlPort int, keys []Key, i
 	}
 	r.clearIngress()
 	r.peer = peer.Unmap()
+	r.peerLogged = false
 	if r.peer.IsValid() && controlPort > 0 && controlPort <= 65535 {
 		r.remoteControl = netip.AddrPortFrom(r.peer, uint16(controlPort))
 	}

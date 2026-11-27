@@ -48,12 +48,32 @@ func (r *Receiver) receiveDatagram(from netip.AddrPort, pkt []byte, control bool
 		r.decMu.Unlock()
 		return
 	}
-	if !r.peer.IsValid() || from.Addr() != r.peer {
+	if !r.peer.IsValid() {
 		if c := r.diag.peerDrops.Add(1); r.debug && (c <= 5 || c%100 == 0) {
 			r.log.Printf("audio: debug drop peer #%d from=%v peer=%v len=%d type=%#x", c, from, r.peer, len(pkt), packetType(pkt))
 		}
 		r.decMu.Unlock()
 		return
+	}
+	if from.Addr() != r.peer {
+		// A device that reached the receiver over IPv6 may send its audio over
+		// IPv4 (or the other way round): the two sockets of one sender can pick
+		// different families. Such a candidate is accepted only below, when it
+		// decrypts with this session's key, and the first that does owns the
+		// stream. Anything else, including another address of the same family,
+		// stays a peer drop.
+		crossFamily := !control && from.Addr().Is4() != r.peer.Is4()
+		if !crossFamily || (r.dataSource.IsValid() && from != r.dataSource) {
+			c := r.diag.peerDrops.Add(1)
+			if !r.peerLogged {
+				r.peerLogged = true
+				r.log.Printf("audio: ignoring datagrams from %v (RTSP peer %v; %d received)", from.Addr(), r.peer, c)
+			} else if r.debug && (c <= 5 || c%100 == 0) {
+				r.log.Printf("audio: debug drop peer #%d from=%v peer=%v len=%d type=%#x", c, from, r.peer, len(pkt), packetType(pkt))
+			}
+			r.decMu.Unlock()
+			return
+		}
 	}
 	if len(pkt) < 2 {
 		r.diag.shortDrops.Add(1)
@@ -121,6 +141,9 @@ func (r *Receiver) receiveDatagram(from netip.AddrPort, pkt []byte, control bool
 	var frames []*decode.AudioFrame
 	if !control && !r.dataSource.IsValid() {
 		if f := r.consumePacket(pkt); f != nil {
+			if from.Addr() != r.peer {
+				r.log.Printf("audio: data source %v adopted with the session key (RTSP peer %v)", from, r.peer)
+			}
 			r.dataSource = from
 			frames = append(frames, f)
 		} else {

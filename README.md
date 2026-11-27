@@ -8,7 +8,7 @@
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **v0.5.0 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
+- **v0.5.1 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
 
 ---
 
@@ -240,9 +240,9 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.0
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip.sha256
-[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-setup.exe
-[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.0
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.1
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.1/MirrPane-0.5.1-win64-lite.zip
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.1
