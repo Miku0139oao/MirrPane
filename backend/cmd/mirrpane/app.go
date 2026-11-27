@@ -923,7 +923,7 @@ func (a *mirrpaneApp) buildBootingScreen(c *ui.Context) {
 		a.idleChrome(c)
 		ui.Column(c).Grow(1).FillWidth().Center().Padding(24).Children(func() {
 			ui.Column(c).Gap(20).AlignItems(ui.Center).Children(func() {
-				heroHeader(c, "鏡屏", "AIRPLAY 螢幕鏡像接收器")
+				heroHeader(c, "鏡屏", "AIRPLAY 接收器")
 				statusPill(c, "正在啟動接收器", colWarn)
 				ui.Spinner(c)
 				msg := a.snap.Message
@@ -975,15 +975,12 @@ func (a *mirrpaneApp) buildWaitingScreen(c *ui.Context) {
 					statusPill(c, "等待手機或平板連線", colOK)
 					a.buildConnectCard(c, st, availW)
 					ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+						softButton(c, "wait-android", icons.phone, "Android 裝置", false, a.openAndroid)
 						softButton(c, "wait-rescan", icons.refresh, "重新廣播", false, func() {
 							a.restartReceiver(nil, "接收器已重新啟動")
 						})
 						softButton(c, "wait-shots", icons.folder, "截圖資料夾", false, a.openScreenshots)
-						softButton(c, "wait-android", icons.phone, "Android 裝置", false, a.openAndroid)
 					})
-					ui.Textf(c, "解碼 %s · AirPlay %s · v%s",
-						nonEmpty(st.Decoder, st.DecoderMode), nonEmpty(st.Version, "-"), appVersion).
-						FontSize(11).TextColor(colFaint)
 				})
 			})
 		})
@@ -1003,20 +1000,16 @@ func (a *mirrpaneApp) buildConnectCard(c *ui.Context, st *ReceiverState, availW 
 				ui.Text(c, "AIRPLAY 接收名稱").FontSize(10.5).TextColor(colFaint).LetterSpacing(1.4)
 				ui.Text(c, name).FontSize(26).Bold().TextColor(colInk).SingleLine()
 			})
-			ui.Column(c).AlignItems(ui.End).Gap(3).Children(func() {
-				ui.Textf(c, "%d × %d · %d fps", st.TargetWidth, st.TargetHeight, st.MaxFPS).
-					Font("Consolas").FontSize(12).TextColor(colMuted).FontFeatures("tnum")
-				ui.Text(c, "解碼 "+nonEmpty(st.Decoder, nonEmpty(st.DecoderMode, "auto"))).
-					FontSize(11).TextColor(colFaint)
-			})
+			ui.Textf(c, "%d × %d · %d fps", st.TargetWidth, st.TargetHeight, st.MaxFPS).
+				Font("Cascadia Mono").FontSize(12).TextColor(colMuted).FontFeatures("tnum")
 		})
 
 		addr := fmt.Sprintf("%s:%d", nonEmpty(st.IP, "127.0.0.1"), st.Port)
-		ui.Row(c).FillWidth().Padding(10, 14).Radius(10).Background(colGround).
+		ui.Row(c).FillWidth().Padding(10, 14).Radius(12).Background(colWell).
 			Border(1, colHairline).AlignItems(ui.Center).Gap(12).Children(func() {
 			ui.Column(c).Grow(1).Gap(1).Children(func() {
 				ui.Text(c, "區域網路位址").FontSize(11).TextColor(colFaint)
-				ui.Text(c, addr).Font("Consolas").FontSize(15).TextColor(colInk).FontFeatures("tnum")
+				ui.Text(c, addr).Font("Cascadia Mono").FontSize(15).TextColor(colInk).FontFeatures("tnum")
 			})
 			if softButton(c, "copy-addr", icons.copy, "複製位址", false, func() {
 				c.WriteClipboard(addr)
@@ -1025,24 +1018,8 @@ func (a *mirrpaneApp) buildConnectCard(c *ui.Context, st *ReceiverState, availW 
 			}
 		})
 
-		ui.Box(c).FillWidth().Height(1).Background(colHairline)
-		ui.Row(c).FillWidth().Gap(16).Children(func() {
-			stepHint(c, "01", "開啟控制中心", "從螢幕右上角向下滑出")
-			stepHint(c, "02", "螢幕鏡像輸出", "點選 AirPlay 圖示")
-			stepHint(c, "03", "選擇接收器", "點選「"+name+"」開始投影")
-		})
-	})
-}
-
-// stepHint is one numbered line of the connect instructions.
-func stepHint(c *ui.Context, number, title, desc string) {
-	ui.Column(c).Grow(1).Gap(4).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, number).Font("Consolas").FontSize(10).Bold().TextColor(colAccent).
-				FontFeatures("tnum").Padding(2, 5).Radius(5).Background(colAccent.Alpha(0.14))
-			ui.Text(c, title).FontSize(12.5).Bold().TextColor(colInk).SingleLine()
-		})
-		ui.Text(c, desc).FontSize(11.5).TextColor(colMuted)
+		ui.Text(c, "在 iPhone 控制中心 → 螢幕鏡像輸出 → 選擇「"+name+"」").
+			FontSize(12).TextColor(colMuted)
 	})
 }
 
@@ -1053,7 +1030,7 @@ func (a *mirrpaneApp) buildApprovalCard(c *ui.Context, p *PendingSender, availW 
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "新裝置配對請求").FontSize(11.5).Bold().TextColor(colAccent).LetterSpacing(0.6)
 			ui.Spacer(c)
-			ui.Textf(c, "%d 秒前", p.AgeSeconds).Font("Consolas").FontSize(11.5).
+			ui.Textf(c, "%d 秒前", p.AgeSeconds).Font("Cascadia Mono").FontSize(11.5).
 				TextColor(colFaint).FontFeatures("tnum")
 		})
 		ui.Column(c).Gap(3).Children(func() {
@@ -1063,7 +1040,7 @@ func (a *mirrpaneApp) buildApprovalCard(c *ui.Context, p *PendingSender, availW 
 		ui.Row(c).FillWidth().Padding(8, 12).Background(colGround).Border(1, colHairline).
 			Radius(8).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "指紋").FontSize(11).TextColor(colFaint)
-			ui.Text(c, shortFingerprint(p.Fingerprint)).Font("Consolas").FontSize(12).
+			ui.Text(c, shortFingerprint(p.Fingerprint)).Font("Cascadia Mono").FontSize(12).
 				TextColor(colMuted).FontFeatures("tnum").Grow(1).SingleLine()
 		})
 		fp := p.Fingerprint
@@ -1251,20 +1228,16 @@ func (a *mirrpaneApp) buildLiveTopBar(c *ui.Context, st *ReceiverState, interrup
 		bw, bh := a.bitmap.Size()
 		resText = fmt.Sprintf("%dx%d", bw, bh)
 	}
-	decText := nonEmpty(st.Decoder, nonEmpty(st.DecoderMode, "auto"))
 	viewW, _ := c.Size()
 	media := audioOnly(st)
 	android := a.androidLive()
-	if android {
-		decText = "ADB"
-	}
 	compact := viewW < 720
 	medium := viewW < 920
 
-	bar := ui.Row(c).FillWidth().Padding(6, 8).Gap(2).AlignItems(ui.Center).Radius(13).
-		Background(colGlass).Material(glass.Blur{Radius: 18}).
+	bar := ui.Row(c).FillWidth().Padding(6, 10).Gap(2).AlignItems(ui.Center).Radius(999).
+		Background(colGlass).Material(glass.Blur{Radius: 20}).
 		Border(1, colBorder).InsetShadow(0, 1, 0, 0, colRim).
-		Shadow(0, 10, 30, 0, ui.RGBA(0, 0, 0, 0.4))
+		Shadow(0, 12, 36, 0, ui.RGBA(0, 0, 0, 0.5))
 	// Hovered and FocusWithin are read as the bar builds: mygo rebuilds when
 	// the pointer comes over it, leaves, or the keyboard focus changes, and
 	// while a control holds either the hide timer stays paused.
@@ -1292,15 +1265,16 @@ func (a *mirrpaneApp) buildLiveTopBar(c *ui.Context, st *ReceiverState, interrup
 			SingleLine().MaxWidth(senderMax)
 		if !compact {
 			meta := fmt.Sprintf("%s · %.0f fps", resText, displayFPS)
-			if !medium {
-				meta += " · " + decText
-			}
 			textColor := colMuted
 			if media {
 				meta = "僅音訊 · AAC-ELD"
 				textColor = colAccent
 			}
-			ui.Text(c, meta).Font("Consolas").FontSize(11.5).TextColor(textColor).
+			if android {
+				meta += " · Android"
+				textColor = colAccent
+			}
+			ui.Text(c, meta).Font("Cascadia Mono").FontSize(11).TextColor(textColor).
 				FontFeatures("tnum").SingleLine().MaxWidth(viewW - 560).MarginStart(6)
 		}
 		ui.Spacer(c)
@@ -1473,7 +1447,7 @@ func hudMetric(c *ui.Context, label, text string, value, hi float64, levels *ui.
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, label).FontSize(10.5).TextColor(colMuted)
 			ui.Spacer(c)
-			ui.Text(c, text).Font("Consolas").FontSize(10.5).TextColor(colInk).FontFeatures("tnum")
+			ui.Text(c, text).Font("Cascadia Mono").FontSize(10.5).TextColor(colInk).FontFeatures("tnum")
 		})
 		ui.Meter(c, value, 0, hi, levels).FillWidth().Height(4.5).Background(colGround)
 	})
@@ -1513,8 +1487,8 @@ func (a *mirrpaneApp) buildHudOverlay(c *ui.Context, st *ReceiverState, showBar 
 	}
 
 	card := ui.Column(c).Absolute().Top(top).Width(288).PassThrough().
-		Padding(12, 14).Gap(8).Radius(12).Background(colHudBg).
-		Material(glass.Blur{Radius: 16}).Border(1, colBorder).
+		Padding(12, 14).Gap(8).Radius(18).Background(colHudBg).
+		Material(glass.Blur{Radius: 20}).Border(1, colBorder).
 		InsetShadow(0, 1, 0, 0, colRim).ZIndex(50)
 	if a.prefs.HudCorner == "topRight" || a.prefs.HudCorner == "bottomRight" {
 		card.Right(14)
@@ -1530,17 +1504,17 @@ func (a *mirrpaneApp) buildHudOverlay(c *ui.Context, st *ReceiverState, showBar 
 			if media {
 				detail = "AAC-ELD 48kHz"
 			}
-			ui.Text(c, detail).Font("Consolas").FontSize(10.5).TextColor(colFaint).FontFeatures("tnum")
+			ui.Text(c, detail).Font("Cascadia Mono").FontSize(10.5).TextColor(colFaint).FontFeatures("tnum")
 		})
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(4).Children(func() {
-			ui.Textf(c, "%.1f", fps).Font("Consolas").FontSize(26).Bold().TextColor(colInk).FontFeatures("tnum")
+			ui.Textf(c, "%.1f", fps).Font("Cascadia Mono").FontSize(26).Bold().TextColor(colInk).FontFeatures("tnum")
 			ui.Text(c, "fps").FontSize(11).TextColor(colMuted)
 			ui.Spacer(c)
 			uiFPS := "UI —"
 			if a.uiFPS >= 0.5 {
 				uiFPS = fmt.Sprintf("UI %.0f", a.uiFPS)
 			}
-			ui.Text(c, uiFPS).Font("Consolas").FontSize(10.5).TextColor(colFaint).FontFeatures("tnum")
+			ui.Text(c, uiFPS).Font("Cascadia Mono").FontSize(10.5).TextColor(colFaint).FontFeatures("tnum")
 		})
 		hudMetric(c, "解碼延遲",
 			fmt.Sprintf("%.1f / p95 %.1f ms", st.DecodeAvgMs, st.DecodeP95Ms),
@@ -1548,13 +1522,8 @@ func (a *mirrpaneApp) buildHudOverlay(c *ui.Context, st *ReceiverState, showBar 
 		hudMetric(c, "音訊緩衝",
 			fmt.Sprintf("%.0f ms · 欠載 %d", st.AudioOccupancy, st.AudioUnderruns),
 			st.AudioOccupancy, 200, &ui.MeterLevels{Warning: 140, Critical: 180})
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Textf(c, "LAG %d · DROP %d · %s", st.LagFrames, st.Dropped,
-				nonEmpty(st.Decoder, nonEmpty(st.DecoderMode, "auto"))).
-				Font("Consolas").FontSize(9.5).TextColor(colFaint).FontFeatures("tnum").SingleLine()
-			ui.Spacer(c)
-			ui.Textf(c, "v%s", appVersion).Font("Consolas").FontSize(9.5).TextColor(colFaint)
-		})
+		ui.Textf(c, "LAG %d · DROP %d", st.LagFrames, st.Dropped).
+			Font("Cascadia Mono").FontSize(9.5).TextColor(colFaint).FontFeatures("tnum").SingleLine()
 	})
 }
 
@@ -1608,10 +1577,10 @@ func (a *mirrpaneApp) buildFailedScreen(c *ui.Context) {
 						ui.Scroll(c).Height(logH).FillWidth().Padding(12).Radius(10).
 							Background(colGround).Border(1, colHairline).Children(func() {
 							if len(a.logLines) == 0 {
-								ui.Text(c, "（尚無日誌內容）").Font("Consolas").FontSize(11.5).TextColor(colFaint)
+								ui.Text(c, "（尚無日誌內容）").Font("Cascadia Mono").FontSize(11.5).TextColor(colFaint)
 							} else {
 								for i, line := range a.logLines {
-									ui.Text(c.Key(i), line).Font("Consolas").FontSize(11).
+									ui.Text(c.Key(i), line).Font("Cascadia Mono").FontSize(11).
 										TextColor(colMuted).SingleLine()
 								}
 							}
@@ -1808,7 +1777,7 @@ func (a *mirrpaneApp) buildAndroidModal(c *ui.Context) {
 							}
 							ui.Spacer(c)
 							if st != nil && st.Phase == "live" {
-								ui.Textf(c, "%d × %d", st.Width, st.Height).Font("Consolas").
+								ui.Textf(c, "%d × %d", st.Width, st.Height).Font("Cascadia Mono").
 									FontSize(11).TextColor(colFaint).FontFeatures("tnum")
 							}
 						})
@@ -1854,7 +1823,7 @@ func (a *mirrpaneApp) buildAndroidModal(c *ui.Context) {
 								ui.Column(c).Grow(1).Gap(1).Children(func() {
 									model := nonEmpty(dev.Model, dev.Serial)
 									ui.Text(c, model).FontSize(13).Bold().TextColor(colInk).SingleLine()
-									ui.Text(c, dev.Serial).Font("Consolas").FontSize(10.5).
+									ui.Text(c, dev.Serial).Font("Cascadia Mono").FontSize(10.5).
 										TextColor(colFaint).SingleLine()
 								})
 								pill(c, label, color)
@@ -1878,7 +1847,7 @@ func (a *mirrpaneApp) buildAndroidModal(c *ui.Context) {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 					if softButton(c, "android-scan", icons.refresh, "重新整理", false, a.refreshAndroidDevices) {
 					}
-					ui.Text(c, "adb devices").Font("Consolas").FontSize(10.5).TextColor(colFaint)
+					ui.Text(c, "adb devices").Font("Cascadia Mono").FontSize(10.5).TextColor(colFaint)
 				})
 
 				ui.Box(c).FillWidth().Height(1).Background(colHairline).MarginY(2)
@@ -1908,8 +1877,9 @@ func (a *mirrpaneApp) panelOverlay(c *ui.Context, open *bool, width, height floa
 	ui.DialogBase(c, open, func(back, panel ui.Element) {
 		back.Background(ui.RGBA(0, 0, 0, 0.5))
 		panel.Width(min(width, availW-32)).Height(min(height, availH-32)).
-			Padding(18).Gap(12).Radius(16).Background(colSurface).
-			Border(1, colBorder).Shadow(0, 26, 70, 0, ui.RGBA(0, 0, 0, 0.55))
+			Padding(18).Gap(12).Radius(22).Background(colPanel).
+			Border(1, colBorder).InsetShadow(0, 1, 0, 0, colRim).
+			Shadow(0, 30, 80, 0, ui.RGBA(0, 0, 0, 0.6))
 		fn()
 	})
 }
@@ -1919,7 +1889,7 @@ func (a *mirrpaneApp) buildLogsModal(c *ui.Context) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(10).Children(func() {
 			ui.Icon(c, icons.logs).Width(17).Height(17).TextColor(colAccent)
 			ui.Text(c, "接收器日誌").FontSize(17).Bold().TextColor(colInk)
-			ui.Text(c, a.sidecar.LogPath()).Font("Consolas").FontSize(11).
+			ui.Text(c, a.sidecar.LogPath()).Font("Cascadia Mono").FontSize(11).
 				TextColor(colFaint).SingleLine().Grow(1)
 			if softButton(c, "logs-copy", icons.copy, "複製全部", false, func() {
 				if len(a.logLines) == 0 {
@@ -1937,10 +1907,10 @@ func (a *mirrpaneApp) buildLogsModal(c *ui.Context) {
 			Background(colGround).Border(1, colHairline).Children(func() {
 			ui.Column(c).Gap(2).Children(func() {
 				if len(a.logLines) == 0 {
-					ui.Text(c, "（目前沒有日誌記錄）").Font("Consolas").FontSize(11.5).TextColor(colFaint)
+					ui.Text(c, "（目前沒有日誌記錄）").Font("Cascadia Mono").FontSize(11.5).TextColor(colFaint)
 				} else {
 					for i, line := range a.logLines {
-						ui.Text(c.Key(i), line).Font("Consolas").FontSize(11).
+						ui.Text(c.Key(i), line).Font("Cascadia Mono").FontSize(11).
 							TextColor(colMuted).SingleLine()
 					}
 				}
@@ -1958,7 +1928,7 @@ func (a *mirrpaneApp) buildLogsModal(c *ui.Context) {
 			}) {
 			}
 			ui.Spacer(c)
-			ui.Textf(c, "%d 行", len(a.logLines)).Font("Consolas").FontSize(11).TextColor(colFaint)
+			ui.Textf(c, "%d 行", len(a.logLines)).Font("Cascadia Mono").FontSize(11).TextColor(colFaint)
 			softButton(c, "logs-done", nil, "關閉", false, func() { a.showLogs = false })
 		})
 	})
@@ -1976,19 +1946,15 @@ func (a *mirrpaneApp) settingsDirty() bool {
 
 // settingsNavItem is one row of the settings sidebar.
 func settingsNavItem(c *ui.Context, key any, ic *ui.SVG, label string, selected, dirty bool, onClick func()) {
-	row := ui.ButtonBase(c.Key(key)).FillWidth().Padding(7, 9).Radius(8).Gap(8)
+	row := ui.ButtonBase(c.Key(key)).FillWidth().Padding(7, 11).Radius(999).Gap(8)
 	if selected {
-		row.Background(colSurfaceHi)
+		row.Background(colAccent.Alpha(0.14)).TextColor(colAccent)
 	} else if row.Hovered() {
-		row.Background(colHover)
-	}
-	row.TextColor(colMuted)
-	if selected || row.Hovered() {
-		row.TextColor(colInk)
+		row.Background(colHover).TextColor(colInk)
+	} else {
+		row.TextColor(colMuted)
 	}
 	row.Children(func() {
-		ui.Box(c).Width(3).Height(16).Radius(1.5).
-			Background(colorIf(selected, colAccent, ui.Transparent))
 		ui.Icon(c, ic).Width(15).Height(15)
 		ui.Text(c, label).FontSize(12.5).Grow(1)
 		if dirty {
@@ -2047,9 +2013,6 @@ func (a *mirrpaneApp) buildSettingsModal(c *ui.Context) {
 						settingsNavItem(c, "set-nav-"+strconv.Itoa(i), settingsTabIcons[i], name,
 							a.settingsTab == i, tabDirty, func() { a.settingsTab = idx })
 					}
-					ui.Spacer(c)
-					ui.Textf(c, "AirPlay %s", nonEmpty(a.snapStateVersion(), "-")).
-						FontSize(10.5).TextColor(colFaint).PaddingStart(9)
 				})
 				ui.Scroll(c).Grow(1).FillWidth().PaddingEnd(4).Children(builder)
 			})
@@ -2144,7 +2107,7 @@ func indexOf(list []string, v string) int {
 
 func (a *mirrpaneApp) buildSettingsGeneral(c *ui.Context) {
 	sectionLabel(c, "接收器")
-	settingRow(c, "接收名稱", "AirPlay 廣播時顯示的名稱", func() {
+	settingRow(c, "接收名稱", "", func() {
 		ui.TextInput(c.Key("set-name-in"), &a.configDraft.name).Width(236)
 	})
 	if switchRow(c, "set-approval", "首次連線需人工核准",
@@ -2156,8 +2119,7 @@ func (a *mirrpaneApp) buildSettingsGeneral(c *ui.Context) {
 	if st := a.snap.State; st != nil {
 		infoRow(c, "區域網路位址", fmt.Sprintf("%s:%d", nonEmpty(st.IP, "-"), st.Port))
 		infoRow(c, "當前解碼引擎", nonEmpty(st.Decoder, "待機"))
-		infoRow(c, "累計畫面", fmt.Sprintf("%d 幀（略過 %d 幀）", st.Pictures, st.Dropped))
-		infoRow(c, "音訊封包", fmt.Sprintf("%d 個", st.AudioFrames))
+
 		infoRow(c, "協定版本", "AirPlay "+nonEmpty(st.Version, "-"))
 	}
 
@@ -2209,14 +2171,14 @@ func (a *mirrpaneApp) buildSettingsGraphics(c *ui.Context) {
 	})
 
 	sectionLabel(c, "虛擬顯示器")
-	selectField(c, "set-res", "解析度", "手機鏡像會等比縮放進這個畫布",
+	selectField(c, "set-res", "解析度", "",
 		&a.configDraft.resKey, resolutionOrder)
 	fps := strconv.Itoa(a.configDraft.maxFps)
 	fpsIdx := 0
 	if fps == "30" {
 		fpsIdx = 1
 	}
-	if segmentedField(c, "set-fps", "宣告幀率上限", "向上游宣告的最高影格率",
+	if segmentedField(c, "set-fps", "宣告幀率上限", "",
 		&fpsIdx, "60 fps", "30 fps") {
 		if fpsIdx == 1 {
 			a.configDraft.maxFps = 30
@@ -2227,17 +2189,17 @@ func (a *mirrpaneApp) buildSettingsGraphics(c *ui.Context) {
 
 	sectionLabel(c, "解碼與色彩")
 	decIdx := indexOf(decoderModes, a.configDraft.decoderMode)
-	if segmentedField(c, "set-dec", "H.264 解碼", "D3D11VA 硬體解碼或 CPU 軟體解碼",
+	if segmentedField(c, "set-dec", "H.264 解碼", "",
 		&decIdx, decoderLabels...) {
 		a.configDraft.decoderMode = decoderModes[decIdx]
 	}
 	rangeIdx := indexOf(colorRanges, a.configDraft.colorRange)
-	if segmentedField(c, "set-range", "輸入色彩範圍", "傳送端未標記時使用的解讀方式",
+	if segmentedField(c, "set-range", "輸入色彩範圍", "",
 		&rangeIdx, colorLabels...) {
 		a.configDraft.colorRange = colorRanges[rangeIdx]
 	}
 	filterIdx := indexOf(scaleFilters, a.configDraft.scaleFilter)
-	if segmentedField(c, "set-filter", "YUV → RGBA 轉換", "色彩轉換的取樣品質",
+	if segmentedField(c, "set-filter", "YUV → RGBA 轉換", "",
 		&filterIdx, scaleLabels...) {
 		a.configDraft.scaleFilter = scaleFilters[filterIdx]
 	}
@@ -2251,20 +2213,20 @@ func (a *mirrpaneApp) buildSettingsRender(c *ui.Context) {
 
 	sectionLabel(c, "構圖")
 	fill := a.prefs.FillViewport
-	if switchRow(c, "set-fill", "填滿視窗", "裁切邊緣以填滿整個視窗（Z）", &fill) {
+	if switchRow(c, "set-fill", "填滿視窗（Z）", "", &fill) {
 		next := a.prefs
 		next.FillViewport = fill
 		a.savePrefs(next)
 	}
 	flip := a.prefs.FlipHorizontal
-	if switchRow(c, "set-flip", "水平翻轉", "鏡像顯示畫面（H）", &flip) {
+	if switchRow(c, "set-flip", "水平翻轉（H）", "", &flip) {
 		next := a.prefs
 		next.FlipHorizontal = flip
 		a.savePrefs(next)
 	}
 	quality := samplingChoice(a.prefs.FilterQuality)
 	qualityIdx := indexOf(samplingChoices, quality)
-	if segmentedField(c, "set-qual", "縮放取樣", "放大畫面時的取樣方式",
+	if segmentedField(c, "set-qual", "縮放取樣", "",
 		&qualityIdx, samplingChoices...) {
 		next := a.prefs
 		next.FilterQuality = filterQualityForChoice(samplingChoices[qualityIdx])
@@ -2273,7 +2235,7 @@ func (a *mirrpaneApp) buildSettingsRender(c *ui.Context) {
 
 	sectionLabel(c, "工具列與 HUD")
 	hud := a.prefs.ShowHud
-	if switchRow(c, "set-hud", "顯示效能 HUD", "在畫面上顯示解碼與音訊指標（Tab）", &hud) {
+	if switchRow(c, "set-hud", "顯示效能 HUD（Tab）", "", &hud) {
 		next := a.prefs
 		next.ShowHud = hud
 		a.savePrefs(next)
@@ -2285,7 +2247,7 @@ func (a *mirrpaneApp) buildSettingsRender(c *ui.Context) {
 		a.savePrefs(next)
 	}
 	hideIdx := indexOf([]string{"0", "2", "4"}, strconv.Itoa(a.prefs.BarHideSeconds))
-	if segmentedField(c, "set-hide", "工具列自動隱藏", "游標離開後淡出工具列",
+	if segmentedField(c, "set-hide", "工具列自動隱藏", "",
 		&hideIdx, "不隱藏", "2 秒", "4 秒") {
 		if v, err := strconv.Atoi([]string{"0", "2", "4"}[hideIdx]); err == nil {
 			next := a.prefs
@@ -2354,8 +2316,6 @@ func (a *mirrpaneApp) buildSettingsAudio(c *ui.Context) {
 		&bufIdx, audioBufLabels...) {
 		a.configDraft.audioBuffer = audioBuffers[bufIdx]
 	}
-	ui.Text(c, "低延遲反應最快；穩定模式以較大緩衝吸收 Wi-Fi 突發壅塞。").
-		FontSize(11).TextColor(colMuted)
 }
 
 // infoRow lays out one read-only telemetry line.
@@ -2363,7 +2323,7 @@ func infoRow(c *ui.Context, label, value string) {
 	ui.Row(c).FillWidth().Children(func() {
 		ui.Text(c, label).FontSize(12.5).TextColor(colMuted)
 		ui.Spacer(c)
-		ui.Text(c, value).Font("Consolas").FontSize(12.5).TextColor(colInk)
+		ui.Text(c, value).Font("Cascadia Mono").FontSize(12.5).TextColor(colInk)
 	})
 }
 

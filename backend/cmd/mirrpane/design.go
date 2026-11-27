@@ -9,63 +9,64 @@ import (
 // shade: ground is the chassis, surface the panels, SurfaceHi the raised
 // instruments.
 var (
-	colGround    = ui.Hex("#110F0E")
-	colWell      = ui.Hex("#141210")
-	colSurface   = ui.Hex("#1A1714")
-	colSurfaceHi = ui.Hex("#231F1B")
-	colSurfacePr = ui.Hex("#2F2A23")
-	colBorder    = ui.RGBA(255, 244, 230, 0.095)
-	colHairline  = ui.RGBA(255, 244, 230, 0.055)
-	colRim       = ui.RGBA(255, 246, 232, 0.075)
-	colInk       = ui.Hex("#F4EFE7")
-	colMuted     = ui.Hex("#B0A79B")
-	colFaint     = ui.Hex("#8C8479")
-	colAccent    = ui.Hex("#E8A24A")
-	colAccentHov = ui.Hex("#F2B663")
-	colAccentPrs = ui.Hex("#C9862F")
-	colOK        = ui.Hex("#72CE8A")
-	colDanger    = ui.Hex("#E57365")
-	colWarn      = ui.Hex("#E8AE58")
-	colGlass     = ui.RGBA(19, 17, 15, 0.72)
-	colOverlayBg = ui.RGBA(19, 17, 16, 0.88)
-	colHudBg     = ui.RGBA(15, 13, 12, 0.76)
-	colCardBg    = ui.RGBA(255, 244, 230, 0.045)
-	colHover     = ui.RGBA(255, 244, 230, 0.075)
-	colMenuBg    = ui.Hex("#231F1B")
+	colGround    = ui.Hex("#070B14")
+	colWell      = ui.Hex("#0A101E")
+	colSurface   = ui.RGBA(18, 27, 48, 0.78)
+	colPanel     = ui.Hex("#121A2E")
+	colSurfaceHi = ui.RGBA(30, 44, 76, 0.88)
+	colSurfacePr = ui.RGBA(38, 54, 92, 0.92)
+	colBorder    = ui.RGBA(148, 163, 184, 0.22)
+	colHairline  = ui.RGBA(148, 163, 184, 0.13)
+	colRim       = ui.RGBA(186, 230, 253, 0.22)
+	colInk       = ui.Hex("#F8FAFC")
+	colMuted     = ui.Hex("#94A3B8")
+	colFaint     = ui.Hex("#8A9AAE")
+	colAccent    = ui.Hex("#38BDF8")
+	colAccentHov = ui.Hex("#60A5FA")
+	colAccentPrs = ui.Hex("#0EA5E9")
+	colAccentInk = ui.Hex("#041625")
+	colOK        = ui.Hex("#34D399")
+	colDanger    = ui.Hex("#FB7185")
+	colWarn      = ui.Hex("#FBBF24")
+	colGlass     = ui.RGBA(10, 16, 30, 0.55)
+	colOverlayBg = ui.RGBA(8, 13, 26, 0.8)
+	colHudBg     = ui.RGBA(8, 13, 26, 0.72)
+	colCardBg    = ui.RGBA(255, 255, 255, 0.055)
+	colHover     = ui.RGBA(255, 255, 255, 0.08)
+	colMenuBg    = ui.Hex("#0F1728")
 )
 
 func mirrpaneTheme() *ui.Theme {
 	t := ui.DarkTheme()
 	t.Background = colGround
-	// Controls take the recessed well colour so they read as inset into the
-	// panels they sit on, not painted with the same wall paint.
+	// Controls sit in the well colour, inset into the glass panels.
 	t.Surface = colWell
-	t.SurfaceHover = ui.Hex("#1F1B17")
-	t.SurfacePressed = colSurfaceHi
+	t.SurfaceHover = ui.Hex("#16203A")
+	t.SurfacePressed = ui.Hex("#1E2C4C")
 	t.Border = colBorder
 	t.Text = colInk
 	t.TextMuted = colMuted
 	t.Accent = colAccent
 	t.AccentHover = colAccentHov
 	t.AccentPressed = colAccentPrs
-	t.AccentText = ui.Hex("#1B1208")
+	t.AccentText = colAccentInk
 	t.Danger = colDanger
 	t.Warning = colWarn
 	t.Success = colOK
-	t.Focus = ui.RGBA(232, 162, 74, 0.72)
-	t.Radius = 9
+	t.Focus = ui.RGBA(56, 189, 248, 0.7)
+	t.Radius = 10
 	t.Spacing = 4
-	t.Inverse = ui.Hex("#2A2521")
+	t.Inverse = ui.Hex("#16203A")
 	t.InverseText = colInk
-	t.Scrollbar = ui.RGBA(255, 244, 230, 0.2)
-	t.ScrollbarStyle = ui.ScrollbarStyle{ThumbWidth: 5, Thumb: ui.RGBA(255, 244, 230, 0.22), Hover: ui.RGBA(255, 244, 230, 0.34)}
+	t.Scrollbar = ui.RGBA(148, 163, 184, 0.22)
+	t.ScrollbarStyle = ui.ScrollbarStyle{ThumbWidth: 5, Thumb: ui.RGBA(148, 163, 184, 0.26), Hover: ui.RGBA(148, 163, 184, 0.4)}
 	return t
 }
 
 // svgIcon parses one of the app's line icons: 24×24, drawn in the text
 // colour wherever it is shown.
 func svgIcon(body string) *ui.SVG {
-	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">` + body + `</svg>`))
+	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">` + body + `</svg>`))
 }
 
 // icons are MirrPane's own line icons, parsed once at startup.
@@ -110,9 +111,9 @@ var icons = struct {
 // brandMark is the app's logo, drawn in its own colours: the amber monitor
 // with the cream phone in front, as assets/logo.png has them.
 var brandMark = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<rect x="18" y="10" width="40" height="28" rx="7" fill="none" stroke="#E8A24A" stroke-width="4.5"/>
-<rect x="6" y="23" width="18" height="31" rx="5.5" fill="#1B1815" stroke="#F4EFE7" stroke-width="4.5"/>
-<path d="M24 38h27" fill="none" stroke="#E8A24A" stroke-width="4.5" stroke-linecap="round"/>
+<rect x="18" y="10" width="40" height="28" rx="7" fill="none" stroke="#38BDF8" stroke-width="4.5"/>
+<rect x="6" y="23" width="18" height="31" rx="5.5" fill="#0A101E" stroke="#E8F1FF" stroke-width="4.5"/>
+<path d="M24 38h27" fill="none" stroke="#38BDF8" stroke-width="4.5" stroke-linecap="round"/>
 </svg>`))
 
 // ---------- shared building blocks ----------
@@ -120,23 +121,26 @@ var brandMark = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" 
 // heroRoot is the full-window ground of the idle screens: a warm glow from
 // the top fading into the charcoal.
 func heroRoot(c *ui.Context) ui.Element {
-	return ui.Column(c).Fill().Background(colGround).LinearGradient(ui.LinearGradient{
-		Stops: []ui.GradientStop{
-			{Color: ui.Hex("#281E14"), At: 0},
-			{Color: ui.Hex("#181411"), At: 0.42},
-			{Color: colGround, At: 0.85},
-		},
-		Angle: 180,
-		Oklab: true,
+	root := ui.Column(c).Fill().Background(colGround)
+	// Aurora: solid rounded blobs blurred into soft light, as the mockup's
+	// radial glows. They stay behind everything the screen adds after this.
+	root.Children(func() {
+		ui.Box(c).Absolute().Left(80).Top(-340).Width(1120).Height(780).Radius(540).
+			Background(ui.RGBA(14, 116, 144, 0.32)).Blur(90).PassThrough()
+		ui.Box(c).Absolute().Right(-280).Bottom(-360).Width(920).Height(780).Radius(460).
+			Background(ui.RGBA(79, 70, 229, 0.28)).Blur(90).PassThrough()
+		ui.Box(c).Absolute().Left(-280).Bottom(-320).Width(800).Height(660).Radius(400).
+			Background(ui.RGBA(56, 189, 248, 0.16)).Blur(80).PassThrough()
 	})
+	return root
 }
 
-// brandTile shows the logo in a floating tile, the anchor of every idle
+// brandTile shows the logo in a floating glass tile, the anchor of every idle
 // screen.
 func brandTile(c *ui.Context, size float32) {
-	ui.Box(c).Width(size).Height(size).Radius(size*0.26).Background(colSurface).
+	ui.Box(c).Width(size).Height(size).Radius(size*0.28).Background(colSurface).
 		Border(1, colBorder).InsetShadow(0, 1, 0, 0, colRim).
-		Shadow(0, 16, 36, 0, ui.RGBA(0, 0, 0, 0.42)).Center().
+		Shadow(0, 18, 44, 0, ui.RGBA(0, 0, 0, 0.55)).Center().
 		Children(func() {
 			ui.Image(c, brandMark).Width(size * 0.58).Height(size * 0.58)
 		})
@@ -166,7 +170,7 @@ func statusPill(c *ui.Context, text string, accent ui.Color) {
 
 // softButton is a secondary action with a quiet face.
 func softButton(c *ui.Context, key any, ic *ui.SVG, label string, danger bool, onClick func()) bool {
-	b := ui.ButtonBase(c.Key(key)).Padding(7, 13).Radius(9).Gap(7)
+	b := ui.ButtonBase(c.Key(key)).Padding(8, 15).Radius(999).Gap(7)
 	fg := colInk
 	if danger {
 		fg = colDanger
@@ -193,7 +197,16 @@ func softButton(c *ui.Context, key any, ic *ui.SVG, label string, danger bool, o
 
 // primaryButton is the one accented action of a screen.
 func primaryButton(c *ui.Context, key any, ic *ui.SVG, label string, onClick func()) bool {
-	b := ui.PrimaryButton(c.Key(key), "").Padding(8, 15)
+	// A cyan-to-blue pill, the one accented action of a screen.
+	b := ui.ButtonBase(c.Key(key)).Padding(8, 16).Radius(999)
+	from, to := colAccent, colAccentHov
+	if b.Pressed() {
+		from, to = colAccentPrs, colAccent
+	} else if b.Hovered() {
+		from, to = colAccentHov, ui.Hex("#93C5FD")
+	}
+	b.Gradient(from, to, 135).TextColor(colAccentInk)
+	b.Shadow(0, 6, 18, 0, ui.RGBA(56, 189, 248, 0.24))
 	b.Children(func() {
 		ui.Row(c).Gap(7).AlignItems(ui.Center).Children(func() {
 			if ic != nil {
@@ -213,7 +226,7 @@ func primaryButton(c *ui.Context, key any, ic *ui.SVG, label string, onClick fun
 // look is drawn here, because the theme's button face would cover the video
 // with a slab on every frame.
 func iconButton(c *ui.Context, key any, ic *ui.SVG, tip string, active, danger bool) ui.Element {
-	b := ui.ButtonBase(c.Key(key)).Padding(6.5).Radius(8)
+	b := ui.ButtonBase(c.Key(key)).Padding(7).Radius(999)
 	switch {
 	case active:
 		b.Background(colAccent.Alpha(0.16)).TextColor(colAccent)
@@ -267,14 +280,14 @@ func (a *mirrpaneApp) idleChrome(c *ui.Context) {
 
 // vrule separates groups of controls in the live bar.
 func vrule(c *ui.Context) {
-	ui.Box(c).Width(1).Height(18).Background(ui.RGBA(255, 244, 230, 0.16)).MarginX(3)
+	ui.Box(c).Width(1).Height(18).Background(ui.RGBA(148, 163, 184, 0.2)).MarginX(3)
 }
 
 // menuPanel styles a popover menu's panel.
 func menuPanel(panel ui.Element) {
-	panel.Padding(6).Gap(2).Radius(12).Background(colMenuBg).
+	panel.Padding(6).Gap(2).Radius(14).Background(colMenuBg).
 		Border(1, colBorder).InsetShadow(0, 1, 0, 0, colRim).
-		Shadow(0, 18, 44, 0, ui.RGBA(0, 0, 0, 0.5))
+		Shadow(0, 20, 50, 0, ui.RGBA(0, 0, 0, 0.55))
 }
 
 // menuItem is one row of a popover menu.
@@ -313,8 +326,8 @@ func heroHeader(c *ui.Context, title, subtitle string) {
 	ui.Column(c).Gap(12).AlignItems(ui.Center).Children(func() {
 		brandTile(c, 72)
 		ui.Column(c).Gap(5).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(36).Bold().TextColor(colInk).LetterSpacing(1.5)
-			ui.Text(c, subtitle).FontSize(11.5).TextColor(colFaint).LetterSpacing(1.4)
+			ui.Text(c, title).Font("Segoe UI Variable Display").FontSize(34).Bold().TextColor(colInk).LetterSpacing(1.2)
+			ui.Text(c, subtitle).FontSize(11.5).TextColor(colMuted).LetterSpacing(1.6)
 		})
 	})
 }
@@ -326,15 +339,15 @@ func sectionLabel(c *ui.Context, text string) {
 
 // card is the surface card used by the hero screens.
 func card(c *ui.Context, width float32) ui.Element {
-	return ui.Column(c).Width(width).Padding(22, 24).Gap(16).Radius(16).
+	return ui.Column(c).Width(width).Padding(24).Gap(16).Radius(22).
 		Background(colSurface).Border(1, colBorder).
 		InsetShadow(0, 1, 0, 0, colRim).
-		Shadow(0, 22, 56, 0, ui.RGBA(0, 0, 0, 0.48))
+		Shadow(0, 24, 64, 0, ui.RGBA(0, 0, 0, 0.55))
 }
 
 // well is a recessed container: the chassis colour inside a panel.
 func well(c *ui.Context) ui.Element {
-	return ui.Column(c).Background(colGround).Border(1, colHairline).Radius(10)
+	return ui.Column(c).Background(colWell).Border(1, colHairline).Radius(12)
 }
 
 // colorIf picks one of two colours.

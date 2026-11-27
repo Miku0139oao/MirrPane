@@ -72,7 +72,7 @@ func main() {
 			Height:          800,
 			MinWidth:        640,
 			MinHeight:       420,
-			BackgroundColor: "#110F0E",
+			BackgroundColor: "#070B14",
 			Content:         ui.View(app.view),
 		})
 		app.attachWindow(win)

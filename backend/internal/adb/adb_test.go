@@ -285,10 +285,13 @@ func main() {
 }
 
 func TestClientWithFakeADB(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Build the fake adb before the deadline starts: a loaded machine can
+	// spend most of it inside go build.
+	bin := buildFakeADBBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client, err := New(buildFakeADBBinary(t))
+	client, err := New(bin)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
