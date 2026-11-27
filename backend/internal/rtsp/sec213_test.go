@@ -1,4 +1,4 @@
-package ipc_test
+package rtsp_test
 
 import (
 	"bufio"
@@ -22,10 +22,10 @@ import (
 	"howett.net/plist"
 
 	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
-	"github.com/Miku0139oao/MirrPane/backend/internal/ipc"
 	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
 	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/rtsp"
 	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
@@ -53,7 +53,7 @@ type controlClient struct {
 	cseq int
 }
 
-// pipeListener hands pre-created net.Conn pairs to ipc.Server.Serve, exercising
+// pipeListener hands pre-created net.Conn pairs to rtsp.Server.Serve, exercising
 // Server.Serve/serveConn end-to-end without binding a real TCP port.
 type pipeListener struct {
 	ch     chan net.Conn
@@ -252,7 +252,7 @@ func TestIPCServerIsolatesSameIPControlConnections(t *testing.T) {
 	}
 	defer recv.Close()
 
-	srv := ipc.New(info, ipc.Display{Width: 1920, Height: 1080})
+	srv := rtsp.New(info, rtsp.Display{Width: 1920, Height: 1080})
 	srv.OnFPSetup = recv.FPSetup
 	srv.OnPairSetup = recv.PairSetup
 	srv.OnPairVerify = recv.PairVerify

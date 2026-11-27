@@ -63,7 +63,7 @@ func TestRollingStatsWindowWraps(t *testing.T) {
 }
 
 func TestConsumerStatsLag(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestStats`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestStats`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestConsumerStatsLag(t *testing.T) {
 }
 
 func TestConsumerAge(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestAge`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestAge`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestConsumerAge(t *testing.T) {
 // Publish must stamp real QPC values, not wall-clock nanoseconds, and report
 // how long it took.
 func TestPublishStampsQPCAndDuration(t *testing.T) {
-	p, err := NewPublisher(`Local\YingpingFramesTestQPC`, 64, 64)
+	p, err := NewPublisher(`Local\MirrPaneFramesTestQPC`, 64, 64)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)
 	}

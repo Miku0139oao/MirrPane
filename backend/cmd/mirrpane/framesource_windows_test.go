@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
+	"github.com/egoist/mygo/ui"
 	"golang.org/x/sys/windows"
 )
 

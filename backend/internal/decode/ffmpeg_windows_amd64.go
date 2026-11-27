@@ -7,8 +7,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/ebitengine/purego"
 	"github.com/Miku0139oao/MirrPane/backend/internal/ffmpeg"
+	"github.com/ebitengine/purego"
 	"golang.org/x/sys/windows"
 )
 

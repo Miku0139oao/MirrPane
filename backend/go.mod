@@ -1,6 +1,7 @@
 module github.com/Miku0139oao/MirrPane/backend
 
-go 1.27.4
+// mygo v0.10.0 requires Go 1.27.3; this is the lowest supported toolchain.
+go 1.27.3
 
 require (
 	github.com/ebitengine/purego v0.11.3

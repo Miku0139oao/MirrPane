@@ -18,7 +18,7 @@
 - **Low-latency hardware decoding**: FFmpeg **D3D11VA** provides H.264 hardware acceleration. Complete Annex-B access units go directly to the decoder. Software decoding is available when hardware acceleration is unavailable and can also be selected in settings.
 - **One CGO-free executable**: The desktop UI (MyGo) and the AirPlay receiver are the same `MirrPane.exe`, built with `CGO_ENABLED=0`. The UI re-executes itself with the internal `--airplayd` argument to start the receiver. FFmpeg is bound at runtime through `purego` and Windows system APIs are called from Go. No Visual Studio C++ compiler, MinGW, or FFmpeg development headers are needed.
 - **One executable, two processes**: The release ships only `MirrPane.exe`. The UI self-re-executes with `--airplayd` to start the receiver child; the two communicate through shared memory and a loopback HTTP API, and the receiver exits with the UI.
-- **Shared-memory frame rendering**: The backend publishes RGBA frames to a Windows shared-memory section unique to each UI instance (`Local\MirrPaneFrames-<pid>`). A three-slot mailbox and Windows event notifications deliver frames to the native MyGo UI (`internal/framefeed`), which maps the section directly and uploads it as a texture. This avoids image serialization between processes and keeps two instances from fighting over one section; a manually launched `MirrPane.exe --airplayd` still defaults to `Local\YingpingFrames`.
+- **Shared-memory frame rendering**: The backend publishes RGBA frames to a Windows shared-memory section unique to each UI instance (`Local\MirrPaneFrames-<pid>`). A three-slot mailbox and Windows event notifications deliver frames to the native MyGo UI (`internal/framefeed`), which maps the section directly and uploads it as a texture. This avoids image serialization between processes and keeps two instances from fighting over one section; a manually launched `MirrPane.exe --airplayd` still defaults to `Local\MirrPaneFrames`.
 - **Direct-to-slot conversion with idle gating**: `sws_scale` writes straight into the claimed shared-memory slot (no full-frame copy per picture). When the UI is minimised or stops adopting frames for a second, the download, conversion and publish are skipped while decoding continues (reference frames), with a 1 Hz probe so the UI can re-adopt instantly on restore.
 - **Low-latency audio playback**: AAC-ELD audio is decoded and played through Windows `winmm waveOut`. Supports live volume control, mute, and three latency/jitter profiles (low, balanced, stable) backed by a larger ring that absorbs Wi-Fi bursts. The ring gently catches up when a burst raises occupancy, so latency does not stay elevated for the rest of the session.
 - **Live pipeline telemetry**: `/api/state` reports fps, mean/p95 for decode, GPU download, colour conversion and publish, consumer adoption progress, and audio buffer metrics.
@@ -79,7 +79,7 @@ MirrPane/
 │   │   ├── ffmpeg/             # Runtime discovery, download, verification, and caching
 │   │   ├── framefeed/          # Shared-memory frame reader used by the UI
 │   │   ├── frames/             # Frame publication and shared-memory layout
-│   │   ├── ipc/                # AirPlay RTSP control endpoints and packet parsing
+│   │   ├── rtsp/               # AirPlay RTSP control endpoints and packet parsing
 │   │   ├── mdns/               # AirPlay mDNS / Bonjour advertisements and discovery
 │   │   ├── mirror/             # Screen mirroring stream reception and Annex-B processing
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify
@@ -119,7 +119,7 @@ MirrPane/
 
 ### Requirements
 
-- **Go**: `1.27.4+` (`go.mod` selects the toolchain via `GOTOOLCHAIN=auto`)
+- **Go**: `1.27.3+` (`go.mod` selects the toolchain via `GOTOOLCHAIN=auto`)
 - Use PowerShell on Windows x64 to build the portable package. Both the MyGo UI and the receiver compile with `CGO_ENABLED=0`.
 
 ### Build Steps
@@ -180,7 +180,7 @@ The UI starts the receiver by re-executing `MirrPane.exe --airplayd`, using the 
 | `-height` | `0` | Virtual display height. With `0`, reads the value from `config.json`. |
 | `-fps` | `0` | Maximum advertised frame rate. With `0`, reads the value from `config.json`. |
 | `-record` | Empty string | Save the raw H.264 mirroring stream to this directory for offline replay and debugging. |
-| `-shm` | `Local\YingpingFrames` | Windows shared-memory section used to publish video frames. The UI passes a per-instance `Local\MirrPaneFrames-<pid>`. |
+| `-shm` | `Local\MirrPaneFrames` | Windows shared-memory section used to publish video frames. The UI passes a per-instance `Local\MirrPaneFrames-<pid>`. |
 | `-log` | Empty string | Specify a log file and enable verbose logging. Without this option, logs are still written to the default `logs/airplayd.log`. |
 | `-parent-pid` | `0` | Parent process ID, supplied by the UI. The backend exits when that process exits. |
 | `-v` | `false` | Enable verbose logging. |

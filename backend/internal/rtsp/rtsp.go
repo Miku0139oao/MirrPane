@@ -1,4 +1,4 @@
-package ipc
+package rtsp
 
 import (
 	"bufio"
@@ -67,7 +67,7 @@ const (
 )
 
 // errBadRequest reports a syntactically invalid control message.
-var errBadRequest = errors.New("ipc: malformed request")
+var errBadRequest = errors.New("rtsp: malformed request")
 
 // readRequest parses one control message off conn.
 func readRequest(r *bufio.Reader) (*Request, error) {
@@ -367,7 +367,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		if err := resp.write(w, req); err != nil {
 			return
 		}
-		log.Printf("ipc: %q %q from %s -> %d (%d ms, %d in, %d out)",
+		log.Printf("rtsp: %q %q from %s -> %d (%d ms, %d in, %d out)",
 			logTarget(req.Method), logTarget(req.Target), conn.RemoteAddr(), resp.Status,
 			time.Since(start).Milliseconds(), len(req.Body), len(resp.Body))
 		if resp.Disconnect || req.Close {

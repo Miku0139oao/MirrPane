@@ -182,7 +182,7 @@ func TestFrameSinkGPUZeroCopySnapshotAndConsumerFallback(t *testing.T) {
 		t.Fatalf("expected >=4 access units, got %d", len(units))
 	}
 
-	shmName := fmt.Sprintf(`Local\YingpingSinkGPUTest_%d`, os.Getpid())
+	shmName := fmt.Sprintf(`Local\MirrPaneSinkGPUTest_%d`, os.Getpid())
 	pub, err := frames.NewPublisher(shmName, 1920, 1080)
 	if err != nil {
 		t.Skipf("shared memory unavailable: %v", err)

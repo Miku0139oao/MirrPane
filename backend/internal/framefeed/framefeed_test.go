@@ -16,7 +16,7 @@ import (
 
 func testSectionName(t *testing.T, suffix string) string {
 	t.Helper()
-	return fmt.Sprintf(`Local\YingpingFramefeedTest_%d_%s_%d`, windows.GetCurrentProcessId(), suffix, time.Now().UnixNano())
+	return fmt.Sprintf(`Local\MirrPaneFramefeedTest_%d_%s_%d`, windows.GetCurrentProcessId(), suffix, time.Now().UnixNano())
 }
 
 func makeSolidRGBA(w, h int, v byte) []byte {
