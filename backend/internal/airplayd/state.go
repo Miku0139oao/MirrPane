@@ -61,30 +61,31 @@ func (s *runtimeState) snapshot() (receiver.Status, string, string, time.Duratio
 
 // apiState is the JSON representation consumed by cmd/mirrpane's ReceiverState.
 type apiState struct {
-	Status       string  `json:"status"`
-	Reason       string  `json:"reason"`
-	Name         string  `json:"name"`
-	IP           string  `json:"ip"`
-	Port         int     `json:"port"`
-	Sender       string  `json:"sender"`
-	Width        int     `json:"width"`
-	Height       int     `json:"height"`
-	VideoFrames  uint64  `json:"videoFrames"`
-	AudioFrames  uint64  `json:"audioFrames"`
-	Pictures     uint64  `json:"pictures"`
-	Dropped      uint64  `json:"dropped"`
-	Decoder      string  `json:"decoder"`
-	Muted        bool    `json:"muted"`
-	Volume       float64 `json:"volume"`
-	UptimeSecs   float64 `json:"uptimeSeconds"`
-	Version      string  `json:"version"`
-	TargetWidth  int     `json:"targetWidth"`
-	TargetHeight int     `json:"targetHeight"`
-	MaxFPS       int     `json:"maxFps"`
-	DecoderMode  string  `json:"decoderMode"`
-	ColorRange   string  `json:"colorRange"`
-	ScaleFilter  string  `json:"scaleFilter"`
-	AudioBuffer  string  `json:"audioBuffer"`
+	Status          string  `json:"status"`
+	Reason          string  `json:"reason"`
+	Name            string  `json:"name"`
+	IP              string  `json:"ip"`
+	Port            int     `json:"port"`
+	Sender          string  `json:"sender"`
+	Width           int     `json:"width"`
+	Height          int     `json:"height"`
+	VideoFrames     uint64  `json:"videoFrames"`
+	AudioFrames     uint64  `json:"audioFrames"`
+	Pictures        uint64  `json:"pictures"`
+	Dropped         uint64  `json:"dropped"`
+	Decoder         string  `json:"decoder"`
+	Muted           bool    `json:"muted"`
+	Volume          float64 `json:"volume"`
+	UptimeSecs      float64 `json:"uptimeSeconds"`
+	Version         string  `json:"version"`
+	TargetWidth     int     `json:"targetWidth"`
+	TargetHeight    int     `json:"targetHeight"`
+	MaxFPS          int     `json:"maxFps"`
+	DecoderMode     string  `json:"decoderMode"`
+	ColorRange      string  `json:"colorRange"`
+	ScaleFilter     string  `json:"scaleFilter"`
+	AudioBuffer     string  `json:"audioBuffer"`
+	RequireApproval bool    `json:"requireApproval"`
 
 	PendingSender *receiver.PendingSender `json:"pendingSender"`
 
@@ -200,19 +201,20 @@ func apiHandler(
 			// "dropped" stays the honest slot-contention counter; producer→
 			// consumer lag is reported separately so a hidden window does not
 			// look like dropped frames forever.
-			Dropped:      stats.RawDropped,
-			Decoder:      decoderMode,
-			Muted:        muted,
-			Volume:       volume,
-			UptimeSecs:   uptime.Seconds(),
-			Version:      protocol.SourceVersion,
-			TargetWidth:  cfg.Width,
-			TargetHeight: cfg.Height,
-			MaxFPS:       cfg.MaxFPS,
-			DecoderMode:  cfg.DecoderMode,
-			ColorRange:   cfg.ColorRange,
-			ScaleFilter:  cfg.ScaleFilter,
-			AudioBuffer:  cfg.AudioBuffer,
+			Dropped:         stats.RawDropped,
+			Decoder:         decoderMode,
+			Muted:           muted,
+			Volume:          volume,
+			UptimeSecs:      uptime.Seconds(),
+			Version:         protocol.SourceVersion,
+			TargetWidth:     cfg.Width,
+			TargetHeight:    cfg.Height,
+			MaxFPS:          cfg.MaxFPS,
+			DecoderMode:     cfg.DecoderMode,
+			ColorRange:      cfg.ColorRange,
+			ScaleFilter:     cfg.ScaleFilter,
+			AudioBuffer:     cfg.AudioBuffer,
+			RequireApproval: cfg.RequireApproval,
 
 			FPS:                stats.FPS,
 			DecodeAvgMs:        stats.DecodeAvgMs,

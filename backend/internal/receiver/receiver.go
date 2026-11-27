@@ -77,8 +77,9 @@ type audioReceiver interface {
 	Close()
 }
 
-// TrustStore persists only owner-directed approvals and checks current trust
-// on every stream setup, including sessions verified before revocation.
+// TrustStore persists the sender identities admitted by the owner or by
+// trust-on-first-use, and checks current trust on every stream setup,
+// including sessions verified before revocation.
 type TrustStore interface {
 	TrustSender(string) error
 	IsTrustedSender(string) bool
@@ -110,6 +111,7 @@ type Receiver struct {
 	activeConn        string
 	activeRemote      string
 	activeFingerprint string
+	requireApproval   bool
 	cleanStop         atomic.Bool
 	controlGrace      time.Duration
 	afterFunc         func(time.Duration, func()) disconnectTimer
@@ -129,7 +131,7 @@ type Receiver struct {
 	audioBound      bool
 	audioBind       *audioBinding
 
-	// The approved sender currently named to the UI.
+	// The admitted sender currently named to the UI.
 	clientDeviceID string
 	clientName     string
 	clientModel    string
@@ -203,7 +205,9 @@ type clientSession struct {
 
 // New starts the mirror, timing and audio listeners and returns the receiver.
 // The listeners bind before mDNS starts so the advertised ports are real.
-func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logger *log.Logger, events Events) (*Receiver, error) {
+// requireApproval selects the owner-approval gate for unknown senders; with
+// false (the product default) a verified sender is trusted on first use.
+func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logger *log.Logger, events Events, requireApproval bool) (*Receiver, error) {
 	if trusted == nil {
 		return nil, errors.New("receiver: a sender trust store is required")
 	}
@@ -211,12 +215,13 @@ func New(info protocol.DeviceInfo, keys *pairing.Keys, trusted TrustStore, logge
 		logger = log.Default()
 	}
 	r := &Receiver{
-		info:     info,
-		log:      logger,
-		events:   events,
-		keys:     keys,
-		trust:    trusted,
-		sessions: make(map[string]*clientSession),
+		info:            info,
+		log:             logger,
+		events:          events,
+		keys:            keys,
+		trust:           trusted,
+		requireApproval: requireApproval,
+		sessions:        make(map[string]*clientSession),
 	}
 
 	mr := mirror.NewServer(logger, mirror.Handlers{
@@ -589,7 +594,7 @@ func (r *Receiver) clearClientLocked() bool {
 	return true
 }
 
-// recordClientLocked stores a newly approved sender's identity for the UI,
+// recordClientLocked stores a newly admitted sender's identity for the UI,
 // keeping earlier fields when a later setup omits them.
 func (r *Receiver) recordClientLocked(deviceID, name, model string) (string, string, string, bool) {
 	if deviceID == "" && name == "" && model == "" {
@@ -819,8 +824,9 @@ func (r *Receiver) PairVerify(remote string, body []byte) ([]byte, error) {
 	return reply, nil
 }
 
-// authorizeSetupLocked never enrolls a sender. A verified but unknown identity
-// is recorded for local approval before any stream keys or media can change.
+// authorizeSetupLocked admits a verified sender. A new identity is trusted on
+// first use by default; with manual approval enabled it is instead recorded
+// for the local owner and the setup is refused until approved.
 func (r *Receiver) authorizeSetupLocked(fingerprint, remote, label string) error {
 	if r.trust == nil {
 		return &protocolError{status: 503, err: errors.New("receiver: sender trust store unavailable")}
@@ -828,12 +834,23 @@ func (r *Receiver) authorizeSetupLocked(fingerprint, remote, label string) error
 	if r.trust.IsTrustedSender(fingerprint) {
 		return nil
 	}
-	r.recordPendingLocked(fingerprint, remote, label)
-	return &protocolError{status: 403, err: ErrUntrusted}
+	if r.requireApproval {
+		r.recordPendingLocked(fingerprint, remote, label)
+		return &protocolError{status: 403, err: ErrUntrusted}
+	}
+	if err := r.trust.TrustSender(fingerprint); err != nil {
+		// Fail closed: without a persisted identity the admission would not
+		// survive a restart, and silently streaming would hide the failure.
+		r.log.Printf("pair: auto-trust sender %s from %s: %v", fingerprint, remote, err)
+		return &protocolError{status: 503, err: fmt.Errorf("receiver: enroll sender: %w", err)}
+	}
+	r.log.Printf("pair: auto-trusted sender %s from %s", fingerprint, remote)
+	return nil
 }
 
-// ClearTrustedSenders durably clears approvals and immediately revokes all
-// pairing/media sessions and pending decisions. Identity resets also clear trust.
+// ClearTrustedSenders durably clears trusted senders and immediately revokes
+// all pairing/media sessions and pending decisions. Identity resets also clear
+// trust.
 func (r *Receiver) ClearTrustedSenders() error {
 	r.transitionMu.Lock()
 	defer r.transitionMu.Unlock()

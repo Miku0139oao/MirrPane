@@ -207,7 +207,7 @@ func TestUnavailableTrustFailsClosed(t *testing.T) {
 	if !errors.As(err, &protocolErr) || protocolErr.HTTPStatus() != 503 {
 		t.Fatalf("missing trust store = %v, want 503", err)
 	}
-	if _, err := New(protocol.DeviceInfo{}, r.keys, nil, nil, Events{}); err == nil {
+	if _, err := New(protocol.DeviceInfo{}, r.keys, nil, nil, Events{}, false); err == nil {
 		t.Fatal("receiver started without a trust policy")
 	}
 }
@@ -234,5 +234,71 @@ func TestUnknownSetupNeverApprovesSender(t *testing.T) {
 		if store.IsTrustedSender(fingerprint) || m.prepares != 0 || a.configures != 0 || r.sessions[remote].haveEKey {
 			t.Fatal("empty, malformed or keyless setup enrolled trust or changed media")
 		}
+	}
+}
+
+func TestAutoTrustEnrollsVerifiedSenderOnFirstSetup(t *testing.T) {
+	r, m, a := bindingReceiver(t)
+	dir := t.TempDir()
+	store, err := trust.Open(dir, r.keys.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.trust = store
+	r.requireApproval = false
+	var logs bytes.Buffer
+	r.log = log.New(&logs, "", 0)
+	const remote = "192.168.1.20"
+	identity := senderIdentity(t)
+	fingerprint := trust.Fingerprint(identity.Public().(ed25519.PublicKey))
+	finishVerificationAs(t, r, remote, identity)
+	if store.IsTrustedSender(fingerprint) {
+		t.Fatal("pair-verify alone enrolled an identity")
+	}
+	if _, err := r.Setup(remote, streamKeys(t, r, remote, 1)); err != nil {
+		t.Fatalf("first setup of a verified sender: %v", err)
+	}
+	if !store.IsTrustedSender(fingerprint) || len(r.PendingSenders()) != 0 {
+		t.Fatal("first use did not persist trust automatically")
+	}
+	if !strings.Contains(logs.String(), "auto-trusted sender "+fingerprint) {
+		t.Fatal("automatic trust was not logged")
+	}
+	reloaded, err := trust.Open(dir, r.keys.PublicKey())
+	if err != nil || !reloaded.IsTrustedSender(fingerprint) {
+		t.Fatalf("auto-trusted sender was not persisted: %v", err)
+	}
+	if _, err := r.Setup(remote, streamRequest(110, 96)); err != nil {
+		t.Fatal(err)
+	}
+	if m.prepares != 1 || a.configures != 1 {
+		t.Fatal("auto-trusted setup did not configure media")
+	}
+
+	// A second device is trusted on its own first use as well.
+	const other = "192.168.1.21"
+	otherIdentity := senderIdentity(t)
+	finishVerificationAs(t, r, other, otherIdentity)
+	if _, err := r.Setup(other, streamKeys(t, r, other, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if !store.IsTrustedSender(trust.Fingerprint(otherIdentity.Public().(ed25519.PublicKey))) {
+		t.Fatal("second verified sender was not auto-trusted")
+	}
+}
+
+func TestAutoTrustPersistenceFailureFailsClosed(t *testing.T) {
+	r, m, a := bindingReceiver(t)
+	r.trust = failingTrust{}
+	r.requireApproval = false
+	const remote = "192.168.1.20"
+	finishVerificationAs(t, r, remote, senderIdentity(t))
+	_, err := r.Setup(remote, streamKeys(t, r, remote, 1))
+	var protocolErr *protocolError
+	if !errors.As(err, &protocolErr) || protocolErr.HTTPStatus() != 503 {
+		t.Fatalf("auto-trust persistence failure = %v, want 503", err)
+	}
+	if m.prepares != 0 || a.configures != 0 || r.sessions[remote].haveEKey {
+		t.Fatal("failed automatic trust changed media")
 	}
 }

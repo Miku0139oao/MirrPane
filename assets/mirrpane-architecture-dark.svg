@@ -1244,7 +1244,7 @@ opened. The complete license is preserved in
         </g>
         <g data-graph-role="automatic-crossover" style="--step:4">
           <path data-graph-role="automatic-crossover-underlay" d="M 752 322 L 866 322 Q 874 322 874 314 L 874 252" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="receiver" data-edge-to="trustfile" data-edge-label="核准指紋（未核准 → 403）" data-edge-key="4" data-edge-id="trust-gate" data-composition-points="752,322;874,322;874,252" data-composition-crossover="halo" data-composition-independent="true" d="M 752 322 L 866 322 Q 874 322 874 314 L 874 252" class="a-security" data-animate="edge" style="--step: 4;" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+          <path data-edge-from="receiver" data-edge-to="trustfile" data-edge-label="信任指紋（首次使用即信任）" data-edge-key="4" data-edge-id="trust-gate" data-composition-points="752,322;874,322;874,252" data-composition-crossover="halo" data-composition-independent="true" d="M 752 322 L 866 322 Q 874 322 874 314 L 874 252" class="a-security" data-animate="edge" style="--step: 4;" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:5">
           <path data-graph-role="automatic-crossover-underlay" d="M 676 366 L 676 534" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1292,7 +1292,7 @@ opened. The complete license is preserved in
         </g>
         <g data-graph-role="automatic-crossover" style="--step:16">
           <path data-graph-role="automatic-crossover-underlay" d="M 956 420 L 956 358 Q 956 350 948 350 L 752 350" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="api" data-edge-to="receiver" data-edge-label="核准 · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver" data-composition-points="956,420;956,350;752,350" data-composition-crossover="halo" data-composition-independent="true" d="M 956 420 L 956 358 Q 956 350 948 350 L 752 350" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-edge-from="api" data-edge-to="receiver" data-edge-label="核准（選用） · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver" data-composition-points="956,420;956,350;752,350" data-composition-crossover="halo" data-composition-independent="true" d="M 956 420 L 956 358 Q 956 350 948 350 L 752 350" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:17">
           <path data-graph-role="automatic-crossover-underlay" d="M 940 457 L 881.5 457 Q 873.5 457 873.5 465 L 873.5 534" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1308,7 +1308,7 @@ opened. The complete license is preserved in
         </g>
         <g data-graph-role="automatic-crossover" style="--step:20">
           <path data-graph-role="automatic-crossover-underlay" d="M 707 1139 L 910 1139" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="ui" data-edge-to="sidecar" data-edge-label="啟動 · 停止 · 核准" data-edge-key="20" data-edge-id="ui-sidecar" data-composition-points="707,1139;910,1139" data-composition-crossover="halo" data-composition-independent="true" d="M 707 1139 L 910 1139" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-edge-from="ui" data-edge-to="sidecar" data-edge-label="啟動 · 停止 · 設定" data-edge-key="20" data-edge-id="ui-sidecar" data-composition-points="707,1139;910,1139" data-composition-crossover="halo" data-composition-independent="true" d="M 707 1139 L 910 1139" class="a-default" data-animate="edge" style="--step: 12;" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:21">
           <path data-graph-role="automatic-crossover-underlay" d="M 910 1125 L 707 1125" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
@@ -1362,15 +1362,15 @@ opened. The complete license is preserved in
         <text x="669.5" y="236" class="t-muted" font-size="10.5" text-anchor="middle">Ed25519 · X25519 · FairPlay v3</text>
         </g>
 
-        <g id="node-receiver" data-node-id="receiver" data-node-label="接收器核心" tabindex="0" role="button" aria-label="聚焦接收器核心，session 狀態機 · 核准閘門, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="session 狀態機 · 核准閘門" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
-          <title>接收器核心 · session 狀態機 · 核准閘門 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
+        <g id="node-receiver" data-node-id="receiver" data-node-label="接收器核心" tabindex="0" role="button" aria-label="聚焦接收器核心，session 狀態機 · 首次信任, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="session 狀態機 · 首次信任" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>接收器核心 · session 狀態機 · 首次信任 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="586" y="306" width="166" height="60" rx="8" class="c-mask"/>
           <rect x="586" y="306" width="166" height="60" rx="8" class="c-backend" data-animate="node" style="--step: 3; --flow-node-name: archify-relay-node-13;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(592 312) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
           <text data-node-label="" x="669" y="334" class="t-primary" font-size="14" font-weight="600" text-anchor="middle">接收器核心</text>
-        <text x="669" y="350" class="t-muted" font-size="10.5" text-anchor="middle">session 狀態機 · 核准閘門</text>
+        <text x="669" y="350" class="t-muted" font-size="10.5" text-anchor="middle">session 狀態機 · 首次信任</text>
         </g>
 
         <g id="node-mirror" data-node-id="mirror" data-node-label="鏡像串流接收" tabindex="0" role="button" aria-label="聚焦鏡像串流接收，TCP · AES-128-CTR · Annex-B, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="backend" data-node-sublabel="TCP · AES-128-CTR · Annex-B" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
@@ -1454,8 +1454,8 @@ opened. The complete license is preserved in
         <text x="869.5" y="806" class="t-muted" font-size="10.5" text-anchor="middle">ffmpeg\ 目錄 · SHA-256 驗證</text>
         </g>
 
-        <g id="node-trustfile" data-node-id="trustfile" data-node-label="trusted_senders.json" tabindex="0" role="button" aria-label="聚焦trusted_senders.json，核准指紋 · 原子寫入, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="database" data-node-sublabel="核准指紋 · 原子寫入" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
-          <title>trusted_senders.json · 核准指紋 · 原子寫入 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
+        <g id="node-trustfile" data-node-id="trustfile" data-node-label="trusted_senders.json" tabindex="0" role="button" aria-label="聚焦trusted_senders.json，信任指紋 · 原子寫入, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="database" data-node-sublabel="信任指紋 · 原子寫入" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
+          <title>trusted_senders.json · 信任指紋 · 原子寫入 · MirrPane.exe --airplayd · 接收器行程（self re-exec）</title>
           <rect x="858" y="192" width="192" height="60" rx="8" class="c-mask"/>
           <rect x="858" y="192" width="192" height="60" rx="8" class="c-database" data-animate="node" style="--step: 5; --flow-node-name: archify-relay-node-15;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(864 198) scale(0.6875)">
@@ -1463,7 +1463,7 @@ opened. The complete license is preserved in
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
           <text data-node-label="" x="954" y="220" class="t-primary" font-size="12" font-weight="600" text-anchor="middle">trusted_senders.json</text>
-        <text x="954" y="236" class="t-muted" font-size="10.5" text-anchor="middle">核准指紋 · 原子寫入</text>
+        <text x="954" y="236" class="t-muted" font-size="10.5" text-anchor="middle">信任指紋 · 原子寫入</text>
         </g>
 
         <g id="node-config" data-node-id="config" data-node-label="config.json" tabindex="0" role="button" aria-label="聚焦config.json，設定 · DPAPI keySeed, MirrPane.exe --airplayd · 接收器行程（self re-exec）" aria-pressed="false" data-node-kind="database" data-node-sublabel="設定 · DPAPI keySeed" data-node-context="MirrPane.exe --airplayd · 接收器行程（self re-exec）">
@@ -1478,8 +1478,8 @@ opened. The complete license is preserved in
         <text x="669" y="122" class="t-muted" font-size="10.5" text-anchor="middle">設定 · DPAPI keySeed</text>
         </g>
 
-        <g id="node-ui" data-node-id="ui" data-node-label="MyGo 桌面 UI" tabindex="0" role="button" aria-label="聚焦MyGo 桌面 UI，ui.View · 核准對話框, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="ui.View · 核准對話框" data-node-context="MirrPane.exe · MyGo UI 行程">
-          <title>MyGo 桌面 UI · ui.View · 核准對話框 · MirrPane.exe · MyGo UI 行程</title>
+        <g id="node-ui" data-node-id="ui" data-node-label="MyGo 桌面 UI" tabindex="0" role="button" aria-label="聚焦MyGo 桌面 UI，ui.View · 接收狀態卡, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="ui.View · 接收狀態卡" data-node-context="MirrPane.exe · MyGo UI 行程">
+          <title>MyGo 桌面 UI · ui.View · 接收狀態卡 · MirrPane.exe · MyGo UI 行程</title>
           <rect x="572" y="1102" width="135" height="60" rx="8" class="c-mask"/>
           <rect x="572" y="1102" width="135" height="60" rx="8" class="c-frontend" data-animate="node" style="--step: 11; --flow-node-name: archify-relay-node-12;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(578 1108) scale(0.6875)">
@@ -1489,7 +1489,7 @@ opened. The complete license is preserved in
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
           <text data-node-label="" x="639.5" y="1130" class="t-primary" font-size="12" font-weight="600" text-anchor="middle">MyGo 桌面 UI</text>
-        <text x="639.5" y="1146" class="t-muted" font-size="10.5" text-anchor="middle">ui.View · 核准對話框</text>
+        <text x="639.5" y="1146" class="t-muted" font-size="10.5" text-anchor="middle">ui.View · 接收狀態卡</text>
         </g>
 
         <g id="node-sidecar" data-node-id="sidecar" data-node-label="Sidecar 監督器" tabindex="0" role="button" aria-label="聚焦Sidecar 監督器，self re-exec · 輪詢 /api/state, MirrPane.exe · MyGo UI 行程" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="self re-exec · 輪詢 /api/state" data-node-context="MirrPane.exe · MyGo UI 行程">
@@ -1537,9 +1537,9 @@ opened. The complete license is preserved in
           <rect x="606.4" y="286" width="125.19999999999999" height="14" rx="3" class="c-mask"/>
           <text x="669" y="296" class="t-edge-security" font-size="10" font-weight="500" textLength="121.19999999999999" lengthAdjust="spacingAndGlyphs" text-anchor="middle">pair-setup · pair-verify</text>
         </g>
-        <g data-edge-from="receiver" data-edge-to="trustfile" data-edge-label="核准指紋（未核准 → 403）" data-edge-key="4" data-edge-id="trust-gate">
-          <rect x="811.4" y="267" width="125.19999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="874" y="277" class="t-edge-security" font-size="8" text-anchor="middle">核准指紋（未核准 → 403）</text>
+        <g data-edge-from="receiver" data-edge-to="trustfile" data-edge-label="信任指紋（首次使用即信任）" data-edge-key="4" data-edge-id="trust-gate">
+          <rect x="806.6" y="267" width="134.8" height="14" rx="3" class="c-mask"/>
+          <text x="874" y="277" class="t-edge-security" font-size="8" text-anchor="middle">信任指紋（首次使用即信任）</text>
         </g>
         <g data-edge-from="receiver" data-edge-to="mirror" data-edge-label="Prepare(streamID, keys)" data-edge-key="5" data-edge-id="setup-mirror">
           <rect x="682" y="443" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
@@ -1585,9 +1585,9 @@ opened. The complete license is preserved in
           <rect x="941.1" y="1082" width="134.8" height="14" rx="3" class="c-mask"/>
           <text x="1008.5" y="1092" class="t-edge-default" font-size="8.4" font-weight="500" text-anchor="middle">GET /api/state · POST 控制</text>
         </g>
-        <g data-edge-from="api" data-edge-to="receiver" data-edge-label="核准 · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver">
-          <rect x="834.4000000000001" y="378" width="115.6" height="14" rx="3" class="c-mask"/>
-          <text x="892.2" y="388" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">核准 · 中斷 · 重設信任</text>
+        <g data-edge-from="api" data-edge-to="receiver" data-edge-label="核准（選用） · 中斷 · 重設信任" data-edge-key="16" data-edge-id="api-receiver">
+          <rect x="796" y="378" width="154" height="14" rx="3" class="c-mask"/>
+          <text x="873" y="388" class="t-edge-default" font-size="8" text-anchor="middle">核准（選用） · 中斷 · 重設信任</text>
         </g>
         <g data-edge-from="api" data-edge-to="audioout" data-edge-label="音量／靜音" data-edge-key="17" data-edge-id="api-volume">
           <rect x="844.5" y="475.5" width="58" height="14" rx="3" class="c-mask"/>
@@ -1601,9 +1601,9 @@ opened. The complete license is preserved in
           <rect x="552.2" y="158" width="110.8" height="14" rx="3" class="c-mask"/>
           <text x="607.6" y="168" class="t-edge-default" font-size="8" text-anchor="middle">Ed25519 種子（DPAPI）</text>
         </g>
-        <g data-edge-from="ui" data-edge-to="sidecar" data-edge-label="啟動 · 停止 · 核准" data-edge-key="20" data-edge-id="ui-sidecar">
+        <g data-edge-from="ui" data-edge-to="sidecar" data-edge-label="啟動 · 停止 · 設定" data-edge-key="20" data-edge-id="ui-sidecar">
           <rect x="760.3" y="1149" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
-          <text x="808.5" y="1159" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">啟動 · 停止 · 核准</text>
+          <text x="808.5" y="1159" class="t-edge-default" font-size="9" font-weight="500" text-anchor="middle">啟動 · 停止 · 設定</text>
         </g>
         <g data-edge-from="sidecar" data-edge-to="ui" data-edge-label="狀態快照" data-edge-key="21" data-edge-id="sidecar-ui">
           <rect x="784.3" y="1105" width="48.4" height="14" rx="3" class="c-mask"/>

@@ -47,6 +47,11 @@ type Config struct {
 	ColorRange  string `json:"colorRange,omitempty"`  // auto | full | limited
 	ScaleFilter string `json:"scaleFilter,omitempty"` // fast | bilinear | bicubic
 	AudioBuffer string `json:"audioBuffer,omitempty"` // low | balanced | stable
+
+	// RequireApproval keeps the manual owner-approval gate for new senders.
+	// Off by default: a sender that completes pair-verify is trusted on first
+	// use, so a phone can connect without a trip to the PC.
+	RequireApproval bool `json:"requireApproval,omitempty"`
 }
 
 // Load reads the config from dir, creating it on first run. The defaults are
