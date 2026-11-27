@@ -8,7 +8,7 @@
 
 - **License**: [GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **Repository**: [Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **Stable release v0.4.4** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
+- **Stable release v0.5.0** · [Windows installer (recommended)][setup] · [Portable, full][win64] · [Portable, lite][lite] · [Release notes][release] · [Tagged source][source-tag]
 
 ---
 
@@ -25,6 +25,7 @@
 - Mirroring and audio streams use the paired device’s identity and are bound to the sender. A verified device is trusted on first use, so its first connection starts without a trip to the PC; enable **首次連線需人工核准** (Require manual approval) in Settings to gate each new device. The local management API validates `Host` and `Origin`. See [Security](#security).
 - **Portable distribution**: In the portable builds, settings (`config.json`), UI preferences, and pairing keys stay in the application directory. The app does not write to the Windows registry and needs no administrator rights. The installer places the app under `%LOCALAPPDATA%\Programs\MirrPane` and adds only the standard per-user uninstall entry. The one exception is the MyGo shader cache that the UI creates under `%LOCALAPPDATA%\MyGo\ShaderCache` on first launch.
 - **Single instance and a lite package**: One receiver per logon session; launching again brings the running window to the front instead of starting a second receiver that would fight over the AirPlay port and advertise a duplicate name. A lite archive without FFmpeg is available too (about 10 MB); it downloads and SHA-256-verifies the pinned runtime on first launch.
+- **Android mirroring (ADB / scrcpy)**: Connect an Android phone with USB debugging enabled, or a paired wireless-debugging device, and MirrPane mirrors its screen while your mouse, wheel and keyboard operate the device (Back, Home, Recents, Rotate, arrow keys). Audio from Android 11 and later plays as 48 kHz stereo through the same volume, mute and anti-jitter buffering. It uses the system's `adb` (Android Platform Tools) and embeds the pinned [scrcpy](https://github.com/Genymobile/scrcpy) server 5.0.1 (Apache-2.0), so scrcpy itself does not need to be installed.
 
 ---
 
@@ -67,6 +68,7 @@ MirrPane/
 │   │   ├── ffmpeg-setup/       # Shared FFmpeg DLL download, verification, and installation
 │   │   └── mirrpane/           # Native MyGo desktop UI and self re-exec (main.go, app.go, sidecar.go, prefs.go, …)
 │   ├── internal/
+│   │   ├── adb/                # Android Platform Tools (adb) process and device discovery
 │   │   ├── airplayd/           # Receiver process entry point (--airplayd mode; main.go, sink.go, state.go, record.go, …)
 │   │   ├── audio/              # Audio stream reception, decryption, and AAC-ELD decoding flow
 │   │   ├── audioout/           # Windows waveOut playback and jitter buffering
@@ -81,7 +83,8 @@ MirrPane/
 │   │   ├── mirror/             # Screen mirroring stream reception and Annex-B processing
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify
 │   │   ├── protocol/           # Device information, feature flags, and LAN interface selection
-│   │   └── receiver/           # Receiver coordination
+│   │   ├── receiver/           # Receiver coordination
+│   │   └── scrcpy/             # Android scrcpy v5.0.1 client (protocol, control messages, embedded server jar)
 │   ├── go.mod
 │   └── go.sum
 ├── assets/                     # Project logo, Windows icon, and system architecture diagrams
@@ -107,6 +110,7 @@ MirrPane/
 3. On your iPhone or iPad, open **Control Center → Screen Mirroring**, then select the receiver. Its default name is **鏡屏**.
 4. The first connection needs no approval on the PC: a paired device is added to the trust list automatically and mirroring starts. If you enable **首次連線需人工核准** (Require manual approval) in Settings, confirm the device name on the PC and click **允許連線** (Allow connection), then select the receiver again on the iPhone or iPad.
 5. Keyboard shortcuts include `F11` (full screen), `Ctrl+T` (always on top), `Ctrl+,` / `Ctrl+K` (settings), `Ctrl+L` (logs), and `Ctrl+S` (snapshot). The settings window has general, graphics/decoding, rendering, and audio sections.
+6. Android mirroring: install `adb` with `winget install Google.PlatformTools`, enable **Developer options → USB debugging** on the phone, then choose it under **Android 裝置** on the waiting screen. Wireless debugging takes the pairing address and its 6-digit code. During a session, clicks, drags and the wheel become touch and scroll, `Esc` is Back, and the toolbar offers Back, Home, Recents and Rotate.
 
 ---
 
@@ -216,7 +220,7 @@ If an iPhone or iPad cannot find the receiver, check the local network and firew
 
 The receiver checks the sender’s pairing public key. A new device is trusted on first use and recorded in `config\trusted_senders.json`, which suits a personal network you control. To confirm each new device before it streams, enable **首次連線需人工核准** in Settings (or set `"requireApproval": true` in `config.json`). Choosing **清除信任裝置** (Clear trusted devices) ends the current session and empties the list; devices are added again on their next connection, automatically or after approval. [Trust store implementation](backend/internal/trust/store.go)
 
-Windows protects the receiver’s pairing key seed with DPAPI. File permissions restrict access to the configuration and trusted-device list. The management API listens on loopback.
+Windows protects the receiver’s pairing key seed with DPAPI. File permissions restrict access to the configuration and trusted-device list. The management API listens on loopback. An Android session talks only to the selected device through the local `adb`, and input events go nowhere else; the API validates device serials and wireless addresses.
 
 ---
 
@@ -226,6 +230,7 @@ Windows protects the receiver’s pairing key seed with DPAPI. File permissions 
 
 - **UI**: `github.com/egoist/mygo` (native Windows UI, with transitive modules such as `github.com/go-text/typesetting` and `golang.org/x/image`; bundled licences are listed in the release's `THIRD_PARTY_LICENSES.txt`).
 - **Backend**: `github.com/ebitengine/purego`, `github.com/grandcat/zeroconf`, `howett.net/plist`, `golang.org/x/sys`, and `github.com/google/uuid`.
+- **Android**: an embedded [scrcpy](https://github.com/Genymobile/scrcpy) v5.0.1 server jar (Apache-2.0); the system's Android Platform Tools (`adb`) run it.
 
 ### Acknowledgements
 
@@ -236,9 +241,9 @@ This project draws from and benefits from the following open-source projects:
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.4
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
-[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
-[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.4
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.0
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64-lite.zip
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.0

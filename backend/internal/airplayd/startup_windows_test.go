@@ -28,7 +28,7 @@ func TestParentMonitorRejectsInvalidOrMissingParent(t *testing.T) {
 func TestEffectiveDisplayMatchesAPI(t *testing.T) {
 	cfg := &config.Config{Width: 1280, Height: 720, MaxFPS: 30}
 	display := effectiveDisplay(cfg, 2560, 1178, 60)
-	handler := apiHandler(protocol.NewDeviceInfo("Test", "00:00:00:00:00:01"), 7000, cfg, newRuntimeState(), nil, nil, nil, "")
+	handler := apiHandler(protocol.NewDeviceInfo("Test", "00:00:00:00:00:01"), 7000, cfg, newRuntimeState(), nil, nil, nil, "", nil)
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8888/api/state", nil)
 	request.RemoteAddr = "127.0.0.1:55555"
 	response := httptest.NewRecorder()

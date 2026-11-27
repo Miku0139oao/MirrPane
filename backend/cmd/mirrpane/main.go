@@ -30,6 +30,7 @@ func main() {
 	installDirFlag := flag.String("install-dir", "", "override the installation directory holding config\\ and logs\\ (default: the executable's folder)")
 	shmFlag := flag.String("shm", fmt.Sprintf(`Local\MirrPaneFrames-%d`, os.Getpid()), "shared-memory section for this receiver and its viewer")
 	demoFlag := flag.Bool("demo", false, "render a synthetic test picture instead of the receiver's frames (no sidecar)")
+	demoAndroid := flag.Bool("demo-android", false, "with -demo, present an Android (scrcpy) session for UI testing")
 	demoSettings := flag.Bool("demo-settings", false, "open the settings dialog at startup (UI testing)")
 	flag.Parse()
 
@@ -50,6 +51,7 @@ func main() {
 		frameSrc = newPlatformFrameSource(*shmFlag)
 	}
 	app := newMirrPaneApp(installDir, frameSrc, *demoFlag)
+	app.demoAndroid = *demoAndroid && *demoFlag
 	app.sidecar.mapping = *shmFlag
 	if *demoSettings {
 		app.openSettings()
@@ -70,7 +72,7 @@ func main() {
 			Height:          800,
 			MinWidth:        640,
 			MinHeight:       420,
-			BackgroundColor: "#191817",
+			BackgroundColor: "#110F0E",
 			Content:         ui.View(app.view),
 		})
 		app.attachWindow(win)

@@ -64,6 +64,7 @@ type PendingSender struct {
 type ReceiverState struct {
 	Status          string         `json:"status"`
 	Reason          string         `json:"reason"`
+	Source          string         `json:"source"`
 	Name            string         `json:"name"`
 	IP              string         `json:"ip"`
 	Port            int            `json:"port"`
@@ -107,6 +108,47 @@ type ReceiverState struct {
 	AudioHighWater  float64        `json:"audioHighWaterMs"`
 	AudioTrims      uint64         `json:"audioTrims"`
 	AudioLateDrop   uint64         `json:"audioLateDropped"`
+
+	// Android is the scrcpy session's state, if the receiver exposes one.
+	Android *AndroidState `json:"android,omitempty"`
+}
+
+// AndroidState mirrors the receiver's apiAndroid payload.
+type AndroidState struct {
+	Phase  string `json:"phase"`
+	Reason string `json:"reason"`
+	Error  string `json:"error"`
+	Serial string `json:"serial"`
+	Model  string `json:"model"`
+	Device string `json:"device"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
+// AndroidDevice is one adb device as the receiver lists it.
+type AndroidDevice struct {
+	Serial string `json:"serial"`
+	State  string `json:"state"`
+	Model  string `json:"model"`
+}
+
+// AndroidInput is one pointer, key or navigation message forwarded to the
+// Android device.
+type AndroidInput struct {
+	Kind     string  `json:"kind"`
+	Action   string  `json:"action,omitempty"`
+	X        int     `json:"x,omitempty"`
+	Y        int     `json:"y,omitempty"`
+	W        int     `json:"w,omitempty"`
+	H        int     `json:"h,omitempty"`
+	DX       float64 `json:"dx,omitempty"`
+	DY       float64 `json:"dy,omitempty"`
+	Pressure float64 `json:"pressure,omitempty"`
+	Buttons  int     `json:"buttons,omitempty"`
+	Keycode  int     `json:"keycode,omitempty"`
+	Repeat   int     `json:"repeat,omitempty"`
+	Meta     int     `json:"meta,omitempty"`
+	Text     string  `json:"text,omitempty"`
 }
 
 func defaultReceiverState() ReceiverState {
@@ -696,6 +738,10 @@ func phaseFromStatus(status string) Phase {
 }
 
 func (s *Sidecar) postJSON(path string, payload any, out any) error {
+	return s.requestJSON(http.MethodPost, path, payload, out, 2*time.Second)
+}
+
+func (s *Sidecar) requestJSON(method, path string, payload any, out any, timeout time.Duration) error {
 	s.mu.Lock()
 	if s.stopped || s.closed || s.baseURL == "" {
 		s.mu.Unlock()
@@ -718,9 +764,9 @@ func (s *Sidecar) postJSON(path string, payload any, out any) error {
 	if launchCtx == nil {
 		launchCtx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(launchCtx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(launchCtx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
 		return err
 	}
@@ -728,7 +774,11 @@ func (s *Sidecar) postJSON(path string, payload any, out any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := s.postClient.Do(req)
+	client := s.postClient
+	if timeout > 2*time.Second {
+		client = &http.Client{Timeout: timeout + 2*time.Second}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -766,6 +816,63 @@ func (s *Sidecar) postJSON(path string, payload any, out any) error {
 // Disconnect drops the active mirroring session and returns to waiting.
 func (s *Sidecar) Disconnect() error {
 	err := s.postJSON("/api/disconnect", nil, nil)
+	s.triggerPoll()
+	return err
+}
+
+// AndroidDevices lists what adb sees. A missing adb is returned as an error
+// whose text the UI can show as installation guidance.
+func (s *Sidecar) AndroidDevices() ([]AndroidDevice, error) {
+	var resp struct {
+		Devices []AndroidDevice `json:"devices"`
+		Error   string          `json:"error"`
+	}
+	if err := s.requestJSON(http.MethodGet, "/api/android/devices", nil, &resp, 12*time.Second); err != nil {
+		return nil, err
+	}
+	s.triggerPoll()
+	if resp.Error != "" {
+		return resp.Devices, errors.New(resp.Error)
+	}
+	return resp.Devices, nil
+}
+
+// AndroidConnect starts a scrcpy session; the UI follows its phase through
+// the polled receiver state.
+func (s *Sidecar) AndroidConnect(serial string, maxSize, maxFPS, bitRate int) error {
+	err := s.requestJSON(http.MethodPost, "/api/android/connect", map[string]any{
+		"serial": serial, "maxSize": maxSize, "maxFps": maxFPS, "bitRate": bitRate,
+	}, nil, 6*time.Second)
+	s.triggerPoll()
+	return err
+}
+
+// AndroidPair performs wireless-debugging pairing with the device's code.
+func (s *Sidecar) AndroidPair(address, code string) error {
+	err := s.requestJSON(http.MethodPost, "/api/android/pair", map[string]any{
+		"address": address, "code": code,
+	}, nil, 25*time.Second)
+	s.triggerPoll()
+	return err
+}
+
+// AndroidWireless connects to a device already paired over TCP.
+func (s *Sidecar) AndroidWireless(address string) error {
+	err := s.requestJSON(http.MethodPost, "/api/android/wireless", map[string]any{
+		"address": address,
+	}, nil, 20*time.Second)
+	s.triggerPoll()
+	return err
+}
+
+// AndroidInput forwards one pointer, key or navigation message.
+func (s *Sidecar) AndroidInput(in AndroidInput) error {
+	return s.requestJSON(http.MethodPost, "/api/android/input", in, nil, 4*time.Second)
+}
+
+// AndroidDisconnect ends the Android session without touching AirPlay.
+func (s *Sidecar) AndroidDisconnect() error {
+	err := s.requestJSON(http.MethodPost, "/api/android/disconnect", nil, nil, 4*time.Second)
 	s.triggerPoll()
 	return err
 }

@@ -118,7 +118,7 @@ func TestLiveAndInterruptedViewKeepsPictureUntilDisconnect(t *testing.T) {
 	}
 	a.applySnapshot(Snapshot{Phase: PhaseWaiting})
 	view.Frame()
-	if w, h := a.bitmap.Size(); w != 1 || h != 1 || !view.HasText("待機中") {
+	if w, h := a.bitmap.Size(); w != 1 || h != 1 || !view.HasText("等待手機或平板連線") {
 		t.Fatalf("disconnect did not clear the picture and return to waiting: %dx%d", w, h)
 	}
 }
@@ -143,9 +143,9 @@ func TestSettingsFitsMinimumWindowAtHighDPI(t *testing.T) {
 	view := ui.NewTester(a.view, 640, 420)
 	view.SetScale(1.5)
 	view.Frame()
-	save, ok := view.Find("儲存並重啟")
+	save, ok := view.Find("完成")
 	if !ok || save.Y < 0 || save.Y+save.H > 420 {
-		t.Fatalf("save button is outside the settings viewport: %+v", save)
+		t.Fatalf("done button is outside the settings viewport: %+v", save)
 	}
 	dlg, ok := view.AccessByRole(ui.RoleDialog, "")
 	if !ok || dlg.Bounds.X+dlg.Bounds.W/2 != 320 {

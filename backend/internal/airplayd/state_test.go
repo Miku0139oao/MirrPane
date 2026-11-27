@@ -31,7 +31,7 @@ func newTestAPIHandler(receivers ...receiverControl) http.Handler {
 	if len(receivers) > 0 {
 		recv = receivers[0]
 	}
-	return apiHandler(info, 7000, cfg, newRuntimeState(), nil, recv, nil, "")
+	return apiHandler(info, 7000, cfg, newRuntimeState(), nil, recv, nil, "", nil)
 }
 
 type trustResetControl struct {

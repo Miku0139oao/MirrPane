@@ -1,6 +1,7 @@
 package airplayd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,8 +19,25 @@ import (
 	"github.com/miku0139/airplay-go/backend/internal/config"
 	"github.com/miku0139/airplay-go/backend/internal/protocol"
 	"github.com/miku0139/airplay-go/backend/internal/receiver"
+	"github.com/miku0139/airplay-go/backend/internal/scrcpy"
 	"github.com/miku0139/airplay-go/backend/internal/trust"
 )
+
+// decodeAPIJSON decodes one small JSON body and rejects unknown fields and
+// trailing data, as the trust endpoints do.
+func decodeAPIJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
 
 // runtimeState is what the UI asks for over the local API. It lives beside the
 // receiver rather than inside it because the numbers come from three places —
@@ -63,6 +81,7 @@ func (s *runtimeState) snapshot() (receiver.Status, string, string, time.Duratio
 type apiState struct {
 	Status          string  `json:"status"`
 	Reason          string  `json:"reason"`
+	Source          string  `json:"source,omitempty"`
 	Name            string  `json:"name"`
 	IP              string  `json:"ip"`
 	Port            int     `json:"port"`
@@ -123,6 +142,20 @@ type apiState struct {
 	AudioShortDrops      uint64 `json:"audioShortDrops"`
 	AudioSourceDrops     uint64 `json:"audioSourceDrops"`
 	AudioControlRTPDrops uint64 `json:"audioControlRtpDrops"`
+
+	// Android is the optional scrcpy session's state. Source is "android"
+	// while that session owns the display.
+	Android *apiAndroid `json:"android,omitempty"`
+}
+
+// firstNonEmpty returns the first value that has content.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // statusName maps the protocol state onto the word the UI switches on.
@@ -160,6 +193,7 @@ func apiHandler(
 	recv receiverControl,
 	speaker *audioout.Player,
 	shotsDir string,
+	am *androidManager,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
@@ -186,9 +220,34 @@ func apiHandler(
 			volume = speaker.Volume()
 			audioStats = speaker.Stats()
 		}
+		source := ""
+		var androidState *apiAndroid
+		if am != nil {
+			a := am.Status()
+			androidState = &a
+			// An Android session owns the display while AirPlay is idle; the
+			// UI switches on status exactly as it does for a phone.
+			if a.Phase == androidLive && status == receiver.StatusIdle {
+				source = "android"
+				status = receiver.StatusLive
+				reason = ""
+				sender = firstNonEmpty(a.Device, a.Model, a.Serial)
+				width, height = a.Width, a.Height
+			} else if a.Phase == androidConnecting && status == receiver.StatusIdle {
+				source = "android"
+				status = receiver.StatusConnecting
+				reason = a.Reason
+				sender = firstNonEmpty(a.Device, a.Serial)
+			} else if a.Phase == androidError && status == receiver.StatusIdle {
+				source = "android"
+				status = receiver.StatusIdle
+				reason = a.Error
+			}
+		}
 		body := apiState{
 			Status:      statusName(status),
 			Reason:      reason,
+			Source:      source,
 			Name:        info.Name,
 			IP:          protocol.LocalIPv4(),
 			Port:        port,
@@ -215,6 +274,7 @@ func apiHandler(
 			ScaleFilter:     cfg.ScaleFilter,
 			AudioBuffer:     cfg.AudioBuffer,
 			RequireApproval: cfg.RequireApproval,
+			Android:         androidState,
 
 			FPS:                stats.FPS,
 			DecodeAvgMs:        stats.DecodeAvgMs,
@@ -262,12 +322,145 @@ func apiHandler(
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if recv != nil {
+		// One disconnect button serves both sources: an Android session ends
+		// without touching the AirPlay pairing, and vice versa.
+		if am != nil && am.Active() {
+			am.Stop()
+		} else if recv != nil {
 			recv.Disconnect()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+
+	if am != nil {
+		mux.HandleFunc("/api/android/devices", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			devices, err := am.Devices(ctx)
+			type deviceJSON struct {
+				Serial string `json:"serial"`
+				State  string `json:"state"`
+				Model  string `json:"model"`
+			}
+			resp := struct {
+				Devices []deviceJSON `json:"devices"`
+				Error   string       `json:"error,omitempty"`
+			}{Devices: []deviceJSON{}}
+			if err != nil {
+				resp.Error = err.Error()
+			}
+			for _, d := range devices {
+				resp.Devices = append(resp.Devices, deviceJSON{Serial: d.Serial, State: d.State, Model: d.Model})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(resp)
+		})
+
+		mux.HandleFunc("/api/android/wireless", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Address string `json:"address"`
+			}
+			if !decodeAPIJSON(w, r, &req) {
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			if err := am.Wireless(ctx, req.Address); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+
+		mux.HandleFunc("/api/android/pair", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Address string `json:"address"`
+				Code    string `json:"code"`
+			}
+			if !decodeAPIJSON(w, r, &req) {
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			defer cancel()
+			if err := am.Pair(ctx, req.Address, req.Code); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+
+		mux.HandleFunc("/api/android/connect", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var req struct {
+				Serial  string `json:"serial"`
+				MaxSize int    `json:"maxSize"`
+				MaxFPS  int    `json:"maxFps"`
+				BitRate int    `json:"bitRate"`
+			}
+			if !decodeAPIJSON(w, r, &req) {
+				return
+			}
+			opt := scrcpy.Options{
+				MaxSize: req.MaxSize,
+				Audio:   true,
+				MaxFPS:  req.MaxFPS,
+				BitRate: req.BitRate,
+				Logf:    func(format string, args ...any) { log.Printf("android: "+format, args...) },
+			}
+			if err := am.Connect(req.Serial, opt); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+
+		mux.HandleFunc("/api/android/disconnect", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			am.Stop()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+
+		mux.HandleFunc("/api/android/input", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var in androidInput
+			if !decodeAPIJSON(w, r, &in) {
+				return
+			}
+			if err := am.Input(in); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+	}
 
 	mux.HandleFunc("/api/pairing/trust/reset", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

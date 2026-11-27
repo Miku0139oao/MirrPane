@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"os"
 	"path/filepath"
@@ -292,11 +291,11 @@ func TestToolbarHoverPausesAutoHide(t *testing.T) {
 	a.barVisible = true
 	a.barLastMove = time.Now()
 
-	shots, ok := view.Find("截圖")
+	shots, ok := view.AccessByRole(ui.RoleButton, "截圖 (Ctrl+S)")
 	if !ok {
 		t.Fatalf("toolbar is missing after a live frame: %v", view.Texts())
 	}
-	view.Move(shots.X+shots.W/2, shots.Y+shots.H/2)
+	view.Move(shots.Bounds.X+shots.Bounds.W/2, shots.Bounds.Y+shots.Bounds.H/2)
 	if !a.barHovered {
 		t.Fatal("pointer over the toolbar did not stop the hide timer")
 	}
@@ -317,13 +316,14 @@ func TestToolbarHoverPausesAutoHide(t *testing.T) {
 	}
 }
 
-// P3.6: an interrupted stream forces the bar on; the HUD must use the same
-// visibility decision so its offset clears the bar.
+// The interrupted card carries every action the toolbar would offer, so the
+// toolbar stays hidden behind its backdrop; the HUD takes the top corner.
 func TestInterruptedBarAndHudShareVisibility(t *testing.T) {
 	a := newMirrPaneApp(t.TempDir(), &stillPicture{image.NewRGBA(image.Rect(0, 0, 64, 36))}, true)
 	defer a.shutdown()
 	a.prefs.ShowHud = true
 	a.prefs.BarHideSeconds = 2
+	a.prefs.HudCorner = "topLeft"
 	a.barVisible = false
 	a.applySnapshot(Snapshot{Phase: PhaseInterrupted, State: &ReceiverState{
 		Status: "interrupted", Width: 2560, Height: 1178, Decoder: "synthetic", Reason: "訊號中斷",
@@ -331,18 +331,18 @@ func TestInterruptedBarAndHudShareVisibility(t *testing.T) {
 	view := ui.NewTester(a.view, 900, 540)
 	view.Frame()
 
-	bar, ok := view.Find("AirPlay")
-	if !ok {
-		t.Fatalf("forced top bar missing: %v", view.Texts())
+	if !view.HasText("畫面暫時中斷") || !view.HasText("返回等待畫面") {
+		t.Fatalf("interruption card missing its actions: %v", view.Texts())
 	}
-	hudText := fmt.Sprintf("RES %dx%d  UI %.1f fps  DEC %.1f fps (%s)",
-		2560, 1178, a.uiFPS, 0.0, "synthetic")
-	hud, ok := view.Find(hudText)
-	if !ok {
-		t.Fatalf("HUD text %q missing: %v", hudText, view.Texts())
+	if view.HasText("AirPlay") {
+		t.Fatal("the toolbar is still drawn behind the interruption backdrop")
 	}
-	if hud.Y < 120 || hud.Y <= bar.Y+bar.H {
-		t.Fatalf("HUD (y=%v) overlaps the forced bar (%v..%v)", hud.Y, bar.Y, bar.Y+bar.H)
+	hud, ok := view.Find("效能 HUD")
+	if !ok {
+		t.Fatalf("HUD card missing: %v", view.Texts())
+	}
+	if hud.Y > 60 {
+		t.Fatalf("HUD did not move to the top with the bar hidden: y=%v", hud.Y)
 	}
 }
 
@@ -373,6 +373,7 @@ func TestSamplingModesAreMeaningfulAndReadLegacyValues(t *testing.T) {
 	a.prefs.FilterQuality = "none"
 	a.applySnapshot(Snapshot{Phase: PhaseWaiting})
 	a.openSettings()
+	a.settingsTab = 2 // the picture tab holds the sampling choice
 	view := ui.NewTester(a.view, 640, 420)
 	view.Frame()
 	if !view.HasText("縮放取樣") || !view.HasText(samplingChoices[0]) {
@@ -422,13 +423,14 @@ func TestDoubleClickVideoTogglesFullscreen(t *testing.T) {
 	}
 
 	a.fullscreen = false
-	rotate, ok := view.Find("旋轉")
+	display, ok := view.AccessByRole(ui.RoleButton, "畫面調整")
 	if !ok {
 		t.Fatalf("toolbar control missing: %v", view.Texts())
 	}
-	view.Move(rotate.X+rotate.W/2, rotate.Y+rotate.H/2)
-	view.ClickAt(rotate.X+rotate.W/2, rotate.Y+rotate.H/2)
-	view.ClickAt(rotate.X+rotate.W/2, rotate.Y+rotate.H/2)
+	x, y := display.Bounds.X+display.Bounds.W/2, display.Bounds.Y+display.Bounds.H/2
+	view.Move(x, y)
+	view.ClickAt(x, y)
+	view.ClickAt(x, y)
 	if a.fullscreen {
 		t.Fatal("a double click on the toolbar entered fullscreen")
 	}
@@ -442,14 +444,13 @@ func TestRestoredWaitingAndLogParity(t *testing.T) {
 	a.applySnapshot(Snapshot{Phase: PhaseWaiting})
 	view := ui.NewTester(a.view, 900, 620)
 	view.Frame()
-	if !view.HasText("重新廣播") || !view.HasText("開啟截圖資料夾") {
+	if !view.HasText("重新廣播") || !view.HasText("截圖資料夾") {
 		t.Fatalf("waiting screen is missing the restored controls: %v", view.Texts())
 	}
 
 	a.openLogs()
 	view.Frame()
-	if !view.HasText(a.sidecar.LogPath()) ||
-		!view.HasText("複製路徑") || !view.HasText("複製日誌") {
+	if !view.HasText(a.sidecar.LogPath()) || !view.HasText("複製全部") {
 		t.Fatalf("log window is missing the path or copy actions: %v", view.Texts())
 	}
 }

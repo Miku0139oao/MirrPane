@@ -222,6 +222,9 @@ func Main() {
 	speaker := audioout.NewReceiverPlayer(cfg.AudioBuffer)
 	defer speaker.Close()
 
+	android := newAndroidManager(log.Default(), sink, state, speaker)
+	defer android.Stop()
+
 	var running atomic.Pointer[receiver.Receiver]
 	recv, err := receiver.New(info, keys, trusted, log.Default(), receiver.Events{
 		OnVideoReset: sink.ResetStream,
@@ -259,6 +262,11 @@ func Main() {
 			}
 		},
 		OnState: func(s receiver.Status, reason string) {
+			// One source owns the display: an incoming AirPlay session ends
+			// any Android session instead of letting two producers interleave.
+			if s == receiver.StatusLive || s == receiver.StatusConnecting {
+				android.Stop()
+			}
 			state.set(s, reason)
 			log.Printf("state: %v (%s)", s, reason)
 			if r := running.Load(); s == receiver.StatusInterrupted && r != nil {
@@ -316,7 +324,7 @@ func Main() {
 	}
 	shotsDir := filepath.Join(filepath.Dir(dataFolder), "screenshots")
 	api := &http.Server{
-		Handler:           apiHandler(info, controlPort.port, cfg, state, sink, recv, speaker, shotsDir),
+		Handler:           apiHandler(info, controlPort.port, cfg, state, sink, recv, speaker, shotsDir, android),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

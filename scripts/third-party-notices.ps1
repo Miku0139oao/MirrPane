@@ -119,6 +119,24 @@ foreach ($key in ($modules.Keys | Sort-Object { $modules[$_].Path })) {
     }
 }
 
+# The scrcpy server jar is an embedded binary dependency, not a Go module: the
+# same notice scrcpy's own client ships with.
+$scrcpyLicense = Join-Path $root 'backend\internal\scrcpy\server\LICENSE.txt'
+if (Test-Path -LiteralPath $scrcpyLicense -PathType Leaf) {
+    $lines.Add(('=' * 78))
+    $lines.Add('scrcpy server 5.0.1 (com.genymobile.scrcpy.Server)')
+    $lines.Add(('=' * 78))
+    $lines.Add('')
+    $lines.Add('The Android server jar embedded in MirrPane.exe comes from')
+    $lines.Add('https://github.com/Genymobile/scrcpy (release v5.0.1) and is')
+    $lines.Add('redistributed under the Apache License 2.0 reproduced below.')
+    $lines.Add('')
+    $lines.Add('--- LICENSE.txt ---')
+    $lines.Add('')
+    $lines.Add((Get-Content -LiteralPath $scrcpyLicense -Raw).TrimEnd())
+    $lines.Add('')
+}
+
 # The Go toolchain statically links its standard library, whose licence is not
 # part of any module directory.
 if ($goRoot) {

@@ -8,7 +8,7 @@
 
 - **授權條款**：[GPL-3.0 License](https://github.com/Miku0139oao/MirrPane/blob/main/LICENSE)
 - **專案儲存庫**：[Miku0139oao/MirrPane](https://github.com/Miku0139oao/MirrPane)
-- **v0.4.4 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
+- **v0.5.0 正式版** · [Windows 安裝檔（建議）][setup] · [便攜完整版][win64] · [便攜精簡版][lite] · [版本說明][release] · [標籤原始碼][source-tag]
 
 ---
 
@@ -25,6 +25,7 @@
 - 鏡像與音訊串流使用配對裝置的身分，並綁定傳送端；裝置完成配對後第一次連線就自動加入信任名單，不必再到電腦上按允許。需要逐台確認時，可在設定開啟「首次連線需人工核准」。本機管理 API 檢查 `Host` 與 `Origin`，防護細節見[安全性](#安全性)。
 - **綠色免安裝**：便攜版的設定檔（`config.json`）、UI 偏好與配對金鑰皆儲存於程式資料夾，不寫入 Windows 登錄檔，也不需要系統管理員權限；安裝版安裝於 `%LOCALAPPDATA%\Programs\MirrPane`，僅新增標準的使用者層級解除安裝項目。唯一例外是 MyGo 於首次啟動在 `%LOCALAPPDATA%\MyGo\ShaderCache` 建立的著色器快取。
 - **單一實例與精簡包**：同一登入工作階段只允許一個接收器，重複啟動會把既有視窗帶回前景，避免兩個實例搶用 AirPlay 連接埠並重複廣播名稱；另提供不含 FFmpeg 的精簡包（約 10 MB），首次啟動自動下載並以 SHA-256 驗證固定版 runtime。
+- **Android 鏡像（ADB／scrcpy）**：接上開啟 USB 偵錯的 Android 手機，或已配對的無線偵錯裝置，即可在 MirrPane 中鏡像 Android 畫面，並用滑鼠、滾輪與鍵盤直接操作裝置（返回、主畫面、最近應用、旋轉與方向鍵）；Android 11 以上的裝置音訊會以 48 kHz 立體聲一併播放，沿用同一組音量、靜音與抗抖動緩衝。需要系統中的 `adb`（Android Platform Tools）；內嵌固定版 [scrcpy](https://github.com/Genymobile/scrcpy) server 5.0.1（Apache-2.0），不需另外安裝 scrcpy。
 
 ---
 
@@ -66,6 +67,7 @@ MirrPane/
 │   │   ├── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
 │   │   └── mirrpane/           # 原生 MyGo 桌面 UI 與 self re-exec (main.go, app.go, sidecar.go, prefs.go 等)
 │   ├── internal/
+│   │   ├── adb/                # Android Platform Tools (adb) 程序與裝置探索
 │   │   ├── airplayd/           # 接收器行程主程式（--airplayd 模式；main.go, sink.go, state.go, record.go 等）
 │   │   ├── audio/              # 音訊串流接收、解密與 AAC-ELD 解碼調度
 │   │   ├── audioout/           # Windows winmm waveOut 音訊輸出與抗抖動緩衝
@@ -80,7 +82,8 @@ MirrPane/
 │   │   ├── mirror/             # AirPlay 螢幕鏡像串流接收與 Annex-B 處理
 │   │   ├── pairing/            # AirPlay pair-setup / pair-verify 配對協定
 │   │   ├── protocol/           # AirPlay 裝置資訊、功能宣告與區網介面選擇
-│   │   └── receiver/           # 接收器核心調度
+│   │   ├── receiver/           # 接收器核心調度
+│   │   └── scrcpy/             # Android scrcpy v5.0.1 用戶端（協定、控制訊息、內嵌 server jar）
 │   ├── go.mod
 │   └── go.sum
 ├── assets/                     # 專案標誌、Windows 圖示與系統架構圖
@@ -106,6 +109,7 @@ MirrPane/
 3. 在 iPhone / iPad 開啟「控制中心」→ 點選「螢幕鏡像輸出」→ 選擇接收器名稱（預設為 `鏡屏`）。
 4. 首次連線不需要在電腦上核准：裝置完成配對後會自動加入信任名單，直接開始鏡像。若在設定開啟「首次連線需人工核准」，才需要在電腦上確認裝置名稱並按「允許連線」，再回到 iPhone 或 iPad 選一次「鏡屏」。
 5. 介面提供 `F11` 全螢幕、`Ctrl+T` 置頂、`Ctrl+,`／`Ctrl+K` 設定、`Ctrl+L` 日誌與 `Ctrl+S` 截圖等快捷鍵；設定視窗包含一般、圖形與解碼、渲染、音訊等區段。
+6. Android 鏡像：以 `winget install Google.PlatformTools` 安裝 `adb`，在手機開啟「開發人員選項 → USB 偵錯」，於待機頁按「Android 裝置」選擇裝置即可；無線偵錯可輸入配對位址與 6 位數配對碼。Android 工作階段中，滑鼠點按／拖曳／滾輪會轉為觸控與捲動，`Esc` 是返回鍵，工具列提供返回、主畫面、最近應用與旋轉。
 
 ---
 
@@ -215,7 +219,7 @@ MirrPane/
 
 接收器會核對傳送端的配對公鑰。新裝置第一次送出串流設定時會自動加入信任名單（首次使用即信任），名單存放在 `config\trusted_senders.json`，適合自己可掌控的區域網路。若要在新裝置開始串流前逐一確認，請在設定開啟「首次連線需人工核准」，或在 `config.json` 設定 `"requireApproval": true`。在設定中選擇「清除信任裝置」會中斷目前連線並清空名單，裝置下次連線時會重新加入（自動，或經人工核准）。[信任名單實作](backend/internal/trust/store.go)
 
-Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限限制設定與信任名單的存取。本機管理 API 僅監聽 loopback。
+Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限限制設定與信任名單的存取。本機管理 API 僅監聽 loopback。Android 工作階段只透過本機 `adb` 與所選裝置溝通，輸入事件僅送往該裝置；本機 API 會驗證裝置序號與無線位址格式。
 
 ---
 
@@ -225,6 +229,7 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 
 - **UI**：`github.com/egoist/mygo`（原生 Windows 介面，含 `github.com/go-text/typesetting`、`golang.org/x/image` 等間接相依；隨附授權見發行版內的 `THIRD_PARTY_LICENSES.txt`）
 - **後端**：`github.com/ebitengine/purego`、`github.com/grandcat/zeroconf`、`howett.net/plist`、`golang.org/x/sys`、`github.com/google/uuid`
+- **Android**：內嵌 [scrcpy](https://github.com/Genymobile/scrcpy) v5.0.1 server jar（Apache-2.0）；執行時使用系統的 Android Platform Tools（`adb`）
 
 ### 致謝
 
@@ -235,9 +240,9 @@ Windows 透過 DPAPI 保護接收器的配對金鑰種子，並以檔案權限�
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)
 - [MyGo](https://github.com/egoist/mygo)
 
-[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.4.4
-[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip
-[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64.zip.sha256
-[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-setup.exe
-[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.4.4/MirrPane-0.4.4-win64-lite.zip
-[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.4.4
+[release]: https://github.com/Miku0139oao/MirrPane/releases/tag/v0.5.0
+[win64]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip
+[checksum]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64.zip.sha256
+[setup]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-setup.exe
+[lite]: https://github.com/Miku0139oao/MirrPane/releases/download/v0.5.0/MirrPane-0.5.0-win64-lite.zip
+[source-tag]: https://github.com/Miku0139oao/MirrPane/tree/v0.5.0
