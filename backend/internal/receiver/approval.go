@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 const (

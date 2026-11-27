@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/adb"
+	"github.com/Miku0139oao/MirrPane/backend/internal/adb"
 )
 
 //go:embed server/scrcpy-server-v5.0.1.jar

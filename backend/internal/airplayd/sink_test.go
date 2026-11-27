@@ -12,10 +12,10 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/miku0139/airplay-go/backend/internal/decode"
-	"github.com/miku0139/airplay-go/backend/internal/framefeed"
-	"github.com/miku0139/airplay-go/backend/internal/frames"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/framefeed"
+	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
 	"golang.org/x/sys/windows"
 )
 

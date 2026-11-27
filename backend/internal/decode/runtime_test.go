@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/ffmpeg"
+	"github.com/Miku0139oao/MirrPane/backend/internal/ffmpeg"
 )
 
 func TestMain(m *testing.M) {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/framefeed"
+	"github.com/Miku0139oao/MirrPane/backend/internal/framefeed"
 )
 
 // feedFrameSource reads the pictures the sidecar publishes into the named

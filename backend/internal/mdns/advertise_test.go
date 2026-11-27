@@ -10,7 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 )
 
 // buildTXT reproduces the record bytes Start would publish, without needing a

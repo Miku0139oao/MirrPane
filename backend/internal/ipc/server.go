@@ -22,7 +22,7 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 )
 
 // serverVersion is advertised in the Server header and the /info plist.

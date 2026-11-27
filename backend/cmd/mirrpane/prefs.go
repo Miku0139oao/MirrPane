@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/miku0139/airplay-go/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
 )
 
 // UIPrefs holds the desktop settings stored in config/ui_prefs.json.

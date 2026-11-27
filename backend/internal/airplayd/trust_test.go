@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/config"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 // The UI's resetIdentity deletes config.json and restarts airplayd. Exercise

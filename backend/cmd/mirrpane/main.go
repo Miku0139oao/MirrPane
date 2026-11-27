@@ -10,7 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/miku0139/airplay-go/backend/internal/airplayd"
+	"github.com/Miku0139oao/MirrPane/backend/internal/airplayd"
 )
 
 // appVersion is stamped by the packaging script with

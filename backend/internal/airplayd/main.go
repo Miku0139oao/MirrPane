@@ -23,17 +23,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/audioout"
-	"github.com/miku0139/airplay-go/backend/internal/config"
-	"github.com/miku0139/airplay-go/backend/internal/decode"
-	"github.com/miku0139/airplay-go/backend/internal/frames"
-	"github.com/miku0139/airplay-go/backend/internal/ipc"
-	"github.com/miku0139/airplay-go/backend/internal/mdns"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/receiver"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audioout"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
+	"github.com/Miku0139oao/MirrPane/backend/internal/ipc"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mdns"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 // frameCount counts received access units, for the first-frames log line.

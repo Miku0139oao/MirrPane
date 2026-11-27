@@ -6,7 +6,7 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/audio"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audio"
 )
 
 func TestTeardownRetainsOnlyAudioSessions(t *testing.T) {

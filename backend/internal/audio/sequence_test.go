@@ -3,7 +3,7 @@ package audio
 import (
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
 )
 
 func TestRepeatedPacketsDecodeOnceAcrossSequenceWrap(t *testing.T) {

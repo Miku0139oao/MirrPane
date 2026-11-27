@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 func senderIdentity(t *testing.T) ed25519.PrivateKey {

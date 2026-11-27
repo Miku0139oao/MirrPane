@@ -14,7 +14,7 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 )
 
 type serviceServer interface {

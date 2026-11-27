@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/config"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/receiver"
-	"github.com/miku0139/airplay-go/backend/internal/scrcpy"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/scrcpy"
 )
 
 // An Android session owns the display while AirPlay is idle: /api/state

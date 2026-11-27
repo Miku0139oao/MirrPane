@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
 )
 
 func TestActiveReceiverProtectsSettingsAndIdentity(t *testing.T) {
