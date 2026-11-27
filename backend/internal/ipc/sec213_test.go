@@ -21,12 +21,12 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/fairplay"
-	"github.com/miku0139/airplay-go/backend/internal/ipc"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/receiver"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
+	"github.com/Miku0139oao/MirrPane/backend/internal/ipc"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 type pipeAddr string

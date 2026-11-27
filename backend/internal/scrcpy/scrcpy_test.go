@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/adb"
+	"github.com/Miku0139oao/MirrPane/backend/internal/adb"
 )
 
 func TestEmbeddedServerJar(t *testing.T) {

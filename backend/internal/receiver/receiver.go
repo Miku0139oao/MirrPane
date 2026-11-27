@@ -17,13 +17,13 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/audio"
-	"github.com/miku0139/airplay-go/backend/internal/decode"
-	"github.com/miku0139/airplay-go/backend/internal/fairplay"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audio"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 // Status is what the receiver reports to the UI.

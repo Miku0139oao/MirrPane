@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/decode"
-	"github.com/miku0139/airplay-go/backend/internal/frames"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
 )
 
 // frameSink owns everything a decoded picture touches: the H.264 decoder, the

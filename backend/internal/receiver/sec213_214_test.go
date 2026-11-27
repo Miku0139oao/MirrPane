@@ -10,8 +10,8 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/fairplay"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
 )
 
 func startTrustedSender(t *testing.T, r *Receiver, connKey string, identity ed25519.PrivateKey, seed byte) string {

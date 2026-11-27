@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/audio"
-	"github.com/miku0139/airplay-go/backend/internal/audioout"
-	"github.com/miku0139/airplay-go/backend/internal/config"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
-	"github.com/miku0139/airplay-go/backend/internal/receiver"
-	"github.com/miku0139/airplay-go/backend/internal/scrcpy"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audio"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audioout"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/scrcpy"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 // decodeAPIJSON decodes one small JSON body and rejects unknown fields and

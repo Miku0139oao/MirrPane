@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/config"
-	"github.com/miku0139/airplay-go/backend/internal/protocol"
+	"github.com/Miku0139oao/MirrPane/backend/internal/config"
+	"github.com/Miku0139oao/MirrPane/backend/internal/protocol"
 )
 
 func TestParentMonitorRejectsInvalidOrMissingParent(t *testing.T) {

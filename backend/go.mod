@@ -1,4 +1,4 @@
-module github.com/miku0139/airplay-go/backend
+module github.com/Miku0139oao/MirrPane/backend
 
 go 1.27.4
 

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/airplayd"
+	"github.com/Miku0139oao/MirrPane/backend/internal/airplayd"
 )
 
 // Phase represents the UI state machine derived from the sidecar lifecycle and

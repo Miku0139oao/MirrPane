@@ -17,10 +17,10 @@ import (
 
 	"howett.net/plist"
 
-	"github.com/miku0139/airplay-go/backend/internal/audio"
-	"github.com/miku0139/airplay-go/backend/internal/fairplay"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
-	"github.com/miku0139/airplay-go/backend/internal/pairing"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audio"
+	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/pairing"
 )
 
 type testMirror struct {

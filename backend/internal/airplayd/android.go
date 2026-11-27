@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/adb"
-	"github.com/miku0139/airplay-go/backend/internal/audioout"
-	"github.com/miku0139/airplay-go/backend/internal/mirror"
-	"github.com/miku0139/airplay-go/backend/internal/scrcpy"
+	"github.com/Miku0139oao/MirrPane/backend/internal/adb"
+	"github.com/Miku0139oao/MirrPane/backend/internal/audioout"
+	"github.com/Miku0139oao/MirrPane/backend/internal/mirror"
+	"github.com/Miku0139oao/MirrPane/backend/internal/scrcpy"
 )
 
 // Android session phases, as the UI polls them.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/receiver"
-	"github.com/miku0139/airplay-go/backend/internal/trust"
+	"github.com/Miku0139oao/MirrPane/backend/internal/receiver"
+	"github.com/Miku0139oao/MirrPane/backend/internal/trust"
 )
 
 func approvalAPIRequest(h http.Handler, method, path, body string) *httptest.ResponseRecorder {

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/miku0139/airplay-go/backend/internal/fairplay"
+	"github.com/Miku0139oao/MirrPane/backend/internal/fairplay"
 )
 
 func TestLastControlClosePreventsSameIPPairingInheritance(t *testing.T) {

@@ -64,7 +64,7 @@ The UI and the receiver are one executable: on launch the UI re-executes itself 
 ```text
 MirrPane/
 ├── .github/workflows/          # CI and release workflows
-├── backend/                    # Go module: github.com/miku0139/airplay-go/backend
+├── backend/                    # Go module: github.com/Miku0139oao/MirrPane/backend
 │   ├── cmd/
 │   │   ├── ffmpeg-setup/       # Shared FFmpeg DLL download, verification, and installation
 │   │   └── mirrpane/           # Native MyGo desktop UI and self re-exec (main.go, app.go, sidecar.go, prefs.go, …)

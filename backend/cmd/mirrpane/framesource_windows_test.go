@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/miku0139/airplay-go/backend/internal/frames"
+	"github.com/Miku0139oao/MirrPane/backend/internal/frames"
 	"golang.org/x/sys/windows"
 )
 

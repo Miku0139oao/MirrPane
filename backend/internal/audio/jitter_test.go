@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miku0139/airplay-go/backend/internal/decode"
+	"github.com/Miku0139oao/MirrPane/backend/internal/decode"
 )
 
 // Exercise the packet path with no sockets, native codec or real-time waits.

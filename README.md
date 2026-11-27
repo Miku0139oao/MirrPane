@@ -63,7 +63,7 @@ UI 與接收器是同一個執行檔：UI 啟動時以 `--airplayd` 重新執行
 ```text
 MirrPane/
 ├── .github/workflows/          # CI 與 Release 自動化工作流程
-├── backend/                    # Go 後端 (module: github.com/miku0139/airplay-go/backend)
+├── backend/                    # Go 後端 (module: github.com/Miku0139oao/MirrPane/backend)
 │   ├── cmd/
 │   │   ├── ffmpeg-setup/       # FFmpeg 共享 DLL 下載、驗證與安裝工具
 │   │   └── mirrpane/           # 原生 MyGo 桌面 UI 與 self re-exec (main.go, app.go, sidecar.go, prefs.go 等)
